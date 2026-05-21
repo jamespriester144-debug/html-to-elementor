@@ -3,6 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import { getRequiredEnv } from "@/lib/env";
 import type { ConversionRecord, ElementorDocument } from "@/types/conversion";
 
+const MAX_STORED_HTML_LENGTH = 200_000;
+
 const conversionSelectFields =
   "id, html, elementor_json, status, payment_id, created_at, updated_at";
 
@@ -11,16 +13,22 @@ const missingOriginalHtmlMessages = [
   "schema cache"
 ];
 
+function getSupabaseProjectUrl() {
+  return getRequiredEnv("SUPABASE_URL")
+    .replace(/\/rest\/v1\/?$/i, "")
+    .replace(/\/+$/, "");
+}
+
 export function createSupabaseClient() {
   return createClient(
-    getRequiredEnv("SUPABASE_URL"),
+    getSupabaseProjectUrl(),
     getRequiredEnv("SUPABASE_ANON_KEY")
   );
 }
 
 export function createSupabaseAdmin() {
   return createClient(
-    getRequiredEnv("SUPABASE_URL"),
+    getSupabaseProjectUrl(),
     getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
     {
       auth: {
@@ -36,10 +44,11 @@ export async function saveConversion(
   elementorJson: ElementorDocument
 ): Promise<ConversionRecord> {
   const supabase = createSupabaseAdmin();
+  const storedHtml = shrinkHtmlForDatabase(html);
 
   const insertPayload = {
-    html,
-    original_html: html,
+    html: storedHtml,
+    original_html: storedHtml,
     elementor_json: elementorJson,
     status: "pending"
   };
@@ -61,7 +70,7 @@ export async function saveConversion(
     const fallback = await supabase
       .from("conversions")
       .insert({
-        html,
+        html: storedHtml,
         elementor_json: elementorJson,
         status: "pending"
       })
@@ -77,6 +86,20 @@ export async function saveConversion(
   }
 
   return data as ConversionRecord;
+}
+
+function shrinkHtmlForDatabase(html: string): string {
+  const withoutLargeDataUrls = html.replace(
+    /data:([a-z]+\/[a-z0-9.+-]+);base64,[a-z0-9+/=]+/gi,
+    "data:$1;base64,[embedded-asset-omitted-from-database-preview]"
+  );
+
+  if (withoutLargeDataUrls.length <= MAX_STORED_HTML_LENGTH) {
+    return withoutLargeDataUrls;
+  }
+
+  return `${withoutLargeDataUrls.slice(0, MAX_STORED_HTML_LENGTH)}
+<!-- Original HTML truncated for database preview. Elementor JSON remains available for paid download. -->`;
 }
 
 export async function getConversionById(

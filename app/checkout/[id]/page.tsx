@@ -20,7 +20,7 @@ export default async function CheckoutPage({ params }: CheckoutPageProps) {
           Pagamento confirmado
         </h1>
         <p className="mt-4 text-ink/70">
-          O download desta conversao ja esta liberado.
+          O download deste template Elementor ja esta liberado.
         </p>
         <Link
           className="mt-8 inline-flex rounded-lg bg-moss px-5 py-3 text-sm font-semibold text-white"
@@ -36,18 +36,18 @@ export default async function CheckoutPage({ params }: CheckoutPageProps) {
     <main className="mx-auto max-w-3xl px-5 py-16">
       <StatusBadge status={conversion.status} />
       <h1 className="mt-4 text-4xl font-semibold tracking-tight text-ink">
-        Checkout Stripe
+        Liberar template Elementor
       </h1>
       <p className="mt-4 text-ink/70">
-        Clique abaixo para pagar US$9.90 com Stripe Checkout. Quando o webhook
-        confirmar o pagamento aprovado, o download sera liberado automaticamente.
+        Clique abaixo para pagar US$9.90 com Stripe Checkout. Apos a confirmacao,
+        o JSON do site Lovable convertido sera liberado para download.
       </p>
       <CheckoutButton conversionId={conversion.id} />
       <Link
         className="mt-4 inline-flex text-sm font-semibold text-ink/70 hover:text-ink"
         href={`/preview/${conversion.id}`}
       >
-        Voltar para previa
+        Voltar para previa do site
       </Link>
     </main>
   );

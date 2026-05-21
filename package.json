@@ -10,18 +10,24 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:converter": "tsx tests/converter.test.ts",
+    "test:converter:v3": "tsx tests/converter-v3.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
     "cheerio": "^1.0.0",
+    "jsdom": "^29.1.1",
     "jszip": "^3.10.1",
     "next": "^15.0.0",
+    "playwright": "^1.60.0",
+    "puppeteer": "^25.0.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "stripe": "^17.2.1"
   },
   "devDependencies": {
+    "@types/jsdom": "^28.0.3",
     "@types/node": "^22.7.4",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
@@ -30,6 +36,7 @@
     "eslint-config-next": "^15.0.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
+    "tsx": "^4.20.6",
     "typescript": "^5.6.2"
   }
 }

@@ -38,11 +38,11 @@ export default async function DownloadPage({
     <main className="mx-auto max-w-3xl px-5 py-16">
       <StatusBadge status={status} />
       <h1 className="mt-4 text-4xl font-semibold tracking-tight text-ink">
-        Download do JSON Elementor
+        Download do template Elementor
       </h1>
       <p className="mt-4 text-ink/70">
         {isPaid
-          ? "Pagamento confirmado. O arquivo esta pronto para baixar."
+          ? "Pagamento confirmado. O template do site Lovable esta pronto para baixar."
           : "O download fica bloqueado enquanto o status estiver pendente."}
       </p>
 
@@ -52,7 +52,7 @@ export default async function DownloadPage({
             className="rounded-lg bg-moss px-5 py-3 text-sm font-semibold text-white transition hover:bg-moss/90"
             href={`/api/download/${conversion.id}`}
           >
-            Baixar arquivo
+            Baixar template
           </a>
         ) : (
           <Link
@@ -66,7 +66,7 @@ export default async function DownloadPage({
           className="rounded-lg border border-ink/15 px-5 py-3 text-sm font-semibold text-ink transition hover:border-ink/30"
           href={`/preview/${conversion.id}`}
         >
-          Ver previa
+          Ver previa do site
         </Link>
       </div>
     </main>

@@ -4,8 +4,9 @@ import { SiteHeader } from "@/components/SiteHeader";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "html-to-elementor",
-  description: "Converta HTML em JSON para Elementor com pagamento protegido."
+  title: "Lovable to Elementor",
+  description:
+    "Converta sites Lovable baixados do GitHub em JSON para Elementor com download protegido por pagamento."
 };
 
 export default function RootLayout({

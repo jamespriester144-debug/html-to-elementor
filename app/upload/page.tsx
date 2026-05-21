@@ -5,11 +5,15 @@ export default function UploadPage() {
     <main className="mx-auto max-w-4xl px-5 py-12">
       <div className="mb-8">
         <p className="text-sm font-semibold uppercase tracking-wide text-coral">
-          Nova conversao
+          Novo site Lovable
         </p>
         <h1 className="mt-2 text-4xl font-semibold tracking-tight text-ink">
-          Envie seu HTML
+          Envie o build do seu site
         </h1>
+        <p className="mt-3 max-w-2xl text-ink/70">
+          Use um arquivo HTML exportado ou um ZIP que contenha `index.html`.
+          Projetos Lovable baixados do GitHub precisam ser compilados antes do envio.
+        </p>
       </div>
       <UploadForm />
     </main>

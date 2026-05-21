@@ -25,7 +25,7 @@ export function UploadForm() {
       file.type === "application/x-zip-compressed";
 
     if (!isHtml && !isZip) {
-      setError("Envie um arquivo .html ou .zip valido.");
+      setError("Envie um arquivo .html ou um .zip do build contendo index.html.");
       return;
     }
 
@@ -76,7 +76,7 @@ export function UploadForm() {
         .catch(() => ({}))) as { id?: string; error?: string };
 
       if (!response.ok || !payload.id) {
-        throw new Error(payload.error ?? "Nao foi possivel converter o HTML.");
+        throw new Error(payload.error ?? "Nao foi possivel converter o site.");
       }
 
       router.push(`/preview/${payload.id}`);
@@ -86,7 +86,7 @@ export function UploadForm() {
           ? requestError.message === "Failed to fetch"
             ? "Nao foi possivel conectar com /api/convert. Verifique se o servidor esta rodando e se o .env.local esta configurado."
             : requestError.message
-          : "Nao foi possivel converter o HTML."
+          : "Nao foi possivel converter o site."
       );
     } finally {
       setIsSubmitting(false);
@@ -97,10 +97,10 @@ export function UploadForm() {
     <form className="space-y-6" onSubmit={handleSubmit}>
       <label className="block rounded-lg border border-dashed border-ink/25 bg-white p-6 text-center shadow-soft">
         <span className="block text-sm font-semibold text-ink">
-          Enviar arquivo .html ou .zip
+          Enviar build .html ou .zip
         </span>
         <span className="mt-2 block text-sm text-ink/60">
-          {fileName || "Escolha um arquivo ou cole o HTML abaixo."}
+          {fileName || "Escolha o index.html ou um ZIP exportado do build."}
         </span>
         <input
           accept=".html,.zip,text/html,application/zip,application/x-zip-compressed"
@@ -112,11 +112,11 @@ export function UploadForm() {
 
       <label className="block">
         <span className="mb-2 block text-sm font-semibold text-ink">
-          HTML
+          HTML exportado
         </span>
         <textarea
           className="min-h-80 w-full rounded-lg border border-ink/15 bg-white p-4 font-mono text-sm text-ink outline-none transition focus:border-moss focus:ring-4 focus:ring-moss/10"
-          placeholder="<main><h1>Minha pagina</h1><p>Conteudo...</p></main>"
+          placeholder="<main><h1>Site Lovable</h1><p>Cole aqui o HTML exportado...</p></main>"
           value={html}
           onChange={(event) => {
             setFile(null);
@@ -133,7 +133,7 @@ export function UploadForm() {
         disabled={isSubmitting || (!html.trim() && file === null)}
         type="submit"
       >
-        {isSubmitting ? "Convertendo..." : "Converter HTML"}
+        {isSubmitting ? "Convertendo..." : "Converter site Lovable"}
       </button>
     </form>
   );

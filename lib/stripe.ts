@@ -22,7 +22,7 @@ export async function createStripeCheckoutSession(conversionId: string) {
         price_data: {
           currency: "usd",
           product_data: {
-            name: "HTML to Elementor JSON"
+            name: "Lovable site to Elementor template"
           },
           unit_amount: 990
         },

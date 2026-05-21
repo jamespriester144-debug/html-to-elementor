@@ -51,7 +51,7 @@ export function CheckoutButton({ conversionId }: CheckoutButtonProps) {
         type="button"
         onClick={handleCheckout}
       >
-        {isLoading ? "Abrindo checkout..." : "Pagar com Stripe"}
+        {isLoading ? "Abrindo checkout..." : "Pagar e liberar template"}
       </button>
       {error ? <p className="mt-3 text-sm font-medium text-coral">{error}</p> : null}
     </div>
