@@ -5,7 +5,7 @@ import path from "node:path";
 
 import JSZip from "jszip";
 
-import type { LayoutNode } from "../lib/converter-v3/contracts/layout";
+import type { LayoutDocument, LayoutNode } from "../lib/converter-v3/contracts/layout";
 import {
   createElementorResponsiveSettings,
   createResponsiveChildSettings,
@@ -17,6 +17,8 @@ import { createEditableElementorDocumentV3 } from "../lib/converter-v3/emitters/
 import { runExportPipelineV3FromHtml } from "../lib/converter-v3/orchestration/export-pipeline-v3";
 import { runCapturePipelineV3FromHtml } from "../lib/converter-v3/orchestration/pipeline-v3";
 import { resolveSourceFromUpload } from "../lib/converter-v3/resolve/source-resolver";
+import { classifySections } from "../lib/converter-v3/section-classifier";
+import { buildVisualHierarchy } from "../lib/converter-v3/visual-hierarchy";
 
 function unwrapSectionStrategyChildren<T extends { settings?: Record<string, unknown>; elements?: T[] }>(
   elements: T[] | undefined
@@ -3868,6 +3870,301 @@ function testResponsivePresetDetectionHelper() {
   assert.equal(detectContainerPreset(parent, layoutById, "desktop"), "pricing-cards");
 }
 
+async function testV3NativeExportPreservesBackgroundImages() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Background Section</title>
+  </head>
+  <body>
+    <section style="padding:48px;background-image:url('https://example.com/hero-bg.jpg');background-size:cover;background-position:center center;">
+      <h1>Background Hero</h1>
+      <p>Hero copy that should stay editable.</p>
+      <a href="#buy">Buy now</a>
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runExportPipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const elementorTemplate = JSON.parse(
+    await readFile(result.artifacts.elementorTemplatePath, "utf8")
+  ) as {
+    content: Array<{
+      settings?: {
+        background_image?: { url?: string };
+        background_size?: string;
+        background_position?: string;
+      };
+    }>;
+  };
+
+  assert.equal(result.validation.passed, true);
+  assert.equal(
+    elementorTemplate.content[0].settings?.background_image?.url,
+    "https://example.com/hero-bg.jpg"
+  );
+  assert.equal(elementorTemplate.content[0].settings?.background_size, "cover");
+  assert.equal(elementorTemplate.content[0].settings?.background_position, "center center");
+}
+
+function testSectionClassifierDetectsSemanticSections() {
+  const layout: LayoutDocument = {
+    id: "semantic-layout",
+    title: "Semantic Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 15,
+    sectionIds: ["header", "hero", "grid", "footer"],
+    semanticIndex: {},
+    detectedSections: [],
+    nodes: [
+      {
+        id: "page",
+        tag: "body",
+        kind: "page",
+        parentId: null,
+        children: ["header", "hero", "grid", "footer"],
+        box: { x: 0, y: 0, width: 1200, height: 1200 },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "header",
+        tag: "header",
+        kind: "section",
+        parentId: "page",
+        children: ["header-link"],
+        box: { x: 0, y: 0, width: 1200, height: 80 },
+        visualOrder: 2,
+        layout: { display: "flex" },
+        spacing: {},
+        style: { backgroundColor: "#ffffff" },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "header-link",
+        tag: "a",
+        kind: "button",
+        parentId: "header",
+        children: [],
+        box: { x: 920, y: 20, width: 160, height: 40 },
+        visualOrder: 3,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Shop", href: "#shop" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["hero-heading", "hero-image", "hero-cta"],
+        box: { x: 0, y: 120, width: 1200, height: 420 },
+        visualOrder: 4,
+        layout: { display: "flex" },
+        spacing: {},
+        style: { backgroundColor: "#f8efe8" },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-heading",
+        tag: "h1",
+        kind: "text",
+        parentId: "hero",
+        children: [],
+        box: { x: 80, y: 180, width: 420, height: 72 },
+        visualOrder: 5,
+        layout: {},
+        spacing: {},
+        style: { fontSize: "56px" },
+        content: { text: "Hero title" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-image",
+        tag: "img",
+        kind: "image",
+        parentId: "hero",
+        children: [],
+        box: { x: 680, y: 160, width: 360, height: 260 },
+        visualOrder: 6,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { src: "https://example.com/hero.png", alt: "Hero" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-cta",
+        tag: "a",
+        kind: "button",
+        parentId: "hero",
+        children: [],
+        box: { x: 80, y: 300, width: 180, height: 48 },
+        visualOrder: 7,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Get started", href: "#start" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "grid",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["card-a", "card-b"],
+        box: { x: 0, y: 580, width: 1200, height: 320 },
+        visualOrder: 8,
+        layout: {
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))"
+        },
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "card-a",
+        tag: "article",
+        kind: "container",
+        parentId: "grid",
+        children: ["card-a-title", "card-a-cta"],
+        box: { x: 80, y: 620, width: 480, height: 220 },
+        visualOrder: 9,
+        layout: {},
+        spacing: {},
+        style: { backgroundColor: "#fff", borderRadius: "24px", boxShadow: "0 10px 30px rgba(0,0,0,0.08)" },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "card-a-title",
+        tag: "h3",
+        kind: "text",
+        parentId: "card-a",
+        children: [],
+        box: { x: 120, y: 660, width: 220, height: 32 },
+        visualOrder: 10,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Card A" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "card-a-cta",
+        tag: "a",
+        kind: "button",
+        parentId: "card-a",
+        children: [],
+        box: { x: 120, y: 720, width: 160, height: 40 },
+        visualOrder: 11,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Shop A", href: "#a" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "card-b",
+        tag: "article",
+        kind: "container",
+        parentId: "grid",
+        children: ["card-b-title"],
+        box: { x: 640, y: 620, width: 480, height: 220 },
+        visualOrder: 12,
+        layout: {},
+        spacing: {},
+        style: { backgroundColor: "#fff", borderRadius: "24px", boxShadow: "0 10px 30px rgba(0,0,0,0.08)" },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "card-b-title",
+        tag: "h3",
+        kind: "text",
+        parentId: "card-b",
+        children: [],
+        box: { x: 680, y: 660, width: 220, height: 32 },
+        visualOrder: 13,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Card B" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "footer",
+        tag: "footer",
+        kind: "section",
+        parentId: "page",
+        children: ["footer-link"],
+        box: { x: 0, y: 980, width: 1200, height: 140 },
+        visualOrder: 14,
+        layout: {},
+        spacing: {},
+        style: { backgroundColor: "#101820" },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "footer-link",
+        tag: "a",
+        kind: "button",
+        parentId: "footer",
+        children: [],
+        box: { x: 80, y: 1030, width: 180, height: 36 },
+        visualOrder: 15,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Contact", href: "#contact" },
+        flags: {},
+        responsive: {}
+      }
+    ]
+  };
+
+  const classified = classifySections(buildVisualHierarchy(layout));
+
+  assert.deepEqual(
+    classified.detectedSections.map((section) => section.type),
+    ["header", "hero", "grid", "footer"]
+  );
+  assert.deepEqual(classified.semanticIndex.card, ["card-a", "card-b"]);
+  assert.equal(
+    classified.nodes.find((node) => node.id === "hero")?.detection?.semanticRole,
+    "hero"
+  );
+}
+
 async function main() {
   await testV3HtmlCapturePipeline();
   await testV3ZipResolver();
@@ -3892,11 +4189,13 @@ async function main() {
   await testV3EditableComposesFeatureSectionOutroBlock();
   await testV3HybridComposesTestimonialSectionOutroBlock();
   await testV3EditableFallsBackToHybridOnUnsupportedBlock();
+  await testV3NativeExportPreservesBackgroundImages();
   testResponsiveChildSettingsHelper();
   testResponsiveGridColumnReductionHelper();
   testResponsiveSplitPatternHelper();
   testPatternOrderedChildIdsHelper();
   testResponsivePresetDetectionHelper();
+  testSectionClassifierDetectsSemanticSections();
   console.log("converter-v3 tests passed");
 }
 

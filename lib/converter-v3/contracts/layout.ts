@@ -9,6 +9,21 @@ export type LayoutNodeKind =
 
 export type ResponsiveViewportName = "desktop" | "tablet" | "mobile";
 
+export type LayoutSemanticRole =
+  | "page"
+  | "header"
+  | "hero"
+  | "section"
+  | "grid"
+  | "card"
+  | "button"
+  | "image"
+  | "footer"
+  | "text"
+  | "overlay";
+
+export type LayoutVisualLayer = "background" | "content" | "overlay";
+
 export type ResponsiveLayoutState = {
   isVisible: boolean;
   box: {
@@ -33,6 +48,9 @@ export type ResponsiveLayoutState = {
   };
   style: {
     backgroundColor?: string;
+    backgroundImage?: string;
+    backgroundSize?: string;
+    backgroundPosition?: string;
     color?: string;
     fontSize?: string;
     fontFamily?: string;
@@ -49,6 +67,7 @@ export type ResponsiveLayoutState = {
 
 export type LayoutNode = {
   id: string;
+  tag?: string;
   kind: LayoutNodeKind;
   parentId: string | null;
   children: string[];
@@ -75,6 +94,9 @@ export type LayoutNode = {
   };
   style: {
     backgroundColor?: string;
+    backgroundImage?: string;
+    backgroundSize?: string;
+    backgroundPosition?: string;
     color?: string;
     fontSize?: string;
     fontFamily?: string;
@@ -98,7 +120,37 @@ export type LayoutNode = {
     hidden?: boolean;
     responsiveVariant?: boolean;
   };
+  visual?: {
+    zIndex?: number;
+    effectiveZIndex?: number;
+    overlapIds?: string[];
+    overlapCount?: number;
+    layer?: LayoutVisualLayer;
+    prominence?: number;
+    dominantViewport?: ResponsiveViewportName;
+  };
+  detection?: {
+    semanticRole?: LayoutSemanticRole;
+    confidence?: number;
+    landmark?: boolean;
+    repeated?: boolean;
+    containsHeading?: boolean;
+    containsInteractive?: boolean;
+    containsMedia?: boolean;
+  };
   responsive: Partial<Record<ResponsiveViewportName, ResponsiveLayoutState>>;
+};
+
+export type DetectedSectionType = "header" | "hero" | "section" | "grid" | "footer";
+
+export type DetectedSection = {
+  id: string;
+  type: DetectedSectionType;
+  confidence: number;
+  childIds: string[];
+  anchors: string[];
+  contains: LayoutSemanticRole[];
+  dominantPattern?: string;
 };
 
 export type LayoutDocument = {
@@ -108,6 +160,8 @@ export type LayoutDocument = {
   rootNodeId: string;
   nodeCount: number;
   sectionIds: string[];
+  semanticIndex: Partial<Record<LayoutSemanticRole, string[]>>;
+  detectedSections: DetectedSection[];
   nodes: LayoutNode[];
 };
 

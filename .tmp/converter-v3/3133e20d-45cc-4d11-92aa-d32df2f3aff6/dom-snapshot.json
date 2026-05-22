@@ -1,0 +1,156 @@
+[
+  {
+    "id": "capture-node-1",
+    "tag": "body",
+    "text": "",
+    "attributes": {},
+    "parentId": null,
+    "childIds": [
+      "capture-node-2"
+    ],
+    "visualOrder": 1,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-2",
+    "tag": "section",
+    "text": "",
+    "attributes": {
+      "style": "display:flex;gap:24px;padding:24px;"
+    },
+    "parentId": "capture-node-1",
+    "childIds": [
+      "capture-node-3",
+      "capture-node-12",
+      "capture-node-13"
+    ],
+    "visualOrder": 2,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-3",
+    "tag": "div",
+    "text": "",
+    "attributes": {},
+    "parentId": "capture-node-2",
+    "childIds": [
+      "capture-node-4",
+      "capture-node-5",
+      "capture-node-6",
+      "capture-node-9"
+    ],
+    "visualOrder": 3,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-4",
+    "tag": "h1",
+    "text": "Export Ready",
+    "attributes": {},
+    "parentId": "capture-node-3",
+    "childIds": [],
+    "visualOrder": 4,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-5",
+    "tag": "p",
+    "text": "Render this inside Elementor.",
+    "attributes": {},
+    "parentId": "capture-node-3",
+    "childIds": [],
+    "visualOrder": 5,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-6",
+    "tag": "ul",
+    "text": "",
+    "attributes": {},
+    "parentId": "capture-node-3",
+    "childIds": [
+      "capture-node-7",
+      "capture-node-8"
+    ],
+    "visualOrder": 6,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-7",
+    "tag": "li",
+    "text": "Fast setup",
+    "attributes": {},
+    "parentId": "capture-node-6",
+    "childIds": [],
+    "visualOrder": 7,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-8",
+    "tag": "li",
+    "text": "Clear CTA",
+    "attributes": {},
+    "parentId": "capture-node-6",
+    "childIds": [],
+    "visualOrder": 8,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-9",
+    "tag": "details",
+    "text": "",
+    "attributes": {},
+    "parentId": "capture-node-3",
+    "childIds": [
+      "capture-node-10",
+      "capture-node-11"
+    ],
+    "visualOrder": 9,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-10",
+    "tag": "summary",
+    "text": "What is included?",
+    "attributes": {},
+    "parentId": "capture-node-9",
+    "childIds": [],
+    "visualOrder": 10,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-11",
+    "tag": "p",
+    "text": "Editable widgets with safe defaults.",
+    "attributes": {},
+    "parentId": "capture-node-9",
+    "childIds": [],
+    "visualOrder": 11,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-12",
+    "tag": "img",
+    "text": "",
+    "attributes": {
+      "src": "data:image/svg+xml;base64,PHN2Zy8+",
+      "alt": "Visual"
+    },
+    "parentId": "capture-node-2",
+    "childIds": [],
+    "visualOrder": 12,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-13",
+    "tag": "a",
+    "text": "Buy now",
+    "attributes": {
+      "href": "#buy"
+    },
+    "parentId": "capture-node-2",
+    "childIds": [],
+    "visualOrder": 13,
+    "isVisible": true
+  }
+]

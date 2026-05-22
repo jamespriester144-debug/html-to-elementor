@@ -1,12 +1,13 @@
 import type { PageCapture } from "@/lib/converter-v3/contracts/capture";
 import type { ComplexityAnalysis, LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/layout";
-import type { ExportReport } from "@/lib/converter-v3/contracts/output";
+import type { ExportReport, VisualValidationReport } from "@/lib/converter-v3/contracts/output";
 
 export function buildExportReport(params: {
   capture: PageCapture;
   layout: LayoutDocument;
   analysis: ComplexityAnalysis;
   emittedMode: OutputMode;
+  validation: VisualValidationReport;
   fallbackReason?: string;
   warnings?: string[];
 }): ExportReport {
@@ -30,6 +31,7 @@ export function buildExportReport(params: {
       sectionCount: params.layout.sectionIds.length
     },
     analysis: params.analysis,
+    validation: params.validation,
     warnings
   };
 }

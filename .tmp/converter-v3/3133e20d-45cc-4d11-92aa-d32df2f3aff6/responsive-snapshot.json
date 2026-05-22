@@ -1,0 +1,274 @@
+[
+  {
+    "id": "capture-node-1",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-2",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {
+          "display": "flex",
+          "gap": "24px",
+          "padding": "24px"
+        },
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {
+          "display": "flex",
+          "gap": "24px",
+          "padding": "24px"
+        },
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {
+          "display": "flex",
+          "gap": "24px",
+          "padding": "24px"
+        },
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-3",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-4",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-5",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-6",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-7",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-8",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-9",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-10",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-11",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-12",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  },
+  {
+    "id": "capture-node-13",
+    "viewportStates": {
+      "desktop": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "tablet": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      },
+      "mobile": {
+        "computedStyles": {},
+        "box": null,
+        "isVisible": true
+      }
+    }
+  }
+]

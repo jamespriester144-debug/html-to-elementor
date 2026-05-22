@@ -1,0 +1,51 @@
+{
+  "id": "80d91304-425c-4ac6-bde3-cae787d435e7",
+  "title": "Radiant Skin",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "selectedMode": "editable",
+  "emittedMode": "editable",
+  "summary": {
+    "totalNodes": 2,
+    "visibleNodes": 2,
+    "images": 0,
+    "buttons": 0,
+    "textBlocks": 0,
+    "sections": 1
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 2,
+    "sectionCount": 1
+  },
+  "analysis": {
+    "score": 2,
+    "overlappingGroups": 0,
+    "gridContainers": 0,
+    "flexContainers": 0,
+    "absoluteNodes": 0,
+    "decorativeNodes": 1,
+    "interactiveNodes": 0,
+    "selectedMode": "editable",
+    "reasons": [
+      "Detectados 1 elementos decorativos."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "editable",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 0,
+      "matchedTexts": 0,
+      "expectedImages": 0,
+      "matchedImages": 0,
+      "expectedButtons": 0,
+      "matchedButtons": 0,
+      "expectedPositionedNodes": 0,
+      "matchedPositionedNodes": 0
+    }
+  },
+  "warnings": []
+}

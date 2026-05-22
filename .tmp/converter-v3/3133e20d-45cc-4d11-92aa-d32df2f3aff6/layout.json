@@ -1,0 +1,938 @@
+{
+  "id": "3133e20d-45cc-4d11-92aa-d32df2f3aff6",
+  "title": "Export Test",
+  "sourceKind": "raw-html",
+  "rootNodeId": "capture-node-1",
+  "nodeCount": 13,
+  "sectionIds": [
+    "capture-node-2"
+  ],
+  "semanticIndex": {
+    "page": [
+      "capture-node-1"
+    ],
+    "section": [
+      "capture-node-2"
+    ],
+    "text": [
+      "capture-node-4",
+      "capture-node-5",
+      "capture-node-7",
+      "capture-node-8",
+      "capture-node-11"
+    ],
+    "image": [
+      "capture-node-12"
+    ],
+    "button": [
+      "capture-node-13"
+    ]
+  },
+  "detectedSections": [
+    {
+      "id": "capture-node-2",
+      "type": "section",
+      "confidence": 0.72,
+      "childIds": [
+        "capture-node-3",
+        "capture-node-12",
+        "capture-node-13"
+      ],
+      "anchors": [
+        "#buy"
+      ],
+      "contains": [
+        "section",
+        "image",
+        "button",
+        "text"
+      ],
+      "dominantPattern": "cta-media"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "capture-node-1",
+      "tag": "body",
+      "kind": "page",
+      "parentId": null,
+      "children": [
+        "capture-node-2"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 1,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {},
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 0,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "page",
+        "confidence": 1,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": true,
+        "containsInteractive": true,
+        "containsMedia": true
+      }
+    },
+    {
+      "id": "capture-node-2",
+      "tag": "section",
+      "kind": "section",
+      "parentId": "capture-node-1",
+      "children": [
+        "capture-node-3",
+        "capture-node-12",
+        "capture-node-13"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 2,
+      "layout": {
+        "display": "flex",
+        "gap": "24px"
+      },
+      "spacing": {
+        "padding": "24px"
+      },
+      "style": {},
+      "content": {},
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {
+            "display": "flex",
+            "gap": "24px"
+          },
+          "spacing": {
+            "padding": "24px"
+          },
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {
+            "display": "flex",
+            "gap": "24px"
+          },
+          "spacing": {
+            "padding": "24px"
+          },
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {
+            "display": "flex",
+            "gap": "24px"
+          },
+          "spacing": {
+            "padding": "24px"
+          },
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 22000,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "section",
+        "confidence": 0.72,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": true,
+        "containsInteractive": true,
+        "containsMedia": true
+      }
+    },
+    {
+      "id": "capture-node-3",
+      "tag": "div",
+      "kind": "container",
+      "parentId": "capture-node-2",
+      "children": [
+        "capture-node-4",
+        "capture-node-5",
+        "capture-node-6",
+        "capture-node-9"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 3,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {},
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "background",
+        "prominence": 0,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "confidence": 0.6,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": true,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-4",
+      "tag": "h1",
+      "kind": "text",
+      "parentId": "capture-node-3",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 4,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "text": "Export Ready"
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 72,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "text",
+        "confidence": 0.9,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": true,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-5",
+      "tag": "p",
+      "kind": "text",
+      "parentId": "capture-node-3",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 5,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "text": "Render this inside Elementor."
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 174,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "text",
+        "confidence": 0.9,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-6",
+      "tag": "ul",
+      "kind": "container",
+      "parentId": "capture-node-3",
+      "children": [
+        "capture-node-7",
+        "capture-node-8"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 6,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {},
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "background",
+        "prominence": 0,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "confidence": 0.6,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-7",
+      "tag": "li",
+      "kind": "text",
+      "parentId": "capture-node-6",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 7,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "text": "Fast setup"
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 60,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "text",
+        "confidence": 0.9,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-8",
+      "tag": "li",
+      "kind": "text",
+      "parentId": "capture-node-6",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 8,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "text": "Clear CTA"
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 54,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "text",
+        "confidence": 0.9,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-9",
+      "tag": "details",
+      "kind": "container",
+      "parentId": "capture-node-3",
+      "children": [
+        "capture-node-10",
+        "capture-node-11"
+      ],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 9,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {},
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "background",
+        "prominence": 0,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "confidence": 0.6,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-10",
+      "tag": "summary",
+      "kind": "container",
+      "parentId": "capture-node-9",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 10,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "text": "What is included?"
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 102,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "confidence": 0.6,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-11",
+      "tag": "p",
+      "kind": "text",
+      "parentId": "capture-node-9",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 11,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "text": "Editable widgets with safe defaults."
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 216,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "text",
+        "confidence": 0.9,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": false
+      }
+    },
+    {
+      "id": "capture-node-12",
+      "tag": "img",
+      "kind": "image",
+      "parentId": "capture-node-2",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 12,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "src": "data:image/svg+xml;base64,PHN2Zy8+",
+        "alt": "Visual"
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 18000,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "image",
+        "confidence": 0.98,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": false,
+        "containsMedia": true
+      }
+    },
+    {
+      "id": "capture-node-13",
+      "tag": "a",
+      "kind": "button",
+      "parentId": "capture-node-2",
+      "children": [],
+      "box": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "visualOrder": 13,
+      "layout": {},
+      "spacing": {},
+      "style": {},
+      "content": {
+        "text": "Buy now",
+        "href": "#buy"
+      },
+      "flags": {
+        "decorative": false,
+        "hidden": false,
+        "responsiveVariant": false
+      },
+      "responsive": {
+        "desktop": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "tablet": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        },
+        "mobile": {
+          "isVisible": true,
+          "box": null,
+          "layout": {},
+          "spacing": {},
+          "style": {}
+        }
+      },
+      "visual": {
+        "zIndex": 0,
+        "effectiveZIndex": 0,
+        "overlapIds": [],
+        "overlapCount": 0,
+        "layer": "content",
+        "prominence": 12042,
+        "dominantViewport": "desktop"
+      },
+      "detection": {
+        "semanticRole": "button",
+        "confidence": 0.98,
+        "landmark": false,
+        "repeated": false,
+        "containsHeading": false,
+        "containsInteractive": true,
+        "containsMedia": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "score": 1,
+  "overlappingGroups": 0,
+  "gridContainers": 0,
+  "flexContainers": 1,
+  "absoluteNodes": 0,
+  "decorativeNodes": 0,
+  "interactiveNodes": 1,
+  "selectedMode": "editable",
+  "reasons": [
+    "Layout simples, sem sinais fortes de complexidade estrutural."
+  ]
+}

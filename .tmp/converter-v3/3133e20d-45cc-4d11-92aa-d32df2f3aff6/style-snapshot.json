@@ -1,0 +1,58 @@
+[
+  {
+    "id": "capture-node-1",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-2",
+    "computedStyles": {
+      "display": "flex",
+      "gap": "24px",
+      "padding": "24px"
+    }
+  },
+  {
+    "id": "capture-node-3",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-4",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-5",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-6",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-7",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-8",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-9",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-10",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-11",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-12",
+    "computedStyles": {}
+  },
+  {
+    "id": "capture-node-13",
+    "computedStyles": {}
+  }
+]

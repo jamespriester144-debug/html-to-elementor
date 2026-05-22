@@ -27,6 +27,13 @@ export type CapturedViewportState = {
   isVisible: boolean;
 };
 
+export type CapturedNodeAsset = {
+  href?: string;
+  src?: string;
+  alt?: string;
+  backgroundImage?: string;
+};
+
 export type CapturedNode = {
   id: string;
   tag: string;
@@ -39,6 +46,7 @@ export type CapturedNode = {
   viewportStates: Partial<Record<CaptureViewportName, CapturedViewportState>>;
   visualOrder: number;
   isVisible: boolean;
+  asset: CapturedNodeAsset;
 };
 
 export type DomSnapshotNode = Pick<

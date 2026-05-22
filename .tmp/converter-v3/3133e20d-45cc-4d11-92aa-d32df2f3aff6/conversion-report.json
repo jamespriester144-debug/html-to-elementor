@@ -1,0 +1,55 @@
+{
+  "id": "3133e20d-45cc-4d11-92aa-d32df2f3aff6",
+  "title": "Export Test",
+  "sourceKind": "raw-html",
+  "renderer": "server",
+  "selectedMode": "editable",
+  "emittedMode": "hybrid",
+  "fallbackReason": "Exportacao final emitida em hybrid para preservar o layout detectado.",
+  "summary": {
+    "totalNodes": 13,
+    "visibleNodes": 13,
+    "images": 1,
+    "buttons": 1,
+    "textBlocks": 4,
+    "sections": 1
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 13,
+    "sectionCount": 1
+  },
+  "analysis": {
+    "score": 1,
+    "overlappingGroups": 0,
+    "gridContainers": 0,
+    "flexContainers": 1,
+    "absoluteNodes": 0,
+    "decorativeNodes": 0,
+    "interactiveNodes": 1,
+    "selectedMode": "editable",
+    "reasons": [
+      "Layout simples, sem sinais fortes de complexidade estrutural."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "hybrid",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 5,
+      "matchedTexts": 5,
+      "expectedImages": 1,
+      "matchedImages": 1,
+      "expectedButtons": 1,
+      "matchedButtons": 1,
+      "expectedPositionedNodes": 0,
+      "matchedPositionedNodes": 0
+    }
+  },
+  "warnings": [
+    "Modo editable reprovado na validacao visual (3 perda(s)); escalando para fallback mais seguro.",
+    "Exportacao final emitida em hybrid para preservar o layout detectado."
+  ]
+}

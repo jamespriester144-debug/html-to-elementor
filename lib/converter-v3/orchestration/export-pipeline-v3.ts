@@ -3,9 +3,7 @@ import path from "node:path";
 
 import type { ExportPipelineResult } from "@/lib/converter-v3/contracts/output";
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
-import { createEditableElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/editable";
-import { createHybridElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/hybrid";
-import { createPixelPerfectElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/pixel-perfect";
+import { createElementorNativeExport } from "@/lib/converter-v3/elementor-native-exporter";
 import type { CapturePipelineOptions } from "@/lib/converter-v3/orchestration/pipeline-v3";
 import { runCapturePipelineV3 } from "@/lib/converter-v3/orchestration/pipeline-v3";
 import { buildExportReport } from "@/lib/converter-v3/reports/report-builder";
@@ -29,56 +27,23 @@ export async function runExportPipelineV3(
 ): Promise<ExportPipelineResult> {
   const captureResult = await runCapturePipelineV3(resolvedSource, options);
   const selectedMode = captureResult.analysis.selectedMode;
-  let emittedMode: ExportPipelineResult["emittedMode"] = "pixel-perfect";
-  let fallbackReason = resolveFallbackReason(selectedMode);
-  let warnings: string[] = [];
-  let elementorDocument: ExportPipelineResult["elementorDocument"];
-
-  if (selectedMode === "editable") {
-    const editableResult = createEditableElementorDocumentV3({
-      capture: captureResult.capture,
-      layout: captureResult.layout,
-      selectedMode
-    });
-
-    elementorDocument = editableResult.document;
-    warnings = editableResult.warnings;
-
-    if (editableResult.usedHtmlFallbackNodeIds.length === 0) {
-      emittedMode = "editable";
-    } else {
-      emittedMode = "hybrid";
-      fallbackReason =
-        "Layout classificado como editable, mas alguns blocos precisaram de fallback HTML; exportando em hybrid.";
-    }
-  } else if (selectedMode === "hybrid") {
-    const hybridResult = createHybridElementorDocumentV3({
-      capture: captureResult.capture,
-      layout: captureResult.layout,
-      selectedMode
-    });
-
-    elementorDocument = hybridResult.document;
-    warnings = hybridResult.warnings;
-
-    emittedMode = "hybrid";
-  } else {
-    emittedMode = "pixel-perfect";
-    elementorDocument = createPixelPerfectElementorDocumentV3(
-      captureResult.capture.renderedHtml,
-      {
-        title: captureResult.capture.title,
-        selectedMode,
-        fallbackReason
-      }
-    );
-  }
+  const exportResult = createElementorNativeExport({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode
+  });
+  const emittedMode = exportResult.emittedMode;
+  const fallbackReason = exportResult.fallbackReason ?? resolveFallbackReason(selectedMode);
+  const warnings = exportResult.warnings;
+  const elementorDocument = exportResult.document;
+  const validation = exportResult.validation;
 
   const report = buildExportReport({
     capture: captureResult.capture,
     layout: captureResult.layout,
     analysis: captureResult.analysis,
     emittedMode,
+    validation,
     fallbackReason,
     warnings
   });
@@ -94,6 +59,7 @@ export async function runExportPipelineV3(
     emittedMode,
     fallbackReason,
     elementorDocument,
+    validation,
     report,
     artifacts: {
       elementorTemplatePath,

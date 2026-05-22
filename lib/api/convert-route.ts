@@ -74,7 +74,7 @@ function getUnexpectedErrorMessage(error: unknown) {
 }
 
 function appendFallbackReason(warnings: string[], fallbackReason?: string) {
-  return fallbackReason ? [fallbackReason, ...warnings] : warnings;
+  return [...new Set(fallbackReason ? [fallbackReason, ...warnings] : warnings)];
 }
 
 function buildArtifactsFromV3(result: ExportPipelineResult) {
@@ -104,6 +104,7 @@ function buildV3Success(result: ExportPipelineResult): PreparedConversion {
       sourceKind: result.resolvedSource.sourceKind,
       renderer: result.capture.renderer,
       report: result.report,
+      validation: result.validation,
       selectedMode: result.analysis.selectedMode,
       emittedMode: result.emittedMode,
       fallbackReason: result.fallbackReason,

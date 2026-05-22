@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { VisualValidationError } from "@/lib/converter-v3/visual-regression-validator";
 import {
   runExportPipelineV3FromHtml,
   runExportPipelineV3FromUpload
@@ -31,10 +32,12 @@ export async function POST(request: NextRequest) {
           fallbackReason: result.fallbackReason,
           warnings: result.report.warnings,
           analysis: result.analysis,
+          validation: result.validation,
           layout: {
             rootNodeId: result.layout.rootNodeId,
             nodeCount: result.layout.nodeCount,
-            sectionIds: result.layout.sectionIds
+            sectionIds: result.layout.sectionIds,
+            detectedSections: result.layout.detectedSections
           },
           artifacts: {
             capture: result.capture.artifacts,
@@ -58,10 +61,12 @@ export async function POST(request: NextRequest) {
           fallbackReason: result.fallbackReason,
           warnings: result.report.warnings,
           analysis: result.analysis,
+          validation: result.validation,
           layout: {
             rootNodeId: result.layout.rootNodeId,
             nodeCount: result.layout.nodeCount,
-            sectionIds: result.layout.sectionIds
+            sectionIds: result.layout.sectionIds,
+            detectedSections: result.layout.detectedSections
           },
           artifacts: {
             capture: result.capture.artifacts,
@@ -99,10 +104,12 @@ export async function POST(request: NextRequest) {
       fallbackReason: result.fallbackReason,
       warnings: result.report.warnings,
       analysis: result.analysis,
+      validation: result.validation,
       layout: {
         rootNodeId: result.layout.rootNodeId,
         nodeCount: result.layout.nodeCount,
-        sectionIds: result.layout.sectionIds
+        sectionIds: result.layout.sectionIds,
+        detectedSections: result.layout.detectedSections
       },
       artifacts: {
         capture: result.capture.artifacts,
@@ -110,6 +117,16 @@ export async function POST(request: NextRequest) {
       }
     });
   } catch (error) {
+    if (error instanceof VisualValidationError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          validation: error.report
+        },
+        { status: 422 }
+      );
+    }
+
     const message =
       error instanceof Error
         ? error.message

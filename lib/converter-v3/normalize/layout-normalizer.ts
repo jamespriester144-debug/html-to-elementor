@@ -80,6 +80,7 @@ function buildLayoutNode(
 
   return {
     id: node.id,
+    tag: node.tag,
     kind,
     parentId: node.parentId,
     children: orderedChildIds,
@@ -106,6 +107,9 @@ function buildLayoutNode(
     },
     style: {
       backgroundColor: pickStyle(node.computedStyles, "background-color"),
+      backgroundImage: pickStyle(node.computedStyles, "background-image"),
+      backgroundSize: pickStyle(node.computedStyles, "background-size"),
+      backgroundPosition: pickStyle(node.computedStyles, "background-position"),
       color: pickStyle(node.computedStyles, "color"),
       fontSize: pickStyle(node.computedStyles, "font-size"),
       fontFamily: pickStyle(node.computedStyles, "font-family"),
@@ -120,12 +124,12 @@ function buildLayoutNode(
     },
     content: {
       text,
-      src: node.tag === "img" ? node.attributes.src : undefined,
+      src: node.tag === "img" ? node.asset.src ?? node.attributes.src : undefined,
       href:
         node.tag === "a" || node.tag === "button"
-          ? node.attributes.href
+          ? node.asset.href ?? node.attributes.href
           : undefined,
-      alt: node.tag === "img" ? node.attributes.alt : undefined
+      alt: node.tag === "img" ? node.asset.alt ?? node.attributes.alt : undefined
     },
     flags: {
       decorative: isDecorativeNode(node, kind),
@@ -161,6 +165,9 @@ function buildLayoutNode(
           },
           style: {
             backgroundColor: pickStyle(viewportState.computedStyles, "background-color"),
+            backgroundImage: pickStyle(viewportState.computedStyles, "background-image"),
+            backgroundSize: pickStyle(viewportState.computedStyles, "background-size"),
+            backgroundPosition: pickStyle(viewportState.computedStyles, "background-position"),
             color: pickStyle(viewportState.computedStyles, "color"),
             fontSize: pickStyle(viewportState.computedStyles, "font-size"),
             fontFamily: pickStyle(viewportState.computedStyles, "font-family"),
@@ -244,6 +251,8 @@ export function normalizeCaptureToLayoutDocument(capture: PageCapture): LayoutDo
     rootNodeId,
     nodeCount: layoutNodes.length,
     sectionIds,
+    semanticIndex: {},
+    detectedSections: [],
     nodes: layoutNodes
   };
 }
