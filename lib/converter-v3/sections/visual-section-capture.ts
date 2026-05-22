@@ -16,6 +16,7 @@ import type {
   SectionOverlayLink
 } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode } from "@/lib/converter-v3/contracts/layout";
+import { preparePageForVisualCapture } from "@/lib/converter-v3/visual-capture-stability";
 
 type BrowserSessionFactory = {
   createPageSession: (viewport: CaptureViewportProfile) => Promise<BrowserPageSessionWithLocator>;
@@ -37,9 +38,16 @@ type ExtractedSectionViewport = {
     width: number;
     height: number;
   };
+  captureBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   originalHtml: string;
   frozenHtmlMarkup: string;
   linkOverlays: SectionOverlayLink[];
+  invadingNodeIds: string[];
   pseudoElementNodes: number;
   hasPseudoElements: boolean;
   transformedNodes: number;
@@ -50,10 +58,6 @@ type ExtractedSectionViewport = {
   animatedNodes: number;
   unsupportedCssNodes: number;
   carouselNodes: number;
-};
-
-type PreparedSectionCapture = SectionCapture & {
-  linkNodeIds: string[];
 };
 
 const FROZEN_STYLE_PROPERTIES = [
@@ -355,15 +359,6 @@ function buildFrozenSectionDocument(params: {
 </html>`;
 }
 
-async function waitForStablePage(page: BrowserPage) {
-  await page.setJavaScriptEnabled?.(true).catch(() => undefined);
-  await page.waitForSelector?.("body", { timeout: 10000 }).catch(() => undefined);
-  await page.waitForLoadState?.("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
-  await page.waitForLoadState?.("networkidle", { timeout: 5000 }).catch(() => undefined);
-  await page.waitForNetworkIdle?.({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
-  await page.evaluate(() => document.fonts?.ready).catch(() => undefined);
-}
-
 async function createPlaywrightFactory(): Promise<BrowserSessionFactory> {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({
@@ -470,31 +465,47 @@ async function createBrowserFactory(): Promise<BrowserSessionFactory> {
 async function extractViewportSectionData(params: {
   page: BrowserPage;
   nodeId: string;
-  linkNodeIds: string[];
+  capturePadding?: number;
 }) {
   return params.page.evaluate(
     ({
       nodeId,
-      linkNodeIds,
-      styleProperties
+      styleProperties,
+      capturePadding
     }: {
       nodeId: string;
-      linkNodeIds: string[];
       styleProperties: readonly string[];
+      capturePadding: number;
     }) => {
       const run = new Function(
         "nodeId",
-        "linkNodeIds",
         "styleProperties",
+        "capturePadding",
         `
           const root = document.querySelector('[data-capture-id="' + nodeId + '"]');
-
           if (!root) {
             return null;
           }
 
-          const rootRect = root.getBoundingClientRect();
-          const serializeStyle = function(element) {
+          function toAbsoluteRect(rect) {
+            return {
+              x: rect.left + window.scrollX,
+              y: rect.top + window.scrollY,
+              width: Math.max(rect.width, 1),
+              height: Math.max(rect.height, 1)
+            };
+          }
+
+          function intersects(left, right) {
+            return !(
+              left.right <= right.left ||
+              right.right <= left.left ||
+              left.bottom <= right.top ||
+              right.bottom <= left.top
+            );
+          }
+
+          function serializeStyle(element) {
             const computed = window.getComputedStyle(element);
             return styleProperties
               .map((property) => {
@@ -503,8 +514,9 @@ async function extractViewportSectionData(params: {
               })
               .filter(Boolean)
               .join(";");
-          };
-          const cloneNodeWithInlineStyles = function(node) {
+          }
+
+          function cloneNodeWithInlineStyles(node) {
             if (node.nodeType === window.Node.TEXT_NODE) {
               return document.createTextNode(node.textContent || "");
             }
@@ -516,12 +528,11 @@ async function extractViewportSectionData(params: {
             const element = node;
             const tagName = element.tagName.toLowerCase();
 
-            if (tagName === "script" || tagName === "noscript") {
+            if (["script", "noscript"].includes(tagName)) {
               return null;
             }
 
             const clone = document.createElement(tagName);
-
             Array.from(element.attributes).forEach((attribute) => {
               if (attribute.name === "style" || attribute.name.startsWith("on")) {
                 return;
@@ -531,14 +542,12 @@ async function extractViewportSectionData(params: {
             });
 
             const style = serializeStyle(element);
-
             if (style) {
               clone.setAttribute("style", style);
             }
 
             if (element instanceof HTMLImageElement) {
               const src = element.currentSrc || element.src || element.getAttribute("src") || "";
-
               if (src) {
                 clone.setAttribute("src", src);
               }
@@ -551,7 +560,6 @@ async function extractViewportSectionData(params: {
 
             if (element instanceof HTMLAnchorElement) {
               const href = element.href || element.getAttribute("href") || "";
-
               if (href) {
                 clone.setAttribute("href", href);
               }
@@ -559,15 +567,15 @@ async function extractViewportSectionData(params: {
 
             Array.from(element.childNodes).forEach((child) => {
               const clonedChild = cloneNodeWithInlineStyles(child);
-
               if (clonedChild) {
                 clone.appendChild(clonedChild);
               }
             });
 
             return clone;
-          };
-          const hasPseudoElement = function(element, pseudo) {
+          }
+
+          function hasPseudoElement(element, pseudo) {
             const computed = window.getComputedStyle(element, pseudo);
             const content = computed.content;
             const width = Number.parseFloat(computed.width || "0");
@@ -578,29 +586,33 @@ async function extractViewportSectionData(params: {
               content !== "normal" &&
               (computed.display !== "none" || width > 0 || height > 0)
             );
-          };
-          const isTransitionAnimated = function(computed) {
-            const duration = (computed.transitionDuration || "")
+          }
+
+          function isTransitionAnimated(computed) {
+            return (computed.transitionDuration || "")
               .split(",")
-              .map((value) => Number.parseFloat(value) || 0);
-            return duration.some((value) => value > 0);
-          };
-          const isComplexGradient = function(computed) {
+              .map((value) => Number.parseFloat(value) || 0)
+              .some((value) => value > 0);
+          }
+
+          function isComplexGradient(computed) {
             const backgroundImage = computed.backgroundImage || "";
             if (!/gradient\\(/i.test(backgroundImage)) {
               return false;
             }
 
             const gradientSegments = backgroundImage.split(/,(?![^()]*\\))/);
-            return gradientSegments.length > 1 || /conic-gradient|radial-gradient/i.test(backgroundImage);
-          };
-          const usesUnsupportedCss = function(computed) {
+            return (
+              gradientSegments.length > 1 ||
+              /conic-gradient|radial-gradient/i.test(backgroundImage)
+            );
+          }
+
+          function usesUnsupportedCss(computed) {
             const filter = computed.filter || "";
             const backdropFilter = computed.getPropertyValue("backdrop-filter") || "";
             const clipPath = computed.clipPath || computed.getPropertyValue("clip-path") || "";
             const maskImage =
-              computed.maskImage ||
-              computed.webkitMaskImage ||
               computed.getPropertyValue("mask-image") ||
               computed.getPropertyValue("-webkit-mask-image") ||
               "";
@@ -613,8 +625,9 @@ async function extractViewportSectionData(params: {
               (maskImage && maskImage !== "none") ||
               (mixBlendMode && mixBlendMode !== "normal")
             );
-          };
-          const isCarouselLike = function(element, computed) {
+          }
+
+          function isCarouselLike(element, computed) {
             const fingerprint = [
               element.getAttribute("class") || "",
               element.getAttribute("id") || "",
@@ -633,8 +646,92 @@ async function extractViewportSectionData(params: {
               ((computed.overflowX === "auto" || computed.overflowX === "scroll") &&
                 element.children.length > 1)
             );
+          }
+
+          function isVisibleElement(element) {
+            const computed = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            const opacity = Number.parseFloat(computed.opacity || "1");
+
+            return (
+              computed.display !== "none" &&
+              computed.visibility !== "hidden" &&
+              opacity > 0 &&
+              rect.width > 0 &&
+              rect.height > 0
+            );
+          }
+
+          const rootRect = root.getBoundingClientRect();
+          const invadingElements = Array.from(document.body.querySelectorAll("*")).filter((element) => {
+            if (element === root || root.contains(element)) {
+              return false;
+            }
+
+            if (!isVisibleElement(element)) {
+              return false;
+            }
+
+            const tagName = element.tagName.toLowerCase();
+            if (["script", "noscript", "style", "meta", "link"].includes(tagName)) {
+              return false;
+            }
+
+            const computed = window.getComputedStyle(element);
+            const zIndex = Number.parseInt(computed.zIndex || "0", 10);
+            const isOverlayLike =
+              computed.position === "absolute" ||
+              computed.position === "fixed" ||
+              computed.position === "sticky" ||
+              zIndex > 1;
+
+            if (!isOverlayLike) {
+              return false;
+            }
+
+            return intersects(element.getBoundingClientRect(), rootRect);
+          });
+
+          const captureRect = invadingElements.reduce(
+            (current, element) => {
+              const rect = element.getBoundingClientRect();
+              return {
+                left: Math.min(current.left, rect.left),
+                top: Math.min(current.top, rect.top),
+                right: Math.max(current.right, rect.right),
+                bottom: Math.max(current.bottom, rect.bottom)
+              };
+            },
+            {
+              left: rootRect.left,
+              top: rootRect.top,
+              right: rootRect.right,
+              bottom: rootRect.bottom
+            }
+          );
+          const documentWidth = Math.max(
+            document.documentElement.scrollWidth,
+            document.body.scrollWidth,
+            window.innerWidth
+          );
+          const documentHeight = Math.max(
+            document.documentElement.scrollHeight,
+            document.body.scrollHeight,
+            window.innerHeight
+          );
+          const captureBox = {
+            x: Math.max(captureRect.left + window.scrollX - capturePadding, 0),
+            y: Math.max(captureRect.top + window.scrollY - capturePadding, 0),
+            width: Math.min(
+              Math.max(captureRect.right - captureRect.left + capturePadding * 2, 1),
+              documentWidth
+            ),
+            height: Math.min(
+              Math.max(captureRect.bottom - captureRect.top + capturePadding * 2, 1),
+              documentHeight
+            )
           };
-          const elements = [root].concat(Array.from(root.querySelectorAll("*")));
+          const uniqueElements = [...new Set([root, ...Array.from(root.querySelectorAll("*")), ...invadingElements])];
           const frozenRoot = cloneNodeWithInlineStyles(root);
           let pseudoElementNodes = 0;
           let transformedNodes = 0;
@@ -645,7 +742,7 @@ async function extractViewportSectionData(params: {
           let unsupportedCssNodes = 0;
           let carouselNodes = 0;
 
-          elements.forEach((element) => {
+          uniqueElements.forEach((element) => {
             const computed = window.getComputedStyle(element);
             const before = hasPseudoElement(element, "::before");
             const after = hasPseudoElement(element, "::after");
@@ -692,18 +789,24 @@ async function extractViewportSectionData(params: {
               carouselNodes += 1;
             }
           });
-          const linkOverlays = linkNodeIds
-            .map((linkNodeId) => {
-              const element =
-                root.getAttribute("data-capture-id") === linkNodeId
-                  ? root
-                  : root.querySelector('[data-capture-id="' + linkNodeId + '"]');
 
-              if (!element) {
-                return null;
+          const linkOverlays = Array.from(document.querySelectorAll("[href]"))
+            .filter((element) => {
+              if (!isVisibleElement(element)) {
+                return false;
               }
 
               const rect = element.getBoundingClientRect();
+              return intersects(rect, {
+                left: captureBox.x - window.scrollX,
+                top: captureBox.y - window.scrollY,
+                right: captureBox.x - window.scrollX + captureBox.width,
+                bottom: captureBox.y - window.scrollY + captureBox.height
+              });
+            })
+            .map((element) => {
+              const rect = element.getBoundingClientRect();
+              const absoluteRect = toAbsoluteRect(rect);
               const href =
                 element instanceof HTMLAnchorElement
                   ? element.href
@@ -713,15 +816,16 @@ async function extractViewportSectionData(params: {
                 return null;
               }
 
-              const width = Math.max(rect.width, 1);
-              const height = Math.max(rect.height, 1);
-              const rootWidth = Math.max(rootRect.width, 1);
-              const rootHeight = Math.max(rootRect.height, 1);
-              const relativeX = rect.left - rootRect.left;
-              const relativeY = rect.top - rootRect.top;
+              const width = Math.max(absoluteRect.width, 1);
+              const height = Math.max(absoluteRect.height, 1);
+              const relativeX = absoluteRect.x - captureBox.x;
+              const relativeY = absoluteRect.y - captureBox.y;
+              const nodeCaptureId = element.getAttribute("data-capture-id") || nodeId;
+              const computed = window.getComputedStyle(element);
+              const parsedZIndex = Number.parseInt(computed.zIndex || "0", 10);
 
               return {
-                nodeId: linkNodeId,
+                nodeId: nodeCaptureId,
                 href,
                 text: (element.textContent || "").replace(/\\s+/g, " ").trim(),
                 title: element.getAttribute("title") || undefined,
@@ -730,32 +834,27 @@ async function extractViewportSectionData(params: {
                 isButton:
                   element.tagName.toLowerCase() === "button" ||
                   element.getAttribute("role") === "button",
-                box: {
-                  x: rect.left,
-                  y: rect.top,
-                  width,
-                  height
-                },
+                zIndex: Number.isFinite(parsedZIndex) ? parsedZIndex : undefined,
+                box: absoluteRect,
                 relativeBox: {
-                  x: relativeX / rootWidth,
-                  y: relativeY / rootHeight,
-                  width: width / rootWidth,
-                  height: height / rootHeight
+                  x: relativeX / Math.max(captureBox.width, 1),
+                  y: relativeY / Math.max(captureBox.height, 1),
+                  width: width / Math.max(captureBox.width, 1),
+                  height: height / Math.max(captureBox.height, 1)
                 }
               };
             })
-            .filter(Boolean);
+            .filter((value) => Boolean(value));
 
           return {
-            box: {
-              x: rootRect.left,
-              y: rootRect.top,
-              width: Math.max(rootRect.width, 1),
-              height: Math.max(rootRect.height, 1)
-            },
+            box: toAbsoluteRect(rootRect),
+            captureBox,
             originalHtml: root.outerHTML,
             frozenHtmlMarkup: frozenRoot ? frozenRoot.outerHTML : root.outerHTML,
             linkOverlays,
+            invadingNodeIds: invadingElements
+              .map((element) => element.getAttribute("data-capture-id") || "")
+              .filter(Boolean),
             pseudoElementNodes,
             hasPseudoElements: pseudoElementNodes > 0,
             transformedNodes,
@@ -770,12 +869,12 @@ async function extractViewportSectionData(params: {
         `
       );
 
-      return run(nodeId, linkNodeIds, styleProperties);
+      return run(nodeId, styleProperties, capturePadding);
     },
     {
       nodeId: params.nodeId,
-      linkNodeIds: params.linkNodeIds,
-      styleProperties: FROZEN_STYLE_PROPERTIES
+      styleProperties: FROZEN_STYLE_PROPERTIES,
+      capturePadding: Math.max(params.capturePadding ?? 0, 0)
     }
   );
 }
@@ -830,6 +929,9 @@ export async function buildVisualSectionCaptures(params: {
   capture: PageCapture;
   layout: LayoutDocument;
   outputDir: string;
+  sectionNodeIds?: string[];
+  capturePadding?: number;
+  fileSuffix?: string;
 }): Promise<SectionCapture[]> {
   if (params.capture.renderer !== "browser") {
     return [];
@@ -839,7 +941,12 @@ export async function buildVisualSectionCaptures(params: {
   const detectedSectionById = new Map(
     params.layout.detectedSections.map((section) => [section.id, section])
   );
-  const sectionNodeIds = buildSectionNodeIds(params.layout);
+  const requestedSectionIds = params.sectionNodeIds?.length
+    ? new Set(params.sectionNodeIds)
+    : null;
+  const sectionNodeIds = buildSectionNodeIds(params.layout).filter(
+    (sectionNodeId) => !requestedSectionIds || requestedSectionIds.has(sectionNodeId)
+  );
 
   if (!sectionNodeIds.length) {
     return [];
@@ -848,7 +955,7 @@ export async function buildVisualSectionCaptures(params: {
   const sectionsDir = path.join(params.outputDir, "sections");
   await mkdir(sectionsDir, { recursive: true });
 
-  const sections: PreparedSectionCapture[] = [];
+  const sections: SectionCapture[] = [];
 
   sectionNodeIds.forEach((sectionNodeId, index) => {
     const sectionNode = nodeById.get(sectionNodeId);
@@ -863,10 +970,6 @@ export async function buildVisualSectionCaptures(params: {
       .filter((node): node is LayoutNode => Boolean(node));
     const detectedSection = detectedSectionById.get(sectionNode.id);
     const name = `${detectedSection?.type ?? "section"}-${index + 1}`;
-    const linkNodeIds = subtreeNodes
-      .filter((node) => Boolean(node.content.href?.trim()))
-      .map((node) => node.id);
-
     sections.push({
       id: `section-capture-${index + 1}`,
       nodeId: sectionNode.id,
@@ -882,7 +985,6 @@ export async function buildVisualSectionCaptures(params: {
       originalHtml: "",
       htmlCandidate: "",
       complexity: createSectionComplexity(sectionNode, subtreeNodes, nodeById),
-      linkNodeIds,
       viewports: {}
     });
   });
@@ -898,7 +1000,10 @@ export async function buildVisualSectionCaptures(params: {
           waitUntil: "domcontentloaded",
           timeout: 20000
         });
-        await waitForStablePage(session.page);
+        await preparePageForVisualCapture(session.page, {
+          timeoutMs: 15000,
+          scrollEntirePage: true
+        });
 
         for (const section of sections) {
           const locator = session.page.locator(`[data-capture-id="${section.nodeId}"]`);
@@ -910,23 +1015,37 @@ export async function buildVisualSectionCaptures(params: {
           const extracted = (await extractViewportSectionData({
             page: session.page,
             nodeId: section.nodeId,
-            linkNodeIds: section.linkNodeIds
+            capturePadding: params.capturePadding
           })) as ExtractedSectionViewport | null;
 
           if (!extracted) {
             continue;
           }
 
-          const pngBuffer = await locator.screenshot({ type: "png" });
-          const snapshotPath = join(sectionsDir, `${section.nodeId}-${viewport.name}.png`);
+          const pngBuffer = await session.page.screenshot({
+            type: "png",
+            clip: {
+              x: extracted.captureBox.x,
+              y: extracted.captureBox.y,
+              width: extracted.captureBox.width,
+              height: extracted.captureBox.height
+            }
+          });
+          const suffix = params.fileSuffix ? `-${params.fileSuffix}` : "";
+          const snapshotPath = join(
+            sectionsDir,
+            `${section.nodeId}-${viewport.name}${suffix}.png`
+          );
           await writeFile(snapshotPath, pngBuffer);
 
           section.viewports[viewport.name] = {
             viewport: viewport.name,
-            width: extracted.box.width,
-            height: extracted.box.height,
+            width: extracted.captureBox.width,
+            height: extracted.captureBox.height,
             snapshotPath,
             snapshotDataUrl: toPngDataUrl(pngBuffer),
+            captureBox: extracted.captureBox,
+            invadingNodeIds: extracted.invadingNodeIds,
             linkOverlays: extracted.linkOverlays
           };
 
@@ -965,9 +1084,5 @@ export async function buildVisualSectionCaptures(params: {
     await browserFactory.close().catch(() => undefined);
   }
 
-  return sections.map((section) => {
-    const { linkNodeIds, ...result } = section;
-    void linkNodeIds;
-    return result;
-  });
+  return sections;
 }

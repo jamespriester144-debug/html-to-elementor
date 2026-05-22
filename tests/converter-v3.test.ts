@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -7,6 +7,7 @@ import JSZip from "jszip";
 
 import type { PageCapture, SectionCapture } from "../lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode } from "../lib/converter-v3/contracts/layout";
+import { createElementorNativeExport } from "../lib/converter-v3/elementor-native-exporter";
 import { createSnapshotElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/snapshot";
 import {
   createElementorResponsiveSettings,
@@ -21,6 +22,134 @@ import { runCapturePipelineV3FromHtml } from "../lib/converter-v3/orchestration/
 import { resolveSourceFromUpload } from "../lib/converter-v3/resolve/source-resolver";
 import { classifySections } from "../lib/converter-v3/section-classifier";
 import { buildVisualHierarchy } from "../lib/converter-v3/visual-hierarchy";
+
+function isForceVisualSnapshotEnabled() {
+  const value = String(process.env.FORCE_VISUAL_SNAPSHOT || "").toLowerCase().trim();
+  return value === "true" || value === "1" || value === "yes";
+}
+
+function expectedPrimaryMode() {
+  return isForceVisualSnapshotEnabled() ? "snapshot" : "editable";
+}
+
+function assertPrimaryMode(actualMode: string) {
+  assert.equal(actualMode, expectedPrimaryMode());
+}
+
+function logForceVisualSnapshotDebug() {
+  if (String(process.env.DEBUG_FORCE_VISUAL_SNAPSHOT || "").toLowerCase().trim() !== "true") {
+    return;
+  }
+
+  console.log("FORCE_VISUAL_SNAPSHOT =", process.env.FORCE_VISUAL_SNAPSHOT);
+  console.log("expectedPrimaryMode =", expectedPrimaryMode());
+}
+
+function assertSnapshotModeWhenForced(
+  result: {
+    analysis: { selectedMode: string };
+    emittedMode: string;
+    fallbackReason?: string;
+    elementorDocument?: unknown;
+    validation?: {
+      passed: boolean;
+    };
+    snapshot?: {
+      overallSimilarity: number;
+      threshold: number;
+      totals: {
+        preservedLinks: number;
+      };
+      visualValidationReport?: {
+        status: string;
+        blockingReason?: string;
+      };
+    };
+  },
+  options: {
+    requireSelectedModeSnapshot?: boolean;
+    expectedVisualStatus?: "passed" | "blocked";
+    preservedLinksAtLeast?: number;
+    requireLinkOverlay?: boolean;
+    report?: {
+      emittedMode?: string;
+      selectedMode?: string;
+    };
+    document?: unknown;
+  } = {}
+) {
+  if (!isForceVisualSnapshotEnabled()) {
+    return false;
+  }
+
+  const expectedMode = expectedPrimaryMode();
+
+  assert.equal(result.emittedMode, expectedMode);
+  assert.ok(result.snapshot);
+
+  if (typeof options.report?.emittedMode === "string") {
+    assert.equal(options.report.emittedMode, expectedMode);
+  }
+
+  if (typeof options.report?.selectedMode === "string") {
+    assert.equal(options.report.selectedMode, expectedMode);
+  }
+
+  if (options.requireSelectedModeSnapshot) {
+    assert.equal(result.analysis.selectedMode, expectedMode);
+  }
+
+  if (typeof result.fallbackReason === "string") {
+    assert.equal(/editable|hybrid/i.test(result.fallbackReason), false);
+  }
+
+  if (options.expectedVisualStatus === "passed") {
+    assert.equal(result.snapshot.visualValidationReport?.status, "passed");
+    assert.equal(result.snapshot.overallSimilarity >= result.snapshot.threshold, true);
+  }
+
+  if (options.expectedVisualStatus === "blocked") {
+    assert.equal(result.snapshot.visualValidationReport?.status, "blocked");
+    assert.equal(result.validation?.passed, false);
+    assert.ok(result.snapshot.visualValidationReport?.blockingReason);
+  }
+
+  if (
+    options.expectedVisualStatus !== "blocked" &&
+    typeof options.preservedLinksAtLeast === "number"
+  ) {
+    assert.equal(
+      result.snapshot.totals.preservedLinks >= options.preservedLinksAtLeast,
+      true
+    );
+  }
+
+  if (options.expectedVisualStatus !== "blocked" && options.requireLinkOverlay) {
+    assertContainsSnapshotLinkOverlay(options.document ?? result.elementorDocument);
+  }
+
+  return true;
+}
+
+function objectContainsPattern(value: unknown, pattern: RegExp): boolean {
+  if (typeof value === "string") {
+    return pattern.test(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((item) => objectContainsPattern(item, pattern));
+  }
+
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => objectContainsPattern(item, pattern));
+  }
+
+  return false;
+}
+
+function assertContainsSnapshotLinkOverlay(value: unknown) {
+  assert.equal(objectContainsPattern(value, /converter-v3-snapshot-link-1/), true);
+}
 
 function unwrapSectionStrategyChildren<T extends { settings?: Record<string, unknown>; elements?: T[] }>(
   elements: T[] | undefined
@@ -155,6 +284,8 @@ async function testV3ComplexitySelection() {
 }
 
 async function testV3ExportPipeline() {
+  logForceVisualSnapshotDebug();
+
   const html = `<!doctype html>
 <html>
   <head>
@@ -185,9 +316,6 @@ async function testV3ExportPipeline() {
     outputRoot
   });
 
-  assert.equal(result.emittedMode, "editable");
-  assert.equal(result.analysis.selectedMode, "editable");
-  assert.equal(result.fallbackReason, undefined);
   await access(result.artifacts.elementorTemplatePath);
   await access(result.artifacts.reportPath);
 
@@ -221,11 +349,28 @@ async function testV3ExportPipeline() {
     emittedMode: string;
     selectedMode: string;
   };
-  const sectionChildren = elementorTemplate.content[0].elements;
 
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked",
+      preservedLinksAtLeast: 1,
+      requireLinkOverlay: true,
+      report: {
+        emittedMode: report.emittedMode
+      },
+      document: elementorTemplate
+    })
+  ) {
+    return;
+  }
+
+  assertPrimaryMode(result.emittedMode);
+  assertPrimaryMode(result.analysis.selectedMode);
+  assert.equal(result.fallbackReason, undefined);
   assert.equal(elementorTemplate.title, "Export Test");
   assert.equal(elementorTemplate.content[0].elType, "container");
   assert.equal((elementorTemplate.content[0] as { settings?: { flex_direction?: string } }).settings?.flex_direction, "row");
+  const sectionChildren = elementorTemplate.content[0].elements;
   assert.ok(elementorTemplate.content[0].settings?.converter_v3_responsive?.desktop);
   assert.ok(elementorTemplate.content[0].settings?.converter_v3_responsive?.tablet);
   assert.ok(elementorTemplate.content[0].settings?.converter_v3_responsive?.mobile);
@@ -247,8 +392,8 @@ async function testV3ExportPipeline() {
   assert.ok(sectionChildren.some((element) => element.settings?.converter_v3_elementor_responsive?.desktop));
   assert.ok(sectionChildren.some((element) => typeof element.settings?.tablet_width === "string"));
   assert.ok(sectionChildren.some((element) => typeof element.settings?.mobile_width === "string"));
-  assert.equal(report.emittedMode, "editable");
-  assert.equal(report.selectedMode, "editable");
+  assertPrimaryMode(report.emittedMode);
+  assertPrimaryMode(report.selectedMode);
 }
 
 async function testV3HybridSectionFallback() {
@@ -275,6 +420,14 @@ async function testV3HybridSectionFallback() {
     preferBrowser: false,
     outputRoot
   });
+
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked"
+    })
+  ) {
+    return;
+  }
 
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
@@ -309,6 +462,14 @@ async function testV3HybridPreservesGridWidths() {
     preferBrowser: false,
     outputRoot
   });
+
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked"
+    })
+  ) {
+    return;
+  }
 
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
@@ -385,6 +546,16 @@ async function testV3HybridKeepsRichPatternedGridStructural() {
     preferBrowser: false,
     outputRoot
   });
+
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked",
+      preservedLinksAtLeast: 1,
+      requireLinkOverlay: true
+    })
+  ) {
+    return;
+  }
 
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
@@ -466,6 +637,16 @@ async function testV3HybridDetectsPricingPreset() {
     outputRoot
   });
 
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked",
+      preservedLinksAtLeast: 1,
+      requireLinkOverlay: true
+    })
+  ) {
+    return;
+  }
+
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
 
@@ -529,6 +710,14 @@ async function testV3HybridComposesTestimonialWidgets() {
     preferBrowser: false,
     outputRoot
   });
+
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked"
+    })
+  ) {
+    return;
+  }
 
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
@@ -1091,6 +1280,16 @@ async function testV3HybridComposesPricingSection() {
     outputRoot
   });
 
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked",
+      preservedLinksAtLeast: 1,
+      requireLinkOverlay: true
+    })
+  ) {
+    return;
+  }
+
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
 
@@ -1295,6 +1494,16 @@ async function testV3HybridComposesPricingSectionChildren() {
     preferBrowser: false,
     outputRoot
   });
+
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked",
+      preservedLinksAtLeast: 1,
+      requireLinkOverlay: true
+    })
+  ) {
+    return;
+  }
 
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
@@ -1880,6 +2089,16 @@ async function testV3HybridComposesPricingSectionBlocks() {
     preferBrowser: false,
     outputRoot
   });
+
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked",
+      preservedLinksAtLeast: 1,
+      requireLinkOverlay: true
+    })
+  ) {
+    return;
+  }
 
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
@@ -2538,6 +2757,14 @@ async function testV3HybridComposesTestimonialSectionIntroBlock() {
     outputRoot
   });
 
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked"
+    })
+  ) {
+    return;
+  }
+
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
 
@@ -2942,6 +3169,14 @@ async function testV3HybridComposesTestimonialSectionOutroBlock() {
     outputRoot
   });
 
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked"
+    })
+  ) {
+    return;
+  }
+
   assert.equal(result.analysis.selectedMode, "hybrid");
   assert.equal(result.emittedMode, "hybrid");
 
@@ -3144,7 +3379,15 @@ async function testV3EditableFallsBackToHybridOnUnsupportedBlock() {
     outputRoot
   });
 
-  assert.equal(result.analysis.selectedMode, "editable");
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked"
+    })
+  ) {
+    return;
+  }
+
+  assertPrimaryMode(result.analysis.selectedMode);
   assert.equal(result.emittedMode, "hybrid");
   assert.match(result.fallbackReason ?? "", /exportando em hybrid/);
   assert.ok(result.report.warnings.length >= 1);
@@ -3903,6 +4146,16 @@ async function testV3NativeExportPreservesBackgroundImages() {
     }>;
   };
 
+  if (
+    assertSnapshotModeWhenForced(result, {
+      expectedVisualStatus: "blocked",
+      preservedLinksAtLeast: 1,
+      requireLinkOverlay: true
+    })
+  ) {
+    return;
+  }
+
   assert.equal(result.validation.passed, true);
   assert.equal(
     elementorTemplate.content[0].settings?.background_image?.url,
@@ -4171,6 +4424,27 @@ function createSvgDataUrl(svg: string) {
   return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }
 
+async function withForceVisualSnapshot<T>(callback: () => Promise<T>) {
+  const previousForceVisualSnapshot = process.env.FORCE_VISUAL_SNAPSHOT;
+  process.env.FORCE_VISUAL_SNAPSHOT = "true";
+
+  try {
+    return await callback();
+  } finally {
+    if (typeof previousForceVisualSnapshot === "string") {
+      process.env.FORCE_VISUAL_SNAPSHOT = previousForceVisualSnapshot;
+    } else {
+      delete process.env.FORCE_VISUAL_SNAPSHOT;
+    }
+  }
+}
+
+async function ensureOutputDir(name: string) {
+  const dir = path.join(os.tmpdir(), name);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
 function createSectionCaptureComplexity(
   overrides: Partial<SectionCapture["complexity"]> = {}
 ): SectionCapture["complexity"] {
@@ -4348,6 +4622,19 @@ async function testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSect
     sections,
     selectedMode: "snapshot"
   });
+
+  if (isForceVisualSnapshotEnabled()) {
+    assert.equal(result.document.content.length, 2);
+    assert.equal(result.snapshot.totals.htmlSections, 0);
+    assert.equal(result.snapshot.totals.snapshotSections, 2);
+    assert.equal(
+      result.snapshot.sectionReports.every((section) => section.mode === "snapshot"),
+      true
+    );
+    assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
+    assert.equal(objectContainsPattern(result.document, /converter-v3-snapshot-section/), true);
+    return;
+  }
 
   assert.equal(result.document.content.length, 2);
   assert.equal(result.snapshot.totals.htmlSections, 1);
@@ -4620,12 +4907,342 @@ async function testV3SnapshotEmitterKeepsSnapshotOutputWhenSectionAlreadyMatches
     selectedMode: "snapshot"
   });
 
+  if (isForceVisualSnapshotEnabled()) {
+    assert.equal(result.snapshot.sectionReports[0]?.mode, "snapshot");
+    assert.equal(result.snapshot.renderStrategy, "section-snapshots");
+    assert.equal(result.snapshot.requiresPixelPerfect, false);
+    assert.equal(result.snapshot.pixelPerfectReason, undefined);
+    assert.equal(result.snapshot.totals.pixelPerfectRequiredSections, 0);
+    return;
+  }
+
   assert.equal(result.snapshot.sectionReports[0]?.mode, "snapshot");
   assert.equal(result.snapshot.sectionReports[0]?.htmlBlocked, true);
   assert.equal(result.snapshot.renderStrategy, "section-snapshots");
   assert.equal(result.snapshot.requiresPixelPerfect, false);
   assert.equal(result.snapshot.pixelPerfectReason, undefined);
   assert.equal(result.snapshot.totals.pixelPerfectRequiredSections, 1);
+}
+
+async function testV3ForceVisualSnapshotDisablesEditableAndHybridFallbacks() {
+  const width = 160;
+  const sectionHeight = 100;
+  const outputDir = await ensureOutputDir("snapshot-force-native-tests");
+  const reference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${sectionHeight}" viewBox="0 0 ${width} ${sectionHeight}"><rect width="${width}" height="${sectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-force-native",
+    sourceKind: "raw-html",
+    title: "Forced Snapshot Native Export",
+    sourceHtml: "<body></body>",
+    renderedHtml:
+      '<!doctype html><html><body style="margin:0;"><section data-capture-id="hero-force" style="width:100%;height:100px;background:#f2545b;"></section></body></html>',
+    renderer: "browser",
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height: sectionHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 1,
+      visibleNodes: 1,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: reference
+      }
+    },
+    sections: [
+      {
+        id: "hero-force-section",
+        nodeId: "hero-force",
+        name: "hero-force-1",
+        type: "hero",
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height: sectionHeight
+        },
+        subtreeNodeIds: ["hero-force"],
+        originalHtml: `<section style="width:${width}px;height:${sectionHeight}px;background:#f2545b;"></section>`,
+        htmlCandidate: `<!doctype html><html><body><section style="width:${width}px;height:${sectionHeight}px;background:#f2545b;"></section></body></html>`,
+        complexity: createSectionCaptureComplexity(),
+        viewports: {
+          desktop: {
+            viewport: "desktop",
+            width,
+            height: sectionHeight,
+            snapshotDataUrl: reference,
+            linkOverlays: []
+          }
+        }
+      }
+    ]
+  } satisfies PageCapture;
+  const layout: LayoutDocument = {
+    id: "snapshot-force-native-layout",
+    title: "Forced Snapshot Native Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 1,
+    sectionIds: ["hero-force"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "hero-force",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      }
+    ],
+    nodes: []
+  };
+
+  const result = await withForceVisualSnapshot(() =>
+    createElementorNativeExport({
+      capture,
+      layout,
+      selectedMode: "editable",
+      outputDir
+    })
+  );
+
+  assert.equal(result.emittedMode, "snapshot");
+  assert.equal(result.snapshot?.visualValidationReport?.status, "passed");
+  assert.equal(result.snapshot?.visualValidationReport?.modeUsed, "section-snapshot");
+}
+
+async function testV3ForceVisualSnapshotUsesSectionFallbackBeforePassing() {
+  const desktopWidth = 1200;
+  const tabletWidth = 900;
+  const mobileWidth = 600;
+  const sectionHeight = 100;
+  const outputDir = await ensureOutputDir("snapshot-force-section-fallback-tests");
+  const desktopReference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${desktopWidth}" height="${sectionHeight}" viewBox="0 0 ${desktopWidth} ${sectionHeight}"><rect width="${desktopWidth}" height="${sectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const tabletReference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${tabletWidth}" height="${sectionHeight}" viewBox="0 0 ${tabletWidth} ${sectionHeight}"><rect width="${tabletWidth}" height="${sectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const mobileReference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${mobileWidth}" height="${sectionHeight}" viewBox="0 0 ${mobileWidth} ${sectionHeight}"><rect width="${mobileWidth}" height="${sectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-force-section-fallback",
+    sourceKind: "raw-html",
+    title: "Forced Snapshot Section Fallback",
+    sourceHtml: "<body></body>",
+    renderedHtml:
+      '<!doctype html><html><head><style>html,body{margin:0;padding:0;}</style></head><body><section data-capture-id="critical-section" style="width:100%;height:100px;background:#f2545b;"><a href="#buy" style="display:block;width:40px;height:20px;color:transparent;text-decoration:none;">.</a></section></body></html>',
+    renderer: "browser",
+    viewports: [
+      {
+        name: "desktop",
+        width: desktopWidth,
+        height: sectionHeight
+      },
+      {
+        name: "tablet",
+        width: tabletWidth,
+        height: sectionHeight
+      },
+      {
+        name: "mobile",
+        width: mobileWidth,
+        height: sectionHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 1,
+      visibleNodes: 1,
+      images: 0,
+      buttons: 1,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: desktopReference,
+        tablet: tabletReference,
+        mobile: mobileReference
+      }
+    }
+  } satisfies PageCapture;
+  const sections: SectionCapture[] = [
+    {
+      id: "critical-section-capture",
+      nodeId: "critical-section",
+      name: "critical-section",
+      type: "hero",
+      box: {
+        x: 0,
+        y: 0,
+        width: desktopWidth,
+        height: sectionHeight
+      },
+      subtreeNodeIds: ["critical-section"],
+      originalHtml: `<section style="width:${desktopWidth}px;height:${sectionHeight}px;background:#f2545b;"></section>`,
+      htmlCandidate: `<!doctype html><html><body><section style="width:${desktopWidth}px;height:${sectionHeight}px;background:#f2545b;"></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width: desktopWidth,
+          height: 120,
+          snapshotDataUrl: desktopReference,
+          linkOverlays: []
+        },
+        tablet: {
+          viewport: "tablet",
+          width: tabletWidth,
+          height: 120,
+          snapshotDataUrl: tabletReference,
+          linkOverlays: []
+        },
+        mobile: {
+          viewport: "mobile",
+          width: mobileWidth,
+          height: 120,
+          snapshotDataUrl: mobileReference,
+          linkOverlays: []
+        }
+      }
+    }
+  ];
+  const layout: LayoutDocument = {
+    id: "snapshot-force-section-fallback-layout",
+    title: "Forced Snapshot Section Fallback Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 2,
+    sectionIds: ["critical-section"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "critical-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      }
+    ],
+    nodes: [
+      {
+        id: "page",
+        kind: "page",
+        parentId: null,
+        children: ["critical-section"],
+        box: {
+          x: 0,
+          y: 0,
+          width: desktopWidth,
+          height: sectionHeight
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "critical-section",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: [],
+        box: {
+          x: 0,
+          y: 0,
+          width: desktopWidth,
+          height: sectionHeight
+        },
+        visualOrder: 1,
+        layout: {
+          display: "block"
+        },
+        spacing: {},
+        style: {
+          backgroundColor: "#f2545b"
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "hero"
+        },
+        responsive: {}
+      }
+    ]
+  };
+
+  const result = await withForceVisualSnapshot(() =>
+    createSnapshotElementorDocumentV3({
+      capture,
+      layout,
+      sections,
+      selectedMode: "snapshot",
+      outputDir
+    })
+  );
+
+  assert.equal(result.snapshot.visualValidationReport?.status, "passed");
+  assert.equal(result.snapshot.visualValidationReport?.modeUsed, "section-fallback");
+  assert.equal(result.snapshot.visualValidationReport?.linksPreserved, 1);
+  assert.equal(result.snapshot.visualValidationReport?.sectionsWithFallback.length, 1);
+  assert.equal(
+    result.snapshot.visualValidationReport?.sectionsWithFallback[0]?.fallbackStage,
+    "section-recapture"
+  );
+  assert.equal(
+    result.snapshot.visualValidationReport?.sectionsWithFallback[0]?.preservedLinks,
+    1
+  );
+  assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
+  assertContainsSnapshotLinkOverlay(result.document);
 }
 
 async function testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUnsafe() {
@@ -4881,9 +5498,145 @@ async function testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUn
   assert.equal(result.snapshot.totals.preservedLinks, 1);
   assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
   assert.match(String(result.snapshot.fullPageFallbackReason), /hero-1|section-2/);
+  assertContainsSnapshotLinkOverlay(result.document);
+}
+
+async function testV3ForceVisualSnapshotBlocksOnlyAfterFullPageFallbackFails() {
+  const desktopWidth = 1200;
+  const tabletWidth = 900;
+  const mobileWidth = 600;
+  const referenceHeight = 100;
+  const viewportHeight = 120;
+  const outputDir = await ensureOutputDir("snapshot-force-blocked-tests");
+  const fullPageDesktop = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${desktopWidth}" height="${referenceHeight}" viewBox="0 0 ${desktopWidth} ${referenceHeight}"><rect width="${desktopWidth}" height="${referenceHeight}" fill="#f2545b" /></svg>`
+  );
+  const fullPageTablet = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${tabletWidth}" height="${referenceHeight}" viewBox="0 0 ${tabletWidth} ${referenceHeight}"><rect width="${tabletWidth}" height="${referenceHeight}" fill="#f2545b" /></svg>`
+  );
+  const fullPageMobile = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${mobileWidth}" height="${referenceHeight}" viewBox="0 0 ${mobileWidth} ${referenceHeight}"><rect width="${mobileWidth}" height="${referenceHeight}" fill="#f2545b" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-force-blocked",
+    sourceKind: "raw-html",
+    title: "Forced Snapshot Blocked",
+    sourceHtml: "<body></body>",
+    renderedHtml: "<html><body></body></html>",
+    renderer: "browser",
+    viewports: [
+      {
+        name: "desktop",
+        width: desktopWidth,
+        height: viewportHeight
+      },
+      {
+        name: "tablet",
+        width: tabletWidth,
+        height: viewportHeight
+      },
+      {
+        name: "mobile",
+        width: mobileWidth,
+        height: viewportHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 1,
+      visibleNodes: 1,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: fullPageDesktop,
+        tablet: fullPageTablet,
+        mobile: fullPageMobile
+      }
+    }
+  } satisfies PageCapture;
+  const sections: SectionCapture[] = [
+    {
+      id: "unsafe-section-capture",
+      nodeId: "unsafe-section",
+      name: "unsafe-section-1",
+      type: "section",
+      box: {
+        x: 0,
+        y: 0,
+        width: desktopWidth,
+        height: referenceHeight
+      },
+      subtreeNodeIds: ["unsafe-section"],
+      originalHtml: `<section style="width:${desktopWidth}px;height:${referenceHeight}px;background:#f2545b;"></section>`,
+      htmlCandidate: `<!doctype html><html><body><section style="width:${desktopWidth}px;height:${referenceHeight}px;background:#f2545b;"></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width: desktopWidth,
+          height: referenceHeight,
+          snapshotDataUrl: fullPageDesktop,
+          linkOverlays: []
+        }
+      }
+    }
+  ];
+  const layout: LayoutDocument = {
+    id: "snapshot-force-blocked-layout",
+    title: "Forced Snapshot Blocked Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 2,
+    sectionIds: ["unsafe-section"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "unsafe-section",
+        type: "section",
+        confidence: 0.9,
+        childIds: [],
+        anchors: [],
+        contains: ["section"]
+      }
+    ],
+    nodes: []
+  };
+
+  const result = await withForceVisualSnapshot(() =>
+    createSnapshotElementorDocumentV3({
+      capture,
+      layout,
+      sections,
+      selectedMode: "snapshot",
+      outputDir
+    })
+  );
+
+  assert.equal(result.snapshot.visualValidationReport?.status, "blocked");
+  assert.equal(result.snapshot.visualValidationReport?.modeUsed, "full-page-snapshot");
+  assert.equal(result.snapshot.overallSimilarity < 0.99, true);
   assert.match(
-    String(result.document.content[0]?.elements?.[0]?.settings?.html ?? ""),
-    /converter-v3-snapshot-link-1/
+    String(result.snapshot.visualValidationReport?.blockingReason),
+    /Snapshot da pagina inteira falhou/
   );
 }
 
@@ -4921,7 +5674,10 @@ async function main() {
   await testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSection();
   await testV3SnapshotEmitterBlocksHtmlProfilesAfterHardFailure();
   await testV3SnapshotEmitterKeepsSnapshotOutputWhenSectionAlreadyMatchesVisually();
+  await testV3ForceVisualSnapshotDisablesEditableAndHybridFallbacks();
+  await testV3ForceVisualSnapshotUsesSectionFallbackBeforePassing();
   await testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUnsafe();
+  await testV3ForceVisualSnapshotBlocksOnlyAfterFullPageFallbackFails();
   console.log("converter-v3 tests passed");
 }
 

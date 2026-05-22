@@ -19,6 +19,12 @@ export type BrowserNetworkIdleOptions = {
 };
 
 export type BrowserScreenshotOptions = {
+  clip?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   path?: string;
   fullPage?: boolean;
   type?: "png" | "jpeg";

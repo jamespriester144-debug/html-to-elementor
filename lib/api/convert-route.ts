@@ -110,6 +110,15 @@ function resolveDownloadEligibilityError(result: ExportPipelineResult) {
     return `Conversao bloqueada: o modo final ${result.emittedMode} nao atende o requisito visual-perfect.`;
   }
 
+  if (result.snapshot?.visualValidationReport?.status === "blocked") {
+    return (
+      result.snapshot.visualValidationReport.blockingReason ??
+      `Conversao bloqueada: similaridade visual final ficou em ${(
+        resolveVisualSimilarity(result) * 100
+      ).toFixed(2)}%.`
+    );
+  }
+
   if (resolveVisualSimilarity(result) < MIN_VISUAL_SIMILARITY) {
     return `Conversao bloqueada: similaridade visual final ficou em ${(
       resolveVisualSimilarity(result) * 100

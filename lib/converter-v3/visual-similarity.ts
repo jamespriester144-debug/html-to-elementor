@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { BrowserPage } from "@/lib/converter-v3/browser-page";
+import { preparePageForVisualCapture } from "@/lib/converter-v3/visual-capture-stability";
 
 type BrowserSessionFactory = {
   withPage: <T>(
@@ -20,6 +21,14 @@ export type PixelComparisonResult = {
   totalPixels: number;
   width: number;
   height: number;
+  dimensionsDiffer: boolean;
+  mismatchBounds?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  diffOutputPath?: string;
 };
 
 function toDataUrlFromBuffer(buffer: Uint8Array, contentType = "image/png") {
@@ -33,15 +42,6 @@ async function readImageInputAsDataUrl(source: string) {
 
   const buffer = await readFile(source);
   return toDataUrlFromBuffer(buffer);
-}
-
-async function waitForStablePage(page: BrowserPage) {
-  await page.setJavaScriptEnabled?.(true).catch(() => undefined);
-  await page.waitForSelector?.("body", { timeout: 10000 }).catch(() => undefined);
-  await page.waitForLoadState?.("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
-  await page.waitForLoadState?.("networkidle", { timeout: 5000 }).catch(() => undefined);
-  await page.waitForNetworkIdle?.({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
-  await page.evaluate(() => document.fonts?.ready).catch(() => undefined);
 }
 
 async function createPlaywrightFactory(): Promise<BrowserSessionFactory> {
@@ -161,7 +161,10 @@ export async function renderHtmlToScreenshot(params: {
           waitUntil: "domcontentloaded",
           timeout: 20000
         });
-        await waitForStablePage(page);
+        await preparePageForVisualCapture(page, {
+          timeoutMs: 15000,
+          scrollEntirePage: true
+        });
 
         return (await page.screenshot({
           type: "png",
@@ -188,6 +191,7 @@ export async function compareImagesPixelByPixel(params: {
   candidate: string;
   similarityThreshold: number;
   pixelChannelTolerance?: number;
+  diffOutputPath?: string;
 }) {
   const browserFactory = await createBrowserFactory();
 
@@ -204,23 +208,26 @@ export async function compareImagesPixelByPixel(params: {
         }
       );
 
-      return (await page.evaluate(
+      const comparison = (await page.evaluate(
         async ({
           referenceSrc,
           candidateSrc,
           similarityThreshold,
-          pixelChannelTolerance
+          pixelChannelTolerance,
+          withDiff
         }: {
           referenceSrc: string;
           candidateSrc: string;
           similarityThreshold: number;
           pixelChannelTolerance: number;
+          withDiff: boolean;
         }) => {
           const run = new Function(
             "referenceSrc",
             "candidateSrc",
             "similarityThreshold",
             "pixelChannelTolerance",
+            "withDiff",
             `
               return (async () => {
                 const referenceImage = await new Promise((resolve, reject) => {
@@ -260,8 +267,15 @@ export async function compareImagesPixelByPixel(params: {
 
                 const referenceData = referenceContext.getImageData(0, 0, width, height).data;
                 const candidateData = candidateContext.getImageData(0, 0, width, height).data;
+                const diffCanvas = withDiff ? document.createElement("canvas") : null;
+                const diffContext = diffCanvas ? diffCanvas.getContext("2d") : null;
+                const diffImageData = diffContext ? diffContext.createImageData(width, height) : null;
                 let mismatchPixels = 0;
                 const totalPixels = width * height;
+                let minX = width;
+                let minY = height;
+                let maxX = -1;
+                let maxY = -1;
 
                 for (let index = 0; index < referenceData.length; index += 4) {
                   const redDiff = Math.abs(referenceData[index] - candidateData[index]);
@@ -276,11 +290,40 @@ export async function compareImagesPixelByPixel(params: {
 
                   if (isDifferent) {
                     mismatchPixels += 1;
+                    const pixelIndex = index / 4;
+                    const x = pixelIndex % width;
+                    const y = Math.floor(pixelIndex / width);
+                    minX = Math.min(minX, x);
+                    minY = Math.min(minY, y);
+                    maxX = Math.max(maxX, x);
+                    maxY = Math.max(maxY, y);
+                  }
+
+                  if (diffImageData) {
+                    diffImageData.data[index] = isDifferent ? 255 : 255;
+                    diffImageData.data[index + 1] = isDifferent ? 0 : 255;
+                    diffImageData.data[index + 2] = isDifferent ? 0 : 255;
+                    diffImageData.data[index + 3] = 255;
                   }
                 }
 
                 const mismatchRatio = totalPixels === 0 ? 0 : mismatchPixels / totalPixels;
                 const similarity = 1 - mismatchRatio;
+                const mismatchBounds =
+                  maxX >= minX && maxY >= minY
+                    ? {
+                        x: minX,
+                        y: minY,
+                        width: maxX - minX + 1,
+                        height: maxY - minY + 1
+                      }
+                    : undefined;
+
+                if (diffCanvas && diffContext && diffImageData) {
+                  diffCanvas.width = width;
+                  diffCanvas.height = height;
+                  diffContext.putImageData(diffImageData, 0, 0);
+                }
 
                 return {
                   passed: similarity >= similarityThreshold,
@@ -289,7 +332,12 @@ export async function compareImagesPixelByPixel(params: {
                   mismatchPixels,
                   totalPixels,
                   width,
-                  height
+                  height,
+                  dimensionsDiffer:
+                    referenceImage.width !== candidateImage.width ||
+                    referenceImage.height !== candidateImage.height,
+                  mismatchBounds,
+                  diffDataUrl: diffCanvas ? diffCanvas.toDataURL("image/png") : undefined
                 };
               })();
             `
@@ -299,16 +347,31 @@ export async function compareImagesPixelByPixel(params: {
             referenceSrc,
             candidateSrc,
             similarityThreshold,
-            pixelChannelTolerance
+            pixelChannelTolerance,
+            withDiff
           );
         },
         {
           referenceSrc: referenceDataUrl,
           candidateSrc: candidateDataUrl,
           similarityThreshold: params.similarityThreshold,
-          pixelChannelTolerance: params.pixelChannelTolerance ?? 20
+          pixelChannelTolerance: params.pixelChannelTolerance ?? 20,
+          withDiff: Boolean(params.diffOutputPath)
         }
-      )) as PixelComparisonResult;
+      )) as PixelComparisonResult & { diffDataUrl?: string };
+
+      if (params.diffOutputPath && comparison.diffDataUrl) {
+        const buffer = Buffer.from(
+          comparison.diffDataUrl.replace(/^data:image\/png;base64,/, ""),
+          "base64"
+        );
+        await writeFile(params.diffOutputPath, buffer);
+      }
+
+      return {
+        ...comparison,
+        diffOutputPath: params.diffOutputPath
+      };
     });
   } finally {
     await browserFactory.close().catch(() => undefined);

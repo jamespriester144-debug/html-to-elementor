@@ -53,10 +53,23 @@ function resolveSnapshotStatus(params: {
   }
 
   if (params.emittedMode === "snapshot" && params.snapshot) {
+    if (params.snapshot.visualValidationReport?.status === "blocked") {
+      return {
+        snapshotEnabled: true,
+        snapshotReason:
+          params.snapshot.visualValidationReport.blockingReason ??
+          `Snapshot visual falhou apos todos os fallbacks com similaridade ${(
+            params.snapshot.overallSimilarity * 100
+          ).toFixed(2)}%.`
+      };
+    }
+
     const renderStrategyLabel =
       params.snapshot.renderStrategy === "full-page-snapshot"
         ? "pagina inteira"
-        : "secoes";
+        : params.snapshot.visualValidationReport?.modeUsed === "section-fallback"
+          ? "fallback por secao"
+          : "secoes";
 
     return {
       snapshotEnabled: true,
@@ -170,12 +183,20 @@ export async function runExportPipelineV3(
   const elementorTemplatePath = path.join(outputDir, "elementor-template.json");
   const reportPath = path.join(outputDir, "conversion-report.json");
   const previewHtmlPath = previewHtml ? path.join(outputDir, "snapshot-preview.html") : undefined;
+  const visualValidationReportPath =
+    snapshot?.visualValidationReport
+      ? path.join(outputDir, "visual-validation-report.json")
+      : undefined;
 
   await writeJson(elementorTemplatePath, elementorDocument);
   await writeJson(reportPath, report);
 
   if (previewHtmlPath && previewHtml) {
     await writeFile(previewHtmlPath, previewHtml, "utf8");
+  }
+
+  if (visualValidationReportPath && snapshot?.visualValidationReport) {
+    await writeJson(visualValidationReportPath, snapshot.visualValidationReport);
   }
 
   return {
@@ -191,7 +212,8 @@ export async function runExportPipelineV3(
       reportPath,
       previewHtmlPath,
       convertedScreenshotPath: snapshot?.convertedScreenshotPath,
-      snapshotSectionsPath: captureResult.capture.artifacts.sectionArtifactsPath || undefined
+      snapshotSectionsPath: captureResult.capture.artifacts.sectionArtifactsPath || undefined,
+      visualValidationReportPath
     }
   };
 }

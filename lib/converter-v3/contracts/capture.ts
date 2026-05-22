@@ -101,6 +101,7 @@ export type SectionOverlayLink = {
   target?: string;
   rel?: string;
   isButton: boolean;
+  zIndex?: number;
   box: {
     x: number;
     y: number;
@@ -121,6 +122,13 @@ export type SectionCaptureViewport = {
   height: number;
   snapshotPath?: string;
   snapshotDataUrl?: string;
+  captureBox?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  invadingNodeIds?: string[];
   linkOverlays: SectionOverlayLink[];
 };
 

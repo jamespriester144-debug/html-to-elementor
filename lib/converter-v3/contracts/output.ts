@@ -1,4 +1,8 @@
-import type { CaptureSummary, PageCapture } from "@/lib/converter-v3/contracts/capture";
+import type {
+  CaptureSummary,
+  CaptureViewportName,
+  PageCapture
+} from "@/lib/converter-v3/contracts/capture";
 import type { ComplexityAnalysis, LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/layout";
 import type { SourceKind } from "@/lib/converter-v3/contracts/source";
 import type { ElementorDocument } from "@/types/conversion";
@@ -9,6 +13,7 @@ export type ExportArtifactPaths = {
   previewHtmlPath?: string;
   convertedScreenshotPath?: string;
   snapshotSectionsPath?: string;
+  visualValidationReportPath?: string;
 };
 
 export type SnapshotSectionRenderMode = "html" | "snapshot";
@@ -37,10 +42,12 @@ export type SnapshotVisualSummary = {
   threshold: number;
   convertedScreenshotPath?: string;
   originalScreenshotPath?: string;
+  viewportSimilarities?: Partial<Record<CaptureViewportName, number>>;
   sectionReports: SnapshotSectionReport[];
   requiresPixelPerfect?: boolean;
   pixelPerfectReason?: string;
   learningNotes?: string[];
+  visualValidationReport?: SnapshotVisualValidationReport;
   totals: {
     htmlSections: number;
     snapshotSections: number;
@@ -68,6 +75,83 @@ export type VisualValidationIssue = {
   sectionId?: string;
   sectionName?: string;
   sectionType?: string;
+  viewport?: CaptureViewportName;
+  similarity?: number;
+  lossType?: SnapshotValidationLossType;
+  originalScreenshotPath?: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+};
+
+export type SnapshotValidationLossType =
+  | "text"
+  | "image"
+  | "button"
+  | "background"
+  | "position"
+  | "size"
+  | "link";
+
+export type SnapshotValidationMode =
+  | "section-snapshot"
+  | "section-fallback"
+  | "full-page-snapshot";
+
+export type SnapshotViewportValidation = {
+  viewport: CaptureViewportName;
+  passed: boolean;
+  similarity: number;
+  originalScreenshotPath?: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+};
+
+export type SnapshotSectionValidationEntry = {
+  nodeId: string;
+  name: string;
+  type: string;
+  similarity: number;
+  viewportSimilarities: Partial<Record<CaptureViewportName, number>>;
+  fallbackStage?: "section-recapture" | "pure-snapshot" | "full-page-snapshot";
+  preservedLinks: number;
+  totalLinks: number;
+};
+
+export type SnapshotVisualValidationIssue = {
+  viewport: CaptureViewportName;
+  sectionId?: string;
+  sectionName?: string;
+  sectionType?: string;
+  similarity: number;
+  lossType: SnapshotValidationLossType;
+  fallbackStage:
+    | "section-snapshot"
+    | "section-recapture"
+    | "pure-snapshot"
+    | "full-page-snapshot";
+  fallbackUsed:
+    | "section-snapshot"
+    | "section-recapture"
+    | "pure-snapshot"
+    | "full-page-snapshot";
+  originalScreenshotPath?: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+  message: string;
+};
+
+export type SnapshotVisualValidationReport = {
+  status: "passed" | "blocked";
+  modeUsed: SnapshotValidationMode;
+  viewportsTested: CaptureViewportName[];
+  sectionsApproved: SnapshotSectionValidationEntry[];
+  sectionsWithFallback: SnapshotSectionValidationEntry[];
+  linksPreserved: number;
+  totalLinks: number;
+  similarityFinal: number;
+  viewportResults: SnapshotViewportValidation[];
+  issues: SnapshotVisualValidationIssue[];
+  blockingReason?: string;
 };
 
 export type VisualValidationReport = {

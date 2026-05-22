@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import * as cheerio from "cheerio";
 
 import type {
+  CaptureViewportName,
   PageCapture,
   SectionCapture,
   SectionCaptureViewport,
@@ -10,9 +11,14 @@ import type {
 } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/layout";
 import type {
+  SnapshotSectionValidationEntry,
   SnapshotSectionRenderMode,
   SnapshotSectionReport,
-  SnapshotVisualSummary
+  SnapshotValidationLossType,
+  SnapshotViewportValidation,
+  SnapshotVisualSummary,
+  SnapshotVisualValidationIssue,
+  SnapshotVisualValidationReport
 } from "@/lib/converter-v3/contracts/output";
 import {
   HTML_BLOCK_SIMILARITY,
@@ -29,6 +35,8 @@ import {
   compareImagesPixelByPixel,
   renderHtmlToScreenshot
 } from "@/lib/converter-v3/visual-similarity";
+import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
+import { isForceVisualSnapshotEnabled } from "@/lib/env";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
 type SnapshotDecision = SnapshotSectionReport & {
@@ -36,6 +44,21 @@ type SnapshotDecision = SnapshotSectionReport & {
   htmlSimilarity?: number;
   pixelPerfectRequired: boolean;
 };
+
+type ForceSnapshotDecision = SnapshotDecision & {
+  fallbackStage?: "section-recapture" | "pure-snapshot" | "full-page-snapshot";
+  viewportSimilarities?: Partial<Record<CaptureViewportName, number>>;
+};
+
+type ForceSectionValidationResult = {
+  decision: ForceSnapshotDecision;
+  passed: boolean;
+  similarity: number;
+  viewportResults: SnapshotViewportValidation[];
+  issues: SnapshotVisualValidationIssue[];
+};
+
+type PageViewportValidationResult = SnapshotViewportValidation;
 
 type SnapshotMarkupViewport = Pick<SectionCaptureViewport, "width" | "height" | "linkOverlays"> & {
   snapshotDataUrl: string;
@@ -81,6 +104,25 @@ type InitialDecisionResult = {
 const PAGE_SIMILARITY_THRESHOLD = 0.99;
 const TABLET_BREAKPOINT = 1024;
 const MOBILE_BREAKPOINT = 767;
+
+function describeFallbackStage(
+  stage:
+    | "section-snapshot"
+    | "section-recapture"
+    | "pure-snapshot"
+    | "full-page-snapshot"
+) {
+  switch (stage) {
+    case "section-recapture":
+      return "section-recapture";
+    case "pure-snapshot":
+      return "pure-snapshot";
+    case "full-page-snapshot":
+      return "full-page-snapshot";
+    default:
+      return "section-snapshot";
+  }
+}
 
 function createElementId(prefix: string, index: number) {
   return `${prefix}-${index.toString(16).padStart(6, "0")}`;
@@ -161,6 +203,7 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
       target?: string;
       rel?: string;
       isButton: boolean;
+      zIndex: number;
       positions: Partial<
         Record<
           "desktop" | "tablet" | "mobile",
@@ -188,10 +231,12 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
         target: overlay.target,
         rel: overlay.rel,
         isButton: overlay.isButton,
+        zIndex: Math.max(overlay.zIndex ?? 0, 3),
         positions: {}
       };
 
       existing.positions[viewportName] = overlay.relativeBox;
+      existing.zIndex = Math.max(existing.zIndex, overlay.zIndex ?? 0, 3);
       mergedLinks.set(key, existing);
     });
   }
@@ -249,7 +294,7 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
           desktopPosition.y
         )};width:${toPercent(desktopPosition.width)};height:${toPercent(
           desktopPosition.height
-        )};}`
+        )};z-index:${Math.max(link.zIndex, 3)};}`
       ];
 
       if (tablet?.snapshotDataUrl && link.positions.tablet) {
@@ -298,12 +343,20 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
     #${scopeId} .converter-v3-snapshot-link{
       position:absolute;
       display:block;
-      z-index:2;
-      background:transparent;
-      color:transparent;
-      font-size:0;
-      line-height:0;
-      text-decoration:none;
+      background:transparent !important;
+      border:none !important;
+      box-shadow:none !important;
+      outline:none !important;
+      color:transparent !important;
+      font-size:0 !important;
+      line-height:0 !important;
+      text-decoration:none !important;
+      padding:0 !important;
+      margin:0 !important;
+      opacity:0 !important;
+      appearance:none !important;
+      pointer-events:auto !important;
+      overflow:hidden;
     }
     ${
       stageTabletStyles
@@ -632,6 +685,7 @@ function buildPageOverlayLinks(
           target: node.attributes.target || undefined,
           rel: node.attributes.rel || undefined,
           isButton: node.tag === "button" || node.attributes.role === "button",
+          zIndex: Number.parseInt(node.computedStyles["z-index"] || "0", 10) || undefined,
           box: {
             x: box.x,
             y: box.y,
@@ -1050,6 +1104,704 @@ async function computeOverallSimilarity(params: {
   });
 }
 
+function sanitizeFileSegment(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "snapshot";
+}
+
+function buildStandaloneSectionPreviewHtml(params: {
+  widgetHtml: string;
+  viewportWidth: number;
+}) {
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+      }
+
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
+
+      .converter-v3-standalone-snapshot {
+        width: ${Math.max(Math.round(params.viewportWidth), 1)}px;
+        max-width: 100%;
+        margin: 0 auto;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="converter-v3-standalone-snapshot">${params.widgetHtml}</div>
+  </body>
+</html>`;
+}
+
+function inferSnapshotLossType(
+  section: SectionCapture | null,
+  viewport: SectionCaptureViewport | undefined,
+  dimensionsDiffer: boolean
+): SnapshotValidationLossType {
+  if (dimensionsDiffer) {
+    return "size";
+  }
+
+  if ((viewport?.linkOverlays.length ?? 0) > 0) {
+    return section?.complexity.interactiveNodes ? "button" : "link";
+  }
+
+  if ((section?.complexity.imageNodes ?? 0) > 0) {
+    return "image";
+  }
+
+  if (/background/i.test(section?.originalHtml ?? "")) {
+    return "background";
+  }
+
+  const textOnly = (section?.originalHtml ?? "").replace(/<[^>]+>/g, " ").trim();
+  if (textOnly) {
+    return "text";
+  }
+
+  return "position";
+}
+
+function buildSnapshotValidationMessage(params: {
+  viewport: CaptureViewportName;
+  section?: SectionCapture | null;
+  similarity: number;
+  lossType: SnapshotValidationLossType;
+  fallbackStage: SnapshotVisualValidationIssue["fallbackStage"];
+}) {
+  const label = params.section
+    ? `${params.section.name} (${params.section.nodeId})`
+    : "pagina inteira";
+
+  return `Viewport ${params.viewport}; secao ${label}; similaridade ${toPercentLabel(
+    params.similarity
+  )}; perda detectada: ${params.lossType}; fallback usado: ${describeFallbackStage(
+    params.fallbackStage
+  )}.`;
+}
+
+async function validateSnapshotSectionAcrossViewports(params: {
+  section: SectionCapture;
+  widgetHtml: string;
+  outputDir?: string;
+  stage: "section-snapshot" | "section-recapture" | "pure-snapshot";
+}): Promise<ForceSectionValidationResult> {
+  const viewportNames = ["desktop", "tablet", "mobile"] as const;
+  const viewportResults: SnapshotViewportValidation[] = [];
+  const issues: SnapshotVisualValidationIssue[] = [];
+  const viewportSimilarities: Partial<Record<CaptureViewportName, number>> = {};
+  let minSimilarity = 1;
+
+  for (const viewportName of viewportNames) {
+    const viewport = params.section.viewports[viewportName];
+
+    if (!viewport?.snapshotDataUrl) {
+      continue;
+    }
+
+    const baseName = sanitizeFileSegment(`${params.section.nodeId}-${params.stage}-${viewportName}`);
+    const convertedScreenshotPath = params.outputDir
+      ? `${params.outputDir}/${baseName}-converted.png`
+      : undefined;
+    const diffScreenshotPath = params.outputDir
+      ? `${params.outputDir}/${baseName}-diff.png`
+      : undefined;
+    const rendered = await renderHtmlToScreenshot({
+      html: buildStandaloneSectionPreviewHtml({
+        widgetHtml: params.widgetHtml,
+        viewportWidth: viewport.width
+      }),
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
+      outputPath: convertedScreenshotPath,
+      fullPage: true
+    });
+    const comparison = await compareImagesPixelByPixel({
+      reference: viewport.snapshotPath ?? viewport.snapshotDataUrl,
+      candidate: rendered.dataUrl,
+      similarityThreshold: PAGE_SIMILARITY_THRESHOLD,
+      diffOutputPath: diffScreenshotPath
+    });
+    const result = {
+      viewport: viewportName,
+      passed: comparison.passed,
+      similarity: comparison.similarity,
+      originalScreenshotPath: viewport.snapshotPath,
+      convertedScreenshotPath,
+      diffScreenshotPath: comparison.diffOutputPath
+    } satisfies SnapshotViewportValidation;
+
+    viewportResults.push(result);
+    viewportSimilarities[viewportName] = comparison.similarity;
+    minSimilarity = Math.min(minSimilarity, comparison.similarity);
+
+    if (!comparison.passed) {
+      const lossType = inferSnapshotLossType(
+        params.section,
+        viewport,
+        comparison.dimensionsDiffer
+      );
+      issues.push({
+        viewport: viewportName,
+        sectionId: params.section.nodeId,
+        sectionName: params.section.name,
+        sectionType: params.section.type,
+        similarity: comparison.similarity,
+        lossType,
+        fallbackStage: params.stage,
+        fallbackUsed: params.stage,
+        originalScreenshotPath: viewport.snapshotPath,
+        convertedScreenshotPath,
+        diffScreenshotPath: comparison.diffOutputPath,
+        message: buildSnapshotValidationMessage({
+          viewport: viewportName,
+          section: params.section,
+          similarity: comparison.similarity,
+          lossType,
+          fallbackStage: params.stage
+        })
+      });
+    }
+  }
+
+  const decision: ForceSnapshotDecision = {
+    nodeId: params.section.nodeId,
+    name: params.section.name,
+    type: params.section.type,
+    mode: "snapshot",
+    reason:
+      params.stage === "section-recapture"
+        ? "Secao recapturada com bounding box expandida, elementos absolute/fixed invadindo a area, lazy-load/imagens/fontes estabilizados e animacoes desligadas."
+        : params.stage === "pure-snapshot"
+          ? "Secao forcada para snapshot visual puro com overlays transparentes."
+          : "Secao exportada como snapshot visual principal.",
+    similarity: minSimilarity,
+    fidelityScore: minSimilarity,
+    preservedLinks: getUniqueLinkCount(params.section),
+    totalLinks: getUniqueLinkCount(params.section),
+    htmlBlocked: true,
+    healingIssues: [],
+    healingSteps: [],
+    widgetHtml: params.widgetHtml,
+    pixelPerfectRequired: false,
+    fallbackStage: params.stage === "section-snapshot" ? undefined : params.stage,
+    viewportSimilarities
+  };
+
+  return {
+    decision,
+    passed: viewportResults.every((result) => result.passed),
+    similarity: minSimilarity,
+    viewportResults,
+    issues
+  };
+}
+
+async function validatePreviewAcrossViewports(params: {
+  capture: PageCapture;
+  previewHtml: string;
+  outputDir?: string;
+  mode: "section-snapshot" | "full-page-snapshot";
+}): Promise<{
+  passed: boolean;
+  similarity: number;
+  viewportResults: PageViewportValidationResult[];
+  issues: SnapshotVisualValidationIssue[];
+}> {
+  const viewportResults: PageViewportValidationResult[] = [];
+  const issues: SnapshotVisualValidationIssue[] = [];
+  let minSimilarity = 1;
+
+  for (const viewport of params.capture.viewports) {
+    const referencePath = params.capture.artifacts.screenshots[viewport.name];
+
+    if (!referencePath) {
+      continue;
+    }
+
+    const baseName = sanitizeFileSegment(`${params.mode}-${viewport.name}`);
+    const convertedScreenshotPath = params.outputDir
+      ? `${params.outputDir}/${baseName}-converted.png`
+      : undefined;
+    const diffScreenshotPath = params.outputDir
+      ? `${params.outputDir}/${baseName}-diff.png`
+      : undefined;
+    const rendered = await renderHtmlToScreenshot({
+      html: params.previewHtml,
+      viewportWidth: viewport.width,
+      viewportHeight: viewport.height,
+      outputPath: convertedScreenshotPath,
+      fullPage: true
+    });
+    const comparison = await compareImagesPixelByPixel({
+      reference: referencePath,
+      candidate: rendered.dataUrl,
+      similarityThreshold: PAGE_SIMILARITY_THRESHOLD,
+      diffOutputPath: diffScreenshotPath
+    });
+    const result = {
+      viewport: viewport.name,
+      passed: comparison.passed,
+      similarity: comparison.similarity,
+      originalScreenshotPath: referencePath,
+      convertedScreenshotPath,
+      diffScreenshotPath: comparison.diffOutputPath
+    } satisfies SnapshotViewportValidation;
+
+    viewportResults.push(result);
+    minSimilarity = Math.min(minSimilarity, comparison.similarity);
+
+    if (!comparison.passed) {
+      const lossType: SnapshotValidationLossType = comparison.dimensionsDiffer
+        ? "size"
+        : "position";
+      issues.push({
+        viewport: viewport.name,
+        similarity: comparison.similarity,
+        lossType,
+        fallbackStage: params.mode,
+        fallbackUsed: params.mode,
+        originalScreenshotPath: referencePath,
+        convertedScreenshotPath,
+        diffScreenshotPath: comparison.diffOutputPath,
+        message: buildSnapshotValidationMessage({
+          viewport: viewport.name,
+          similarity: comparison.similarity,
+          lossType,
+          fallbackStage: params.mode
+        })
+      });
+    }
+  }
+
+  return {
+    passed: viewportResults.every((result) => result.passed),
+    similarity: viewportResults.length > 0 ? minSimilarity : 0,
+    viewportResults,
+    issues
+  };
+}
+
+function createSectionSnapshotEntry(
+  decision: ForceSnapshotDecision
+): SnapshotSectionValidationEntry {
+  return {
+    nodeId: decision.nodeId,
+    name: decision.name,
+    type: decision.type,
+    similarity: decision.similarity,
+    viewportSimilarities: decision.viewportSimilarities ?? {},
+    fallbackStage: decision.fallbackStage,
+    preservedLinks: decision.preservedLinks,
+    totalLinks: decision.totalLinks
+  };
+}
+
+function buildSnapshotWarnings(
+  issues: SnapshotVisualValidationIssue[]
+) {
+  return issues.map(
+    (issue) =>
+      `[visual-validation] viewport=${issue.viewport} secao=${
+        issue.sectionName && issue.sectionId
+          ? `${issue.sectionName} (${issue.sectionId})`
+          : issue.sectionId ?? "pagina inteira"
+      } similaridade=${toPercentLabel(issue.similarity)} perda=${issue.lossType} fallback=${issue.fallbackUsed} original=${
+        issue.originalScreenshotPath ?? "n/a"
+      } convertido=${issue.convertedScreenshotPath ?? "n/a"} diff=${
+        issue.diffScreenshotPath ?? "n/a"
+      }`
+  );
+}
+
+async function createForceVisualSnapshotDocumentV3(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+  sections: SectionCapture[];
+  selectedMode: OutputMode;
+  outputDir?: string;
+}): Promise<SnapshotEmitterResult> {
+  const orderedSections = [...params.sections].sort(
+    (left, right) => left.box.y - right.box.y || left.box.x - right.box.x
+  );
+  const sectionSeparation = assessSectionSeparation({
+    capture: params.capture,
+    layout: params.layout,
+    sections: orderedSections
+  });
+  const encounteredIssues: SnapshotVisualValidationIssue[] = [];
+  const warnings = sectionSeparation.issues.map(
+    (issue) =>
+      `Separacao por secao insegura em ${issue.name} (${issue.nodeId}): ${issue.reason}`
+  );
+  const mergeIssues = (issues: SnapshotVisualValidationIssue[]) => {
+    encounteredIssues.push(...issues);
+    warnings.push(...buildSnapshotWarnings(issues));
+  };
+  const finalizeSnapshot = async (params2: {
+    decisions: ForceSnapshotDecision[];
+    contentSections: SectionCapture[];
+    renderStrategy: "section-snapshots" | "full-page-snapshot";
+    fullPageFallbackReason?: string;
+    finalValidation: Awaited<ReturnType<typeof validatePreviewAcrossViewports>>;
+    blockingReason?: string;
+  }): Promise<SnapshotEmitterResult> => {
+    const previewHtml = buildPreviewHtml({
+      capture: params.capture,
+      decisions: params2.decisions
+    });
+    const content = params2.decisions.flatMap((decision, index) => {
+      const section = params2.contentSections[index];
+
+      if (!section) {
+        return [];
+      }
+
+      return [
+        buildContainerElement({
+          section,
+          widgetHtml: decision.widgetHtml,
+          mode: "snapshot",
+          similarity: decision.similarity,
+          fidelityScore: decision.fidelityScore,
+          riskScore: decision.riskScore,
+          htmlBlocked: true,
+          instabilityReasons: decision.instabilityReasons,
+          healingSteps: decision.healingSteps,
+          index
+        })
+      ];
+    });
+    const sectionReports = params2.decisions.map<SnapshotSectionReport>((decision) => ({
+      nodeId: decision.nodeId,
+      name: decision.name,
+      type: decision.type,
+      mode: "snapshot",
+      reason: decision.reason,
+      similarity: decision.similarity,
+      fidelityScore: decision.fidelityScore,
+      riskScore: decision.riskScore,
+      htmlBlocked: true,
+      instabilityReasons: decision.instabilityReasons,
+      healingIssues: decision.healingIssues,
+      healingSteps: decision.healingSteps,
+      preservedLinks: decision.preservedLinks,
+      totalLinks: decision.totalLinks
+    }));
+    const modeUsed =
+      params2.renderStrategy === "full-page-snapshot"
+        ? "full-page-snapshot"
+        : params2.decisions.some((decision) => Boolean(decision.fallbackStage))
+          ? "section-fallback"
+          : "section-snapshot";
+    const sectionsApproved = params2.decisions
+      .filter((decision) => !decision.fallbackStage)
+      .map(createSectionSnapshotEntry);
+    const sectionsWithFallback = params2.decisions
+      .filter((decision) => Boolean(decision.fallbackStage))
+      .map(createSectionSnapshotEntry);
+    const viewportSimilarities = Object.fromEntries(
+      params2.finalValidation.viewportResults.map((result) => [result.viewport, result.similarity])
+    ) as Partial<Record<CaptureViewportName, number>>;
+    const totalLinks = sectionReports.reduce((sum, section) => sum + section.totalLinks, 0);
+    const preservedLinks = sectionReports.reduce(
+      (sum, section) => sum + section.preservedLinks,
+      0
+    );
+    const blockingReason = params2.finalValidation.passed
+      ? undefined
+      : params2.blockingReason ??
+        `Snapshot visual falhou apos todos os fallbacks; similaridade final ${toPercentLabel(
+          params2.finalValidation.similarity
+        )} abaixo de ${toPercentLabel(PAGE_SIMILARITY_THRESHOLD)}.`;
+    const desktopViewport = params2.finalValidation.viewportResults.find(
+      (result) => result.viewport === "desktop"
+    );
+
+    return {
+      document: {
+        version: "1.0",
+        title: params.capture.title,
+        type: "page",
+        content
+      },
+      previewHtml,
+      snapshot: {
+        renderStrategy: params2.renderStrategy,
+        fullPageFallbackReason: params2.fullPageFallbackReason,
+        overallSimilarity: params2.finalValidation.similarity,
+        threshold: PAGE_SIMILARITY_THRESHOLD,
+        convertedScreenshotPath: desktopViewport?.convertedScreenshotPath,
+        originalScreenshotPath: desktopViewport?.originalScreenshotPath,
+        viewportSimilarities,
+        sectionReports,
+        requiresPixelPerfect: false,
+        pixelPerfectReason: undefined,
+        learningNotes: sectionSeparation.issues.map(
+          (issue) => `${issue.name} (${issue.nodeId}): ${issue.reason}`
+        ),
+        visualValidationReport: {
+          status: params2.finalValidation.passed ? "passed" : "blocked",
+          modeUsed,
+          viewportsTested: params2.finalValidation.viewportResults.map(
+            (result) => result.viewport
+          ),
+          sectionsApproved,
+          sectionsWithFallback,
+          linksPreserved: preservedLinks,
+          totalLinks,
+          similarityFinal: params2.finalValidation.similarity,
+          viewportResults: params2.finalValidation.viewportResults,
+          issues: [
+            ...new Map(
+              encounteredIssues
+                .concat(params2.finalValidation.issues)
+                .map((issue) => [
+                  `${issue.viewport}:${issue.sectionId ?? "page"}:${issue.fallbackStage}:${issue.message}`,
+                  issue
+                ])
+            ).values()
+          ],
+          blockingReason
+        },
+        totals: {
+          htmlSections: 0,
+          snapshotSections: sectionReports.length,
+          pixelPerfectRequiredSections: 0,
+          preservedLinks,
+          totalLinks
+        }
+      },
+      warnings: [...new Set([...warnings, ...(blockingReason ? [blockingReason] : [])])]
+    };
+  };
+
+  const buildSnapshotDecision = (
+    section: SectionCapture,
+    stage:
+      | "section-snapshot"
+      | "section-recapture"
+      | "pure-snapshot"
+      | "full-page-snapshot",
+    reason: string
+  ): ForceSnapshotDecision => ({
+    nodeId: section.nodeId,
+    name: section.name,
+    type: section.type,
+    mode: "snapshot",
+    reason,
+    similarity: 1,
+    fidelityScore: 1,
+    riskScore: 0,
+    htmlBlocked: true,
+    healingIssues: [],
+    healingSteps: [reason],
+    preservedLinks: getUniqueLinkCount(section),
+    totalLinks: getUniqueLinkCount(section),
+    widgetHtml: buildSectionSnapshotMarkup(section),
+    pixelPerfectRequired: false,
+    fallbackStage: stage === "section-snapshot" ? undefined : stage,
+    viewportSimilarities: {}
+  });
+
+  const buildFullPageResult = async (reason: string) => {
+    const snapshotSource = await buildFullPageSnapshotSource(params.capture, params.layout);
+
+    if (!snapshotSource) {
+      const finalValidation = {
+        passed: false,
+        similarity: 0,
+        viewportResults: [] as SnapshotViewportValidation[],
+        issues: encounteredIssues
+      };
+
+      return finalizeSnapshot({
+        decisions: [],
+        contentSections: [],
+        renderStrategy: "full-page-snapshot",
+        fullPageFallbackReason: reason,
+        finalValidation,
+        blockingReason: `${reason} Snapshot da pagina inteira nao pode ser gerado, entao a exportacao foi bloqueada.`
+      });
+    }
+
+    const pageSection = createSyntheticPageSection(params.capture, params.layout, snapshotSource);
+    const decision = buildSnapshotDecision(
+      pageSection,
+      "full-page-snapshot",
+      `${reason} Snapshot da pagina inteira aplicado com overlays transparentes.`
+    );
+    const previewHtml = buildPreviewHtml({
+      capture: params.capture,
+      decisions: [decision]
+    });
+    const finalValidation = await validatePreviewAcrossViewports({
+      capture: params.capture,
+      previewHtml,
+      outputDir: params.outputDir,
+      mode: "full-page-snapshot"
+    });
+
+    if (!finalValidation.passed) {
+      mergeIssues(finalValidation.issues);
+    }
+
+    return finalizeSnapshot({
+      decisions: [decision],
+      contentSections: [pageSection],
+      renderStrategy: "full-page-snapshot",
+      fullPageFallbackReason: reason,
+      finalValidation,
+      blockingReason: finalValidation.passed
+        ? undefined
+        : `${reason} Snapshot da pagina inteira falhou na validacao visual com similaridade ${toPercentLabel(
+            finalValidation.similarity
+          )}.`
+    });
+  };
+
+  if (!sectionSeparation.safe || orderedSections.length === 0) {
+    return buildFullPageResult(
+      sectionSeparation.fallbackReason ??
+        "Separacao por secoes falhou; usando snapshot da pagina inteira."
+    );
+  }
+
+  let activeSections = [...orderedSections];
+  let decisions = activeSections.map((section) =>
+    buildSnapshotDecision(section, "section-snapshot", "Secao exportada como snapshot visual principal.")
+  );
+  let validations: ForceSectionValidationResult[] = [];
+
+  const runSectionValidation = async (
+    stage: "section-snapshot" | "section-recapture" | "pure-snapshot"
+  ) => {
+    validations = [];
+
+    for (const section of activeSections) {
+      const decision = decisions.find((candidate) => candidate.nodeId === section.nodeId);
+      const validation = await validateSnapshotSectionAcrossViewports({
+        section,
+        widgetHtml: decision?.widgetHtml ?? buildSectionSnapshotMarkup(section),
+        outputDir: params.outputDir,
+        stage
+      });
+
+      validations.push(validation);
+    }
+
+    mergeIssues(validations.flatMap((validation) => validation.issues));
+    decisions = validations.map((validation) => ({
+      ...validation.decision,
+      reason:
+        decisions.find((candidate) => candidate.nodeId === validation.decision.nodeId)?.reason ??
+        validation.decision.reason
+    }));
+  };
+
+  await runSectionValidation("section-snapshot");
+
+  let failedSectionIds = validations
+    .filter((validation) => !validation.passed)
+    .map((validation) => validation.decision.nodeId);
+
+  if (failedSectionIds.length > 0 && params.outputDir) {
+    warnings.push(
+      `Falha visual em ${failedSectionIds.length} secao(oes); recaptura com bounding box maior, overlays invadindo a secao, lazy-load/imagens/fontes estabilizados e animacoes desligadas foi iniciada.`
+    );
+    const retriedSections = await buildVisualSectionCaptures({
+      capture: params.capture,
+      layout: params.layout,
+      outputDir: params.outputDir,
+      sectionNodeIds: failedSectionIds,
+      capturePadding: 48,
+      fileSuffix: "retry"
+    });
+    const retriedById = new Map(retriedSections.map((section) => [section.nodeId, section]));
+
+    activeSections = activeSections.map((section) => retriedById.get(section.nodeId) ?? section);
+    decisions = activeSections.map((section) =>
+      buildSnapshotDecision(
+        section,
+        failedSectionIds.includes(section.nodeId) ? "section-recapture" : "section-snapshot",
+        failedSectionIds.includes(section.nodeId)
+          ? "Secao recapturada com bounding box maior, elementos absolute/fixed invadindo a secao, imagens/fontes/lazy-load estabilizados e animacoes desligadas."
+          : "Secao exportada como snapshot visual principal."
+      )
+    );
+    await runSectionValidation("section-recapture");
+    failedSectionIds = validations
+      .filter((validation) => !validation.passed)
+      .map((validation) => validation.decision.nodeId);
+  }
+
+  if (failedSectionIds.length > 0) {
+    warnings.push(
+      `Secoes ${failedSectionIds.join(", ")} continuaram abaixo de 99%; snapshot visual puro sera usado antes do fallback global.`
+    );
+    decisions = activeSections.map((section) =>
+      buildSnapshotDecision(
+        section,
+        failedSectionIds.includes(section.nodeId) ? "pure-snapshot" : "section-snapshot",
+        failedSectionIds.includes(section.nodeId)
+          ? "Secao substituida por snapshot visual puro com overlays transparentes."
+          : "Secao exportada como snapshot visual principal."
+      )
+    );
+    await runSectionValidation("pure-snapshot");
+    failedSectionIds = validations
+      .filter((validation) => !validation.passed)
+      .map((validation) => validation.decision.nodeId);
+  }
+
+  if (failedSectionIds.length > 0) {
+    return buildFullPageResult(
+      `Secoes ${failedSectionIds.join(", ")} continuaram falhando apos retry e snapshot puro.`
+    );
+  }
+
+  const previewHtml = buildPreviewHtml({
+    capture: params.capture,
+    decisions
+  });
+  const finalValidation = await validatePreviewAcrossViewports({
+    capture: params.capture,
+    previewHtml,
+    outputDir: params.outputDir,
+    mode: "section-snapshot"
+  });
+
+  if (!finalValidation.passed) {
+    mergeIssues(finalValidation.issues);
+    return buildFullPageResult(
+      `Snapshot por secao caiu para ${toPercentLabel(
+        finalValidation.similarity
+      )}; fallback final para snapshot da pagina inteira.`
+    );
+  }
+
+  return finalizeSnapshot({
+    decisions,
+    contentSections: activeSections,
+    renderStrategy: "section-snapshots",
+    finalValidation
+  });
+}
+
 export async function createSnapshotElementorDocumentV3(params: {
   capture: PageCapture;
   layout: LayoutDocument;
@@ -1057,6 +1809,10 @@ export async function createSnapshotElementorDocumentV3(params: {
   selectedMode: OutputMode;
   outputDir?: string;
 }): Promise<SnapshotEmitterResult> {
+  if (isForceVisualSnapshotEnabled()) {
+    return createForceVisualSnapshotDocumentV3(params);
+  }
+
   const orderedSections = [...params.sections].sort(
     (left, right) => left.box.y - right.box.y || left.box.x - right.box.x
   );

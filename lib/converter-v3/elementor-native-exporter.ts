@@ -219,6 +219,49 @@ function getCandidateModes(selectedMode: OutputMode, forceVisualSnapshot: boolea
   return ["hybrid", "pixel-perfect"];
 }
 
+function buildSnapshotValidationFailure(
+  rootNodeId: string,
+  baseValidation: VisualValidationReport,
+  snapshot: SnapshotVisualSummary
+): VisualValidationReport {
+  const issues =
+    snapshot.visualValidationReport?.issues?.map((issue) => ({
+      type: "missing-position" as const,
+      nodeId: issue.sectionId ?? rootNodeId,
+      message: issue.message,
+      sectionId: issue.sectionId,
+      sectionName: issue.sectionName,
+      sectionType: issue.sectionType,
+      viewport: issue.viewport,
+      similarity: issue.similarity,
+      lossType: issue.lossType,
+      originalScreenshotPath: issue.originalScreenshotPath,
+      convertedScreenshotPath: issue.convertedScreenshotPath,
+      diffScreenshotPath: issue.diffScreenshotPath
+    })) ?? [];
+  const blockingReason =
+    snapshot.visualValidationReport?.blockingReason ??
+    `Similaridade visual final ficou em ${(
+      snapshot.overallSimilarity * 100
+    ).toFixed(2)}%, abaixo do minimo de ${(snapshot.threshold * 100).toFixed(2)}%.`;
+
+  return {
+    ...baseValidation,
+    passed: false,
+    issueCount: Math.max(issues.length, 1),
+    issues:
+      issues.length > 0
+        ? issues
+        : [
+            {
+              type: "missing-position",
+              nodeId: rootNodeId,
+              message: blockingReason
+            }
+          ]
+  };
+}
+
 export async function createElementorNativeExport(params: {
   capture: PageCapture;
   layout: LayoutDocument;
@@ -279,22 +322,11 @@ export async function createElementorNativeExport(params: {
       candidate.snapshot &&
       candidate.snapshot.overallSimilarity < candidate.snapshot.threshold
     ) {
-      lastValidation = {
-        ...validation,
-        passed: false,
-        issueCount: 1,
-        issues: [
-          {
-            type: "missing-position",
-            nodeId: params.layout.rootNodeId,
-            message: `Similaridade visual final ficou em ${(
-              candidate.snapshot.overallSimilarity * 100
-            ).toFixed(2)}%, abaixo do minimo de ${(
-              candidate.snapshot.threshold * 100
-            ).toFixed(2)}%.`
-          }
-        ]
-      };
+      lastValidation = buildSnapshotValidationFailure(
+        params.layout.rootNodeId,
+        validation,
+        candidate.snapshot
+      );
       warnings.push(
         `Modo snapshot ficou abaixo da similaridade minima (${(
           candidate.snapshot.overallSimilarity * 100
@@ -302,6 +334,19 @@ export async function createElementorNativeExport(params: {
           2
         )}%); escalando para fallback mais seguro.`
       );
+
+      if (forceVisualSnapshot) {
+        return {
+          document: enrichedDocument,
+          emittedMode: candidate.emittedMode,
+          fallbackReason: candidate.fallbackReason,
+          warnings,
+          validation: lastValidation,
+          previewHtml: candidate.previewHtml,
+          snapshot: candidate.snapshot
+        };
+      }
+
       continue;
     }
 
@@ -326,6 +371,18 @@ export async function createElementorNativeExport(params: {
     warnings.push(
       `Modo ${candidate.emittedMode} reprovado na validacao visual (${validation.issueCount} perda(s)); escalando para fallback mais seguro.`
     );
+
+    if (forceVisualSnapshot && candidate.emittedMode === "snapshot") {
+      return {
+        document: enrichedDocument,
+        emittedMode: candidate.emittedMode,
+        fallbackReason: candidate.fallbackReason,
+        warnings,
+        validation,
+        previewHtml: candidate.previewHtml,
+        snapshot: candidate.snapshot
+      };
+    }
   }
 
   throw new VisualValidationError(

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import type { ExportPipelineResult } from "@/lib/converter-v3/contracts/output";
 import { VisualValidationError } from "@/lib/converter-v3/visual-regression-validator";
 import {
   runExportPipelineV3FromHtml,
@@ -7,6 +8,39 @@ import {
 } from "@/lib/converter-v3/orchestration/export-pipeline-v3";
 
 export const runtime = "nodejs";
+
+const MIN_VISUAL_SIMILARITY = 0.99;
+
+function resolveVisualSimilarity(result: ExportPipelineResult) {
+  if (result.emittedMode === "pixel-perfect") {
+    return 1;
+  }
+
+  return result.snapshot?.overallSimilarity ?? 0;
+}
+
+function resolveVisualBlockingError(result: ExportPipelineResult) {
+  if (result.capture.renderer !== "browser") {
+    return BROWSER_CAPTURE_FAILURE_MESSAGE;
+  }
+
+  if (result.snapshot?.visualValidationReport?.status === "blocked") {
+    return (
+      result.snapshot.visualValidationReport.blockingReason ??
+      `Conversao bloqueada: similaridade visual final ficou em ${(
+        resolveVisualSimilarity(result) * 100
+      ).toFixed(2)}%.`
+    );
+  }
+
+  if (resolveVisualSimilarity(result) < MIN_VISUAL_SIMILARITY) {
+    return `Conversao bloqueada: similaridade visual final ficou em ${(
+      resolveVisualSimilarity(result) * 100
+    ).toFixed(2)}%.`;
+  }
+
+  return undefined;
+}
 
 const BROWSER_CAPTURE_FAILURE_MESSAGE =
   "Captura visual do navegador falhou. Snapshot não pôde ser gerado.";
@@ -30,6 +64,20 @@ export async function POST(request: NextRequest) {
             {
               error: BROWSER_CAPTURE_FAILURE_MESSAGE,
               report: result.report
+            },
+            { status: 422 }
+          );
+        }
+
+        const blockingError = resolveVisualBlockingError(result);
+
+        if (blockingError) {
+          return NextResponse.json(
+            {
+              error: blockingError,
+              report: result.report,
+              validation: result.validation,
+              snapshot: result.snapshot
             },
             { status: 422 }
           );
@@ -72,6 +120,20 @@ export async function POST(request: NextRequest) {
             {
               error: BROWSER_CAPTURE_FAILURE_MESSAGE,
               report: result.report
+            },
+            { status: 422 }
+          );
+        }
+
+        const blockingError = resolveVisualBlockingError(result);
+
+        if (blockingError) {
+          return NextResponse.json(
+            {
+              error: blockingError,
+              report: result.report,
+              validation: result.validation,
+              snapshot: result.snapshot
             },
             { status: 422 }
           );
@@ -128,6 +190,20 @@ export async function POST(request: NextRequest) {
         {
           error: BROWSER_CAPTURE_FAILURE_MESSAGE,
           report: result.report
+        },
+        { status: 422 }
+      );
+    }
+
+    const blockingError = resolveVisualBlockingError(result);
+
+    if (blockingError) {
+      return NextResponse.json(
+        {
+          error: blockingError,
+          report: result.report,
+          validation: result.validation,
+          snapshot: result.snapshot
         },
         { status: 422 }
       );

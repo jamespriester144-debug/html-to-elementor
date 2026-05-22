@@ -21,6 +21,7 @@ import type {
 } from "@/lib/converter-v3/contracts/capture";
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
 import { CAPTURE_VIEWPORTS } from "@/lib/converter-v3/render/viewport-profiles";
+import { preparePageForVisualCapture } from "@/lib/converter-v3/visual-capture-stability";
 import { getLovableBaseCss, inlineLovableStyles } from "@/lib/tailwind";
 
 export type BrowserRenderArtifact = {
@@ -175,15 +176,6 @@ function collectFallbackNodes(html: string): Omit<BrowserRenderArtifact, "screen
   };
 }
 
-async function waitForStablePage(page: BrowserPage) {
-  await page.setJavaScriptEnabled?.(true).catch(() => undefined);
-  await page.waitForSelector?.("body", { timeout: 10000 }).catch(() => undefined);
-  await page.waitForLoadState?.("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
-  await page.waitForLoadState?.("networkidle", { timeout: 5000 }).catch(() => undefined);
-  await page.waitForNetworkIdle?.({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
-  await page.evaluate(() => document.fonts?.ready).catch(() => undefined);
-}
-
 async function captureUsingPageFactory(
   documentHtml: string,
   outputDir: string,
@@ -196,7 +188,10 @@ async function captureUsingPageFactory(
     waitUntil: "domcontentloaded",
     timeout: 20000
   });
-  await waitForStablePage(desktopSession.page);
+  await preparePageForVisualCapture(desktopSession.page, {
+    timeoutMs: 15000,
+    scrollEntirePage: true
+  });
 
   const evaluated = await extractRenderedDomNodes(
     desktopSession.page,
@@ -217,7 +212,10 @@ async function captureUsingPageFactory(
           waitUntil: "domcontentloaded",
           timeout: 20000
         });
-        await waitForStablePage(session.page);
+        await preparePageForVisualCapture(session.page, {
+          timeoutMs: 15000,
+          scrollEntirePage: true
+        });
       }
 
       const viewportStates = await extractViewportNodes(
