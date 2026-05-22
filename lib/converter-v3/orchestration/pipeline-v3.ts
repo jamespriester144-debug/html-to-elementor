@@ -6,6 +6,8 @@ import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
 import { analyzeLayoutComplexity } from "@/lib/converter-v3/analyze/complexity-analyzer";
 import { buildPageCapture } from "@/lib/converter-v3/capture/page-capture";
 import { detectLayoutDocument } from "@/lib/converter-v3/layout-detector";
+import { classifySections } from "@/lib/converter-v3/section-classifier";
+import { buildVisualHierarchy } from "@/lib/converter-v3/visual-hierarchy";
 import {
   type BrowserRenderOptions,
   renderResolvedSourceForCapture
@@ -32,7 +34,9 @@ export async function runCapturePipelineV3(
     preferBrowser: options.preferBrowser
   });
   const capture = buildPageCapture(resolvedSource, rendered, outputDir);
-  const layout = detectLayoutDocument(capture);
+  const detectedLayout = detectLayoutDocument(capture);
+  const visualHierarchy = buildVisualHierarchy(detectedLayout);
+  const layout = classifySections(visualHierarchy);
   const analysis = analyzeLayoutComplexity(layout);
 
   const resolvedSourcePath = path.join(outputDir, "resolved-source.json");

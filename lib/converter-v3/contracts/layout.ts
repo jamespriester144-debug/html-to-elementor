@@ -165,7 +165,7 @@ export type LayoutDocument = {
   nodes: LayoutNode[];
 };
 
-export type OutputMode = "pixel-perfect" | "hybrid" | "editable" | "theme";
+export type OutputMode = "snapshot" | "pixel-perfect" | "hybrid" | "editable" | "theme";
 
 export type ComplexityAnalysis = {
   score: number;

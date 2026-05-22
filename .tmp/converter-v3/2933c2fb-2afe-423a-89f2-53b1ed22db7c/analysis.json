@@ -1,0 +1,19 @@
+{
+  "score": 54,
+  "overlappingGroups": 5,
+  "gridContainers": 9,
+  "flexContainers": 40,
+  "absoluteNodes": 7,
+  "decorativeNodes": 11,
+  "interactiveNodes": 17,
+  "selectedMode": "pixel-perfect",
+  "reasons": [
+    "Detectados 9 containers em grid.",
+    "Detectados 7 elementos absolutos/fixos.",
+    "Detectados 11 elementos decorativos.",
+    "Detectados 11 cards reutilizaveis.",
+    "Detectados 216 elementos com overlay/z-index relevante.",
+    "Detectados 5 grupos com sobreposicao visual.",
+    "Documento com 221 nos visuais."
+  ]
+}

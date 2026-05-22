@@ -1,0 +1,87 @@
+{
+  "id": "a213b39e-c7ed-4df9-8d3d-ff777411aa4b",
+  "title": "Radiant Skin",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "selectedMode": "snapshot",
+  "emittedMode": "snapshot",
+  "summary": {
+    "totalNodes": 2,
+    "visibleNodes": 2,
+    "images": 0,
+    "buttons": 0,
+    "textBlocks": 0,
+    "sections": 1
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 2,
+    "sectionCount": 1
+  },
+  "analysis": {
+    "score": 6,
+    "overlappingGroups": 0,
+    "gridContainers": 0,
+    "flexContainers": 0,
+    "absoluteNodes": 0,
+    "decorativeNodes": 1,
+    "interactiveNodes": 0,
+    "selectedMode": "snapshot",
+    "reasons": [
+      "Snapshot Elementor habilitado por haver captura real no navegador.",
+      "Detectados 1 elementos decorativos.",
+      "Detectados 2 elementos com overlay/z-index relevante."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "snapshot",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 0,
+      "matchedTexts": 0,
+      "expectedImages": 0,
+      "matchedImages": 0,
+      "expectedButtons": 0,
+      "matchedButtons": 0,
+      "expectedLinks": 0,
+      "matchedLinks": 0,
+      "expectedSections": 1,
+      "matchedSections": 1,
+      "expectedCards": 0,
+      "matchedCards": 0,
+      "expectedHeaders": 0,
+      "matchedHeaders": 0,
+      "expectedFooters": 0,
+      "matchedFooters": 0,
+      "expectedPositionedNodes": 0,
+      "matchedPositionedNodes": 0
+    }
+  },
+  "warnings": [],
+  "snapshot": {
+    "overallSimilarity": 1,
+    "threshold": 0.99,
+    "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\a213b39e-c7ed-4df9-8d3d-ff777411aa4b/snapshot-preview.png",
+    "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\a213b39e-c7ed-4df9-8d3d-ff777411aa4b\\screenshot-desktop.png",
+    "sectionReports": [
+      {
+        "nodeId": "capture-node-2",
+        "name": "section-1",
+        "type": "section",
+        "mode": "html",
+        "reason": "Secao preservada em HTML congelado com similaridade 100.00%.",
+        "similarity": 1,
+        "preservedLinks": 0,
+        "totalLinks": 0
+      }
+    ],
+    "totals": {
+      "htmlSections": 1,
+      "snapshotSections": 0,
+      "preservedLinks": 0,
+      "totalLinks": 0
+    }
+  }
+}

@@ -89,7 +89,66 @@ export type CaptureArtifacts = {
   layoutPath: string;
   analysisPath: string;
   pageCapturePath: string;
+  sectionArtifactsPath: string;
   screenshots: Partial<Record<CaptureViewportName, string>>;
+};
+
+export type SectionOverlayLink = {
+  nodeId: string;
+  href: string;
+  text: string;
+  title?: string;
+  target?: string;
+  rel?: string;
+  isButton: boolean;
+  box: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  relativeBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+};
+
+export type SectionCaptureViewport = {
+  viewport: CaptureViewportName;
+  width: number;
+  height: number;
+  snapshotPath?: string;
+  snapshotDataUrl?: string;
+  linkOverlays: SectionOverlayLink[];
+};
+
+export type SectionCapture = {
+  id: string;
+  nodeId: string;
+  name: string;
+  type: string;
+  box: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  subtreeNodeIds: string[];
+  originalHtml: string;
+  htmlCandidate: string;
+  complexity: {
+    nodeCount: number;
+    absoluteNodes: number;
+    overlappingNodes: number;
+    interactiveNodes: number;
+    imageNodes: number;
+    hasPseudoElements: boolean;
+    hasTransforms: boolean;
+    hasEmbeds: boolean;
+  };
+  viewports: Partial<Record<CaptureViewportName, SectionCaptureViewport>>;
 };
 
 export type PageCapture = {
@@ -105,6 +164,7 @@ export type PageCapture = {
   boxSnapshot: BoxSnapshotNode[];
   responsiveSnapshot: ResponsiveSnapshotNode[];
   nodes: CapturedNode[];
+  sections?: SectionCapture[];
   summary: CaptureSummary;
   artifacts: CaptureArtifacts;
 };

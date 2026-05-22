@@ -41,6 +41,7 @@ export function createEmptyArtifacts(outputDir: string): CaptureArtifacts {
     layoutPath: "",
     analysisPath: "",
     pageCapturePath: "",
+    sectionArtifactsPath: "",
     screenshots: {}
   };
 }

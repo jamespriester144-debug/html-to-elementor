@@ -18,6 +18,7 @@ type ActualRepresentation = {
   texts: string[];
   images: string[];
   buttons: ActualButton[];
+  links: string[];
   globalFallback: boolean;
 };
 
@@ -48,6 +49,40 @@ function collectExpectedImages(layout: LayoutDocument): LayoutNode[] {
 
 function collectExpectedButtons(layout: LayoutDocument): LayoutNode[] {
   return layout.nodes.filter((node) => !node.flags.hidden && node.kind === "button");
+}
+
+function collectExpectedLinks(layout: LayoutDocument): LayoutNode[] {
+  return layout.nodes.filter(
+    (node) =>
+      !node.flags.hidden &&
+      node.kind === "button" &&
+      Boolean(node.content.href?.trim())
+  );
+}
+
+function collectExpectedSections(layout: LayoutDocument): LayoutNode[] {
+  return layout.detectedSections
+    .filter((section) => section.type === "section" || section.type === "hero" || section.type === "grid")
+    .map((section) => layout.nodes.find((node) => node.id === section.id))
+    .filter((node): node is LayoutNode => Boolean(node));
+}
+
+function collectExpectedCards(layout: LayoutDocument): LayoutNode[] {
+  return layout.nodes.filter(
+    (node) => !node.flags.hidden && node.detection?.semanticRole === "card"
+  );
+}
+
+function collectExpectedHeaders(layout: LayoutDocument): LayoutNode[] {
+  return layout.nodes.filter(
+    (node) => !node.flags.hidden && node.detection?.semanticRole === "header"
+  );
+}
+
+function collectExpectedFooters(layout: LayoutDocument): LayoutNode[] {
+  return layout.nodes.filter(
+    (node) => !node.flags.hidden && node.detection?.semanticRole === "footer"
+  );
 }
 
 function collectExpectedPositionNodes(layout: LayoutDocument): LayoutNode[] {
@@ -122,6 +157,7 @@ function collectActualRepresentation(document: ElementorDocument): ActualReprese
     texts: [],
     images: [],
     buttons: [],
+    links: [],
     globalFallback: false
   };
 
@@ -193,6 +229,10 @@ function collectActualRepresentation(document: ElementorDocument): ActualReprese
         text,
         href: link?.url?.trim()
       });
+
+       if (link?.url?.trim()) {
+        actual.links.push(link.url.trim());
+      }
     }
 
     if (element.widgetType === "image") {
@@ -213,6 +253,14 @@ function collectActualRepresentation(document: ElementorDocument): ActualReprese
 
     if (element.widgetType === "html") {
       const html = String(element.settings?.html ?? "");
+      const converterMode =
+        typeof element.settings?.converter_v3_mode === "string"
+          ? element.settings.converter_v3_mode
+          : "";
+
+      if (converterMode.startsWith("snapshot-")) {
+        actual.globalFallback = true;
+      }
 
       if (html) {
         collectFromHtmlWidget(html, actual);
@@ -273,6 +321,14 @@ export function validateElementorExport(params: {
 
   if (actual.globalFallback) {
     const expectedPositionedNodes = collectExpectedPositionNodes(params.layout).length;
+    const expectedTexts = collectExpectedTextNodes(params.layout).length;
+    const expectedImages = collectExpectedImages(params.layout).length;
+    const expectedButtons = collectExpectedButtons(params.layout).length;
+    const expectedLinks = collectExpectedLinks(params.layout).length;
+    const expectedSections = collectExpectedSections(params.layout).length;
+    const expectedCards = collectExpectedCards(params.layout).length;
+    const expectedHeaders = collectExpectedHeaders(params.layout).length;
+    const expectedFooters = collectExpectedFooters(params.layout).length;
 
     return {
       passed: true,
@@ -280,12 +336,22 @@ export function validateElementorExport(params: {
       issueCount: 0,
       issues: [],
       stats: {
-        expectedTexts: collectExpectedTextNodes(params.layout).length,
-        matchedTexts: collectExpectedTextNodes(params.layout).length,
-        expectedImages: collectExpectedImages(params.layout).length,
-        matchedImages: collectExpectedImages(params.layout).length,
-        expectedButtons: collectExpectedButtons(params.layout).length,
-        matchedButtons: collectExpectedButtons(params.layout).length,
+        expectedTexts,
+        matchedTexts: expectedTexts,
+        expectedImages,
+        matchedImages: expectedImages,
+        expectedButtons,
+        matchedButtons: expectedButtons,
+        expectedLinks,
+        matchedLinks: expectedLinks,
+        expectedSections,
+        matchedSections: expectedSections,
+        expectedCards,
+        matchedCards: expectedCards,
+        expectedHeaders,
+        matchedHeaders: expectedHeaders,
+        expectedFooters,
+        matchedFooters: expectedFooters,
         expectedPositionedNodes,
         matchedPositionedNodes: expectedPositionedNodes
       }
@@ -295,6 +361,11 @@ export function validateElementorExport(params: {
   const expectedTexts = collectExpectedTextNodes(params.layout);
   const expectedImages = collectExpectedImages(params.layout);
   const expectedButtons = collectExpectedButtons(params.layout);
+  const expectedLinks = collectExpectedLinks(params.layout);
+  const expectedSections = collectExpectedSections(params.layout);
+  const expectedCards = collectExpectedCards(params.layout);
+  const expectedHeaders = collectExpectedHeaders(params.layout);
+  const expectedFooters = collectExpectedFooters(params.layout);
   const expectedPositions = collectExpectedPositionNodes(params.layout);
   const textMatches = consumeMatch(
     expectedTexts.map((node) => normalizeText(node.content.text)),
@@ -319,9 +390,18 @@ export function validateElementorExport(params: {
       expected.text === normalizeText(received.text) &&
       (expected.href ? expected.href === received.href?.trim() : true)
   );
+  const linkMatches = consumeMatch(
+    expectedLinks.map((node) => node.content.href?.trim() ?? ""),
+    actual.links,
+    (expected, received) => expected === received.trim()
+  );
   const missingPositionNodes = expectedPositions.filter(
     (node) => !actual.sourceNodeIds.has(node.id)
   );
+  const missingSections = expectedSections.filter((node) => !actual.sourceNodeIds.has(node.id));
+  const missingCards = expectedCards.filter((node) => !actual.sourceNodeIds.has(node.id));
+  const missingHeaders = expectedHeaders.filter((node) => !actual.sourceNodeIds.has(node.id));
+  const missingFooters = expectedFooters.filter((node) => !actual.sourceNodeIds.has(node.id));
   const issues: VisualValidationIssue[] = [];
 
   textMatches.missing.forEach((text) => {
@@ -383,6 +463,38 @@ export function validateElementorExport(params: {
     }
   });
 
+  missingSections.forEach((node) => {
+    issues.push({
+      type: "missing-section",
+      nodeId: node.id,
+      message: `Secao visivel perdida: ${node.id}.`
+    });
+  });
+
+  missingCards.forEach((node) => {
+    issues.push({
+      type: "missing-card",
+      nodeId: node.id,
+      message: `Card visivel perdido: ${node.id}.`
+    });
+  });
+
+  missingHeaders.forEach((node) => {
+    issues.push({
+      type: "missing-header",
+      nodeId: node.id,
+      message: `Header visivel perdido: ${node.id}.`
+    });
+  });
+
+  missingFooters.forEach((node) => {
+    issues.push({
+      type: "missing-footer",
+      nodeId: node.id,
+      message: `Footer visivel perdido: ${node.id}.`
+    });
+  });
+
   missingPositionNodes.forEach((node) => {
     issues.push({
       type: "missing-position",
@@ -403,6 +515,16 @@ export function validateElementorExport(params: {
       matchedImages: imageMatches.matched,
       expectedButtons: expectedButtons.length,
       matchedButtons: buttonMatches.matched,
+      expectedLinks: expectedLinks.length,
+      matchedLinks: linkMatches.matched,
+      expectedSections: expectedSections.length,
+      matchedSections: expectedSections.length - missingSections.length,
+      expectedCards: expectedCards.length,
+      matchedCards: expectedCards.length - missingCards.length,
+      expectedHeaders: expectedHeaders.length,
+      matchedHeaders: expectedHeaders.length - missingHeaders.length,
+      expectedFooters: expectedFooters.length,
+      matchedFooters: expectedFooters.length - missingFooters.length,
       expectedPositionedNodes: expectedPositions.length,
       matchedPositionedNodes: expectedPositions.length - missingPositionNodes.length
     }

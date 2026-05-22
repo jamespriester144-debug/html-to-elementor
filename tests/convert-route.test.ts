@@ -4,6 +4,7 @@ import {
   createConvertPostHandler,
   type ConvertRouteDependencies
 } from "../lib/api/convert-route";
+import { VisualValidationError } from "../lib/converter-v3/visual-regression-validator";
 
 function createBaseDependencies(): ConvertRouteDependencies {
   return {
@@ -12,10 +13,6 @@ function createBaseDependencies(): ConvertRouteDependencies {
         id: "conversion-id"
       }) as never,
     createConversionKey: () => "conversion-key",
-    extractSourceFromUpload: async () => ({
-      html: "<html><body>fallback upload</body></html>",
-      sourceKind: "static-html-archive" as const
-    }),
     persistEmbeddedConversionAssets: async (html, elementorJson) => ({
       html,
       elementorJson
@@ -77,6 +74,32 @@ function createBaseDependencies(): ConvertRouteDependencies {
           analysis: {
             selectedMode: "editable"
           },
+          validation: {
+            passed: true,
+            mode: "editable",
+            issueCount: 0,
+            issues: [],
+            stats: {
+              expectedTexts: 1,
+              matchedTexts: 1,
+              expectedImages: 0,
+              matchedImages: 0,
+              expectedButtons: 0,
+              matchedButtons: 0,
+              expectedLinks: 0,
+              matchedLinks: 0,
+              expectedSections: 1,
+              matchedSections: 1,
+              expectedCards: 0,
+              matchedCards: 0,
+              expectedHeaders: 0,
+              matchedHeaders: 0,
+              expectedFooters: 0,
+              matchedFooters: 0,
+              expectedPositionedNodes: 1,
+              matchedPositionedNodes: 1
+            }
+          },
           warnings: []
         },
         capture: {
@@ -94,29 +117,36 @@ function createBaseDependencies(): ConvertRouteDependencies {
           type: "page",
           content: []
         },
+        validation: {
+          passed: true,
+          mode: "editable",
+          issueCount: 0,
+          issues: [],
+          stats: {
+            expectedTexts: 1,
+            matchedTexts: 1,
+            expectedImages: 0,
+            matchedImages: 0,
+            expectedButtons: 0,
+            matchedButtons: 0,
+            expectedLinks: 0,
+            matchedLinks: 0,
+            expectedSections: 1,
+            matchedSections: 1,
+            expectedCards: 0,
+            matchedCards: 0,
+            expectedHeaders: 0,
+            matchedHeaders: 0,
+            expectedFooters: 0,
+            matchedFooters: 0,
+            expectedPositionedNodes: 1,
+            matchedPositionedNodes: 1
+          }
+        },
         artifacts: {
           elementorTemplatePath: "/tmp/elementor-template.json",
           reportPath: "/tmp/conversion-report.json"
         }
-      }) as never,
-    runPixelPerfectConversionPipeline: async () =>
-      ({
-        cleanHtml: "<html><body>fallback clean</body></html>",
-        elementorJson: {
-          version: "0.4",
-          title: "Fallback",
-          type: "page",
-          content: []
-        },
-        report: {
-          warnings: [],
-          screenshots: {},
-          exportBlocked: false,
-          status: "success"
-        },
-        outputDir: null,
-        sourceKind: "raw-html",
-        strategy: "pixel-perfect-iframe-v2"
       }) as never
   };
 }
@@ -183,6 +213,32 @@ async function testConvertRouteUsesV3ForRawHtml() {
         analysis: {
           selectedMode: "editable"
         },
+        validation: {
+          passed: true,
+          mode: "editable",
+          issueCount: 0,
+          issues: [],
+          stats: {
+            expectedTexts: 1,
+            matchedTexts: 1,
+            expectedImages: 0,
+            matchedImages: 0,
+            expectedButtons: 0,
+            matchedButtons: 0,
+            expectedLinks: 0,
+            matchedLinks: 0,
+            expectedSections: 1,
+            matchedSections: 1,
+            expectedCards: 0,
+            matchedCards: 0,
+            expectedHeaders: 0,
+            matchedHeaders: 0,
+            expectedFooters: 0,
+            matchedFooters: 0,
+            expectedPositionedNodes: 2,
+            matchedPositionedNodes: 2
+          }
+        },
         warnings: []
       },
       capture: {
@@ -202,15 +258,37 @@ async function testConvertRouteUsesV3ForRawHtml() {
         type: "page",
         content: []
       },
+      validation: {
+        passed: true,
+        mode: "editable",
+        issueCount: 0,
+        issues: [],
+        stats: {
+          expectedTexts: 1,
+          matchedTexts: 1,
+          expectedImages: 0,
+          matchedImages: 0,
+          expectedButtons: 0,
+          matchedButtons: 0,
+          expectedLinks: 0,
+          matchedLinks: 0,
+          expectedSections: 1,
+          matchedSections: 1,
+          expectedCards: 0,
+          matchedCards: 0,
+          expectedHeaders: 0,
+          matchedHeaders: 0,
+          expectedFooters: 0,
+          matchedFooters: 0,
+          expectedPositionedNodes: 2,
+          matchedPositionedNodes: 2
+        }
+      },
       artifacts: {
         elementorTemplatePath: "/tmp/export/elementor-template.json",
         reportPath: "/tmp/export/conversion-report.json"
       }
     } as never;
-  };
-  deps.runPixelPerfectConversionPipeline = async () => {
-    calls.runV2 += 1;
-    throw new Error("converter-v2 should not run when converter-v3 succeeds");
   };
   deps.persistEmbeddedConversionAssets = async (html, elementorJson, key) => {
     persistedHtml = html;
@@ -323,6 +401,32 @@ async function testConvertRouteUsesV3ResolverForUpload() {
         analysis: {
           selectedMode: "hybrid"
         },
+        validation: {
+          passed: true,
+          mode: "hybrid",
+          issueCount: 0,
+          issues: [],
+          stats: {
+            expectedTexts: 2,
+            matchedTexts: 2,
+            expectedImages: 1,
+            matchedImages: 1,
+            expectedButtons: 1,
+            matchedButtons: 1,
+            expectedLinks: 1,
+            matchedLinks: 1,
+            expectedSections: 1,
+            matchedSections: 1,
+            expectedCards: 0,
+            matchedCards: 0,
+            expectedHeaders: 0,
+            matchedHeaders: 0,
+            expectedFooters: 0,
+            matchedFooters: 0,
+            expectedPositionedNodes: 5,
+            matchedPositionedNodes: 5
+          }
+        },
         warnings: ["One node required HTML fallback."]
       },
       capture: {
@@ -340,6 +444,32 @@ async function testConvertRouteUsesV3ResolverForUpload() {
         title: "ZIP upload",
         type: "page",
         content: []
+      },
+      validation: {
+        passed: true,
+        mode: "hybrid",
+        issueCount: 0,
+        issues: [],
+        stats: {
+          expectedTexts: 2,
+          matchedTexts: 2,
+          expectedImages: 1,
+          matchedImages: 1,
+          expectedButtons: 1,
+          matchedButtons: 1,
+          expectedLinks: 1,
+          matchedLinks: 1,
+          expectedSections: 1,
+          matchedSections: 1,
+          expectedCards: 0,
+          matchedCards: 0,
+          expectedHeaders: 0,
+          matchedHeaders: 0,
+          expectedFooters: 0,
+          matchedFooters: 0,
+          expectedPositionedNodes: 5,
+          matchedPositionedNodes: 5
+        }
       },
       artifacts: {
         elementorTemplatePath: "/tmp/upload-export/elementor-template.json",
@@ -378,9 +508,7 @@ async function testConvertRouteUsesV3ResolverForUpload() {
   assert.equal(runV3Calls, 1);
 }
 
-async function testConvertRouteFallsBackToV2WhenV3Fails() {
-  let runV2Calls = 0;
-
+async function testConvertRouteReturns500WhenV3Fails() {
   const deps = createBaseDependencies();
   deps.resolveSourceFromHtml = (html) => ({
     id: "resolved-fallback",
@@ -396,34 +524,6 @@ async function testConvertRouteFallsBackToV2WhenV3Fails() {
   deps.runExportPipelineV3 = async () => {
     throw new Error("Puppeteer capture crashed");
   };
-  deps.runPixelPerfectConversionPipeline = async (html, sourceKind) => {
-    runV2Calls += 1;
-    assert.equal(html, "<main>fallback me</main>");
-    assert.equal(sourceKind, "raw-html");
-
-    return {
-      cleanHtml: "<html><body>fallback clean</body></html>",
-      elementorJson: {
-        version: "0.4",
-        title: "Fallback route",
-        type: "page",
-        content: []
-      },
-      report: {
-        warnings: [],
-        screenshots: {},
-        exportBlocked: false,
-        status: "success"
-      },
-      outputDir: null,
-      sourceKind,
-      strategy: "pixel-perfect-iframe-v2"
-    } as never;
-  };
-  deps.createConversion = async () =>
-    ({
-      id: "conversion-fallback"
-    }) as never;
 
   const handler = createConvertPostHandler(deps);
   const response = await handler(
@@ -439,26 +539,77 @@ async function testConvertRouteFallsBackToV2WhenV3Fails() {
   );
   const payload = (await response.json()) as Record<string, unknown>;
 
-  assert.equal(response.status, 200);
-  assert.equal(payload.id, "conversion-fallback");
-  assert.equal(payload.status, "warning");
-  assert.equal(payload.selectedMode, "pixel-perfect");
-  assert.equal(payload.emittedMode, "pixel-perfect");
-  assert.equal(payload.message, "Conversao concluida com fallback da converter-v2.");
-  assert.match(
-    String(payload.fallbackReason),
-    /Converter-v3 falhou e a rota usou a converter-v2 como fallback: Puppeteer capture crashed/
+  assert.equal(response.status, 500);
+  assert.equal(payload.error, "Puppeteer capture crashed");
+}
+
+async function testConvertRouteBlocksWhenValidationFails() {
+  const deps = createBaseDependencies();
+  deps.runExportPipelineV3 = async () => {
+    throw new VisualValidationError({
+      passed: false,
+      mode: "hybrid",
+      issueCount: 2,
+      issues: [
+        {
+          type: "missing-card",
+          nodeId: "card-1",
+          message: "Card visivel perdido: card-1."
+        },
+        {
+          type: "missing-footer",
+          nodeId: "footer-1",
+          message: "Footer visivel perdido: footer-1."
+        }
+      ],
+      stats: {
+        expectedTexts: 4,
+        matchedTexts: 4,
+        expectedImages: 1,
+        matchedImages: 1,
+        expectedButtons: 2,
+        matchedButtons: 2,
+        expectedLinks: 2,
+        matchedLinks: 2,
+        expectedSections: 3,
+        matchedSections: 3,
+        expectedCards: 2,
+        matchedCards: 1,
+        expectedHeaders: 1,
+        matchedHeaders: 1,
+        expectedFooters: 1,
+        matchedFooters: 0,
+        expectedPositionedNodes: 12,
+        matchedPositionedNodes: 10
+      }
+    });
+  };
+
+  const handler = createConvertPostHandler(deps);
+  const response = await handler(
+    new Request("http://localhost/api/convert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        html: "<main>validation failure</main>"
+      })
+    })
   );
-  assert.deepEqual(payload.warnings, [
-    "Converter-v3 falhou e a rota usou a converter-v2 como fallback: Puppeteer capture crashed"
-  ]);
-  assert.equal(runV2Calls, 1);
+  const payload = (await response.json()) as Record<string, unknown>;
+
+  assert.equal(response.status, 422);
+  assert.match(String(payload.error), /Exportacao bloqueada pela validacao visual/);
+  assert.equal((payload.validation as { issueCount: number }).issueCount, 2);
+  assert.equal((payload.issues as Array<{ nodeId: string }>)[0]?.nodeId, "card-1");
 }
 
 async function main() {
   await testConvertRouteUsesV3ForRawHtml();
   await testConvertRouteUsesV3ResolverForUpload();
-  await testConvertRouteFallsBackToV2WhenV3Fails();
+  await testConvertRouteReturns500WhenV3Fails();
+  await testConvertRouteBlocksWhenValidationFails();
   console.log("convert route tests passed");
 }
 

@@ -1,0 +1,95 @@
+{
+  "id": "2933c2fb-2afe-423a-89f2-53b1ed22db7c",
+  "title": "Advanced Collagen Plus — 5 Collagen Types from 4 Premium Sources",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "selectedMode": "snapshot",
+  "emittedMode": "snapshot",
+  "summary": {
+    "totalNodes": 221,
+    "visibleNodes": 216,
+    "images": 9,
+    "buttons": 17,
+    "textBlocks": 72,
+    "sections": 11
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 221,
+    "sectionCount": 0
+  },
+  "analysis": {
+    "score": 54,
+    "overlappingGroups": 5,
+    "gridContainers": 9,
+    "flexContainers": 40,
+    "absoluteNodes": 7,
+    "decorativeNodes": 11,
+    "interactiveNodes": 17,
+    "selectedMode": "snapshot",
+    "reasons": [
+      "Snapshot Elementor habilitado por haver captura real no navegador.",
+      "Detectados 9 containers em grid.",
+      "Detectados 7 elementos absolutos/fixos.",
+      "Detectados 11 elementos decorativos.",
+      "Detectados 11 cards reutilizaveis.",
+      "Detectados 216 elementos com overlay/z-index relevante.",
+      "Detectados 5 grupos com sobreposicao visual.",
+      "Documento com 221 nos visuais."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "snapshot",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 84,
+      "matchedTexts": 84,
+      "expectedImages": 11,
+      "matchedImages": 11,
+      "expectedButtons": 17,
+      "matchedButtons": 17,
+      "expectedLinks": 7,
+      "matchedLinks": 7,
+      "expectedSections": 0,
+      "matchedSections": 0,
+      "expectedCards": 11,
+      "matchedCards": 11,
+      "expectedHeaders": 1,
+      "matchedHeaders": 1,
+      "expectedFooters": 0,
+      "matchedFooters": 0,
+      "expectedPositionedNodes": 209,
+      "matchedPositionedNodes": 209
+    }
+  },
+  "warnings": [
+    "header-1 (capture-node-2) exportada como snapshot.",
+    "Similaridade final da pagina ficou em 85.56% mesmo apos os fallbacks por secao."
+  ],
+  "snapshot": {
+    "overallSimilarity": 0.8556011523849193,
+    "threshold": 0.99,
+    "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\2933c2fb-2afe-423a-89f2-53b1ed22db7c/snapshot-preview.png",
+    "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\2933c2fb-2afe-423a-89f2-53b1ed22db7c\\screenshot-desktop.png",
+    "sectionReports": [
+      {
+        "nodeId": "capture-node-2",
+        "name": "header-1",
+        "type": "header",
+        "mode": "snapshot",
+        "reason": "Secao complexa para HTML congelado; mantendo snapshot para preservar a aparencia.",
+        "similarity": 1,
+        "preservedLinks": 7,
+        "totalLinks": 7
+      }
+    ],
+    "totals": {
+      "htmlSections": 0,
+      "snapshotSections": 1,
+      "preservedLinks": 7,
+      "totalLinks": 7
+    }
+  }
+}

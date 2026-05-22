@@ -5,7 +5,9 @@ import path from "node:path";
 
 import JSZip from "jszip";
 
+import type { PageCapture, SectionCapture } from "../lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode } from "../lib/converter-v3/contracts/layout";
+import { createSnapshotElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/snapshot";
 import {
   createElementorResponsiveSettings,
   createResponsiveChildSettings,
@@ -4165,6 +4167,186 @@ function testSectionClassifierDetectsSemanticSections() {
   );
 }
 
+function createSvgDataUrl(svg: string) {
+  return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
+}
+
+async function testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSection() {
+  const topSectionHeight = 150;
+  const bottomSectionHeight = 150;
+  const width = 320;
+  const pageHeight = topSectionHeight + bottomSectionHeight;
+  const topSectionImage = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${topSectionHeight}" viewBox="0 0 ${width} ${topSectionHeight}"><rect width="${width}" height="${topSectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const bottomSectionImage = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${bottomSectionHeight}" viewBox="0 0 ${width} ${bottomSectionHeight}"><rect width="${width}" height="${bottomSectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const fullPageReference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${pageHeight}" viewBox="0 0 ${width} ${pageHeight}"><rect width="${width}" height="${topSectionHeight}" fill="#f2545b" /><rect y="${topSectionHeight}" width="${width}" height="${bottomSectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-capture",
+    sourceKind: "raw-html",
+    title: "Snapshot Page",
+    sourceHtml: "<body></body>",
+    renderedHtml: "<html><body></body></html>",
+    renderer: "browser",
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height: pageHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 2,
+      visibleNodes: 2,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 2
+    },
+    artifacts: {
+      outputDir: path.join(os.tmpdir(), "snapshot-elementor-tests"),
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: fullPageReference
+      }
+    }
+  } satisfies PageCapture;
+  const sections: SectionCapture[] = [
+    {
+      id: "section-1",
+      nodeId: "hero-section",
+      name: "hero-1",
+      type: "hero",
+      box: {
+        x: 0,
+        y: 0,
+        width,
+        height: topSectionHeight
+      },
+      subtreeNodeIds: ["hero-section"],
+      originalHtml: `<section style="width:${width}px;height:${topSectionHeight}px;background:#f2545b;"></section>`,
+      htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;}</style></head><body><section style="display:block;width:${width}px;height:${topSectionHeight}px;background:#f2545b;"></section></body></html>`,
+      complexity: {
+        nodeCount: 1,
+        absoluteNodes: 0,
+        overlappingNodes: 0,
+        interactiveNodes: 0,
+        imageNodes: 0,
+        hasPseudoElements: false,
+        hasTransforms: false,
+        hasEmbeds: false
+      },
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height: topSectionHeight,
+          snapshotDataUrl: topSectionImage,
+          linkOverlays: []
+        }
+      }
+    },
+    {
+      id: "section-2",
+      nodeId: "feature-section",
+      name: "section-2",
+      type: "section",
+      box: {
+        x: 0,
+        y: topSectionHeight,
+        width,
+        height: bottomSectionHeight
+      },
+      subtreeNodeIds: ["feature-section"],
+      originalHtml: `<section style="width:${width}px;height:${bottomSectionHeight}px;background:#2e86ab;"></section>`,
+      htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /></head><body><section style="display:block;width:${width}px;height:${bottomSectionHeight}px;background:#2e86ab;"></section></body></html>`,
+      complexity: {
+        nodeCount: 6,
+        absoluteNodes: 0,
+        overlappingNodes: 0,
+        interactiveNodes: 0,
+        imageNodes: 0,
+        hasPseudoElements: true,
+        hasTransforms: false,
+        hasEmbeds: false
+      },
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height: bottomSectionHeight,
+          snapshotDataUrl: bottomSectionImage,
+          linkOverlays: []
+        }
+      }
+    }
+  ];
+  const layout: LayoutDocument = {
+    id: "snapshot-layout",
+    title: "Snapshot Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 3,
+    sectionIds: ["hero-section", "feature-section"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      },
+      {
+        id: "feature-section",
+        type: "section",
+        confidence: 0.8,
+        childIds: [],
+        anchors: [],
+        contains: ["section"]
+      }
+    ],
+    nodes: []
+  };
+
+  const result = await createSnapshotElementorDocumentV3({
+    capture,
+    layout,
+    sections,
+    selectedMode: "snapshot"
+  });
+
+  assert.equal(result.document.content.length, 2);
+  assert.equal(result.snapshot.totals.htmlSections, 1);
+  assert.equal(result.snapshot.totals.snapshotSections, 1);
+  assert.equal(result.snapshot.sectionReports[0]?.mode, "html");
+  assert.equal(result.snapshot.sectionReports[1]?.mode, "snapshot");
+  assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
+  assert.match(
+    String(result.document.content[1]?.elements?.[0]?.settings?.html ?? ""),
+    /converter-v3-snapshot-section/
+  );
+}
+
 async function main() {
   await testV3HtmlCapturePipeline();
   await testV3ZipResolver();
@@ -4196,6 +4378,7 @@ async function main() {
   testPatternOrderedChildIdsHelper();
   testResponsivePresetDetectionHelper();
   testSectionClassifierDetectsSemanticSections();
+  await testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSection();
   console.log("converter-v3 tests passed");
 }
 

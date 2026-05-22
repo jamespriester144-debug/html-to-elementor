@@ -1,0 +1,65 @@
+{
+  "version": "1.0",
+  "title": "Radiant Skin",
+  "type": "page",
+  "content": [
+    {
+      "id": "section-000001",
+      "elType": "container",
+      "settings": {
+        "content_width": "full",
+        "width": "100%",
+        "min_height": "1200px",
+        "_padding": {
+          "unit": "px",
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0,
+          "isLinked": true
+        },
+        "_margin": {
+          "unit": "px",
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0,
+          "isLinked": true
+        },
+        "converter_v3_source_node_id": "capture-node-2",
+        "converter_v3_section_name": "section-1",
+        "converter_v3_section_type": "section",
+        "converter_v3_section_render_mode": "html",
+        "converter_v3_section_similarity": 1,
+        "html_to_elementor_strategy": "snapshot-elementor",
+        "converter_v3_semantic_role": "section",
+        "converter_v3_visual_layer": "overlay",
+        "converter_v3_overlap_ids": [
+          "capture-node-1"
+        ],
+        "converter_v3_z_index": 0,
+        "html_tag": "section"
+      },
+      "elements": [
+        {
+          "id": "html-000001",
+          "elType": "widget",
+          "widgetType": "html",
+          "settings": {
+            "html": "<div data-converter-v3-frozen-section=\"capture-node-2\" style=\"width:1424px;min-height:1200px;margin:0 auto;\">\n      <main class=\"min-h-screen bg-background text-foreground\" data-capture-id=\"capture-node-2\" style=\"display:block;position:static;top:auto;right:auto;bottom:auto;left:auto;z-index:auto;width:1424px;height:1200px;max-width:none;min-height:1200px;padding:0px;padding-top:0px;padding-right:0px;padding-bottom:0px;padding-left:0px;margin:0px;margin-top:0px;margin-right:0px;margin-bottom:0px;margin-left:0px;gap:normal;row-gap:normal;column-gap:normal;grid-template-columns:none;grid-template-rows:none;flex-direction:row;flex-wrap:nowrap;align-items:normal;justify-content:normal;align-self:auto;justify-self:auto;background:rgb(250, 246, 241) none repeat scroll 0% 0% / auto padding-box border-box;background-color:rgb(250, 246, 241);background-image:none;background-size:auto;background-position:0% 0%;background-repeat:repeat;background-clip:border-box;color:rgb(51, 31, 29);font-family:&quot;Times New Roman&quot;;font-size:16px;font-style:normal;font-weight:400;line-height:normal;letter-spacing:normal;text-align:start;text-transform:none;text-decoration:none;white-space:normal;border:0px none rgb(51, 31, 29);border-color:rgb(51, 31, 29);border-radius:0px;box-shadow:none;overflow:visible;overflow-x:visible;overflow-y:visible;opacity:1;visibility:visible;transform:none;object-fit:fill;object-position:50% 50%;pointer-events:auto\"></main>\n    </div>",
+            "converter_v3_source_node_id": "capture-node-2",
+            "converter_v3_mode": "snapshot-html",
+            "converter_v3_semantic_role": "section",
+            "converter_v3_visual_layer": "overlay",
+            "converter_v3_overlap_ids": [
+              "capture-node-1"
+            ],
+            "converter_v3_z_index": 0,
+            "html_tag": "section"
+          },
+          "elements": []
+        }
+      ]
+    }
+  ]
+}

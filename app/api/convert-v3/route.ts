@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
           warnings: result.report.warnings,
           analysis: result.analysis,
           validation: result.validation,
+          snapshot: result.snapshot,
           layout: {
             rootNodeId: result.layout.rootNodeId,
             nodeCount: result.layout.nodeCount,
@@ -62,6 +63,7 @@ export async function POST(request: NextRequest) {
           warnings: result.report.warnings,
           analysis: result.analysis,
           validation: result.validation,
+          snapshot: result.snapshot,
           layout: {
             rootNodeId: result.layout.rootNodeId,
             nodeCount: result.layout.nodeCount,
@@ -105,6 +107,7 @@ export async function POST(request: NextRequest) {
       warnings: result.report.warnings,
       analysis: result.analysis,
       validation: result.validation,
+      snapshot: result.snapshot,
       layout: {
         rootNodeId: result.layout.rootNodeId,
         nodeCount: result.layout.nodeCount,

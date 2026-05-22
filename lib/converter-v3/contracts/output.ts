@@ -6,6 +6,36 @@ import type { ElementorDocument } from "@/types/conversion";
 export type ExportArtifactPaths = {
   elementorTemplatePath: string;
   reportPath: string;
+  previewHtmlPath?: string;
+  convertedScreenshotPath?: string;
+  snapshotSectionsPath?: string;
+};
+
+export type SnapshotSectionRenderMode = "html" | "snapshot";
+
+export type SnapshotSectionReport = {
+  nodeId: string;
+  name: string;
+  type: string;
+  mode: SnapshotSectionRenderMode;
+  reason: string;
+  similarity: number;
+  preservedLinks: number;
+  totalLinks: number;
+};
+
+export type SnapshotVisualSummary = {
+  overallSimilarity: number;
+  threshold: number;
+  convertedScreenshotPath?: string;
+  originalScreenshotPath?: string;
+  sectionReports: SnapshotSectionReport[];
+  totals: {
+    htmlSections: number;
+    snapshotSections: number;
+    preservedLinks: number;
+    totalLinks: number;
+  };
 };
 
 export type VisualValidationIssueType =
@@ -13,7 +43,11 @@ export type VisualValidationIssueType =
   | "missing-image"
   | "missing-button"
   | "missing-position"
-  | "missing-link";
+  | "missing-link"
+  | "missing-section"
+  | "missing-card"
+  | "missing-header"
+  | "missing-footer";
 
 export type VisualValidationIssue = {
   type: VisualValidationIssueType;
@@ -33,6 +67,16 @@ export type VisualValidationReport = {
     matchedImages: number;
     expectedButtons: number;
     matchedButtons: number;
+    expectedLinks: number;
+    matchedLinks: number;
+    expectedSections: number;
+    matchedSections: number;
+    expectedCards: number;
+    matchedCards: number;
+    expectedHeaders: number;
+    matchedHeaders: number;
+    expectedFooters: number;
+    matchedFooters: number;
     expectedPositionedNodes: number;
     matchedPositionedNodes: number;
   };
@@ -55,6 +99,7 @@ export type ExportReport = {
   analysis: ComplexityAnalysis;
   validation: VisualValidationReport;
   warnings: string[];
+  snapshot?: SnapshotVisualSummary;
 };
 
 export type ExportPipelineResult = {
@@ -71,5 +116,6 @@ export type ExportPipelineResult = {
   elementorDocument: ElementorDocument;
   validation: VisualValidationReport;
   report: ExportReport;
+  snapshot?: SnapshotVisualSummary;
   artifacts: ExportArtifactPaths;
 };

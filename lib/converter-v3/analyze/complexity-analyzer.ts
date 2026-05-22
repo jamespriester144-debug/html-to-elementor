@@ -51,6 +51,13 @@ export function analyzeLayoutComplexity(layout: LayoutDocument): ComplexityAnaly
   ).length;
   const decorativeNodes = layout.nodes.filter((node) => node.flags.decorative).length;
   const interactiveNodes = layout.nodes.filter((node) => node.kind === "button").length;
+  const cardNodes = layout.nodes.filter((node) => node.detection?.semanticRole === "card").length;
+  const overlayNodes = layout.nodes.filter(
+    (node) =>
+      node.detection?.semanticRole === "overlay" ||
+      (node.visual?.effectiveZIndex ?? 0) > 1 ||
+      (node.visual?.overlapCount ?? 0) > 0
+  ).length;
   const overlappingGroups = countOverlappingSiblingGroups(layout);
 
   let score = 0;
@@ -61,6 +68,8 @@ export function analyzeLayoutComplexity(layout: LayoutDocument): ComplexityAnaly
   score += Math.min(absoluteNodes * 2, 8);
   score += Math.min(decorativeNodes, 4);
   score += Math.min(interactiveNodes > 6 ? 2 : interactiveNodes > 2 ? 1 : 0, 2);
+  score += Math.min(cardNodes, 4);
+  score += Math.min(overlayNodes * 2, 8);
   score += Math.min(overlappingGroups * 3, 9);
   score += layout.nodeCount > 120 ? 4 : layout.nodeCount > 60 ? 2 : layout.nodeCount > 24 ? 1 : 0;
   score += layout.sectionIds.length > 8 ? 1 : 0;
@@ -75,6 +84,12 @@ export function analyzeLayoutComplexity(layout: LayoutDocument): ComplexityAnaly
   if (decorativeNodes > 0) {
     reasons.push(`Detectados ${decorativeNodes} elementos decorativos.`);
   }
+  if (cardNodes > 0) {
+    reasons.push(`Detectados ${cardNodes} cards reutilizaveis.`);
+  }
+  if (overlayNodes > 0) {
+    reasons.push(`Detectados ${overlayNodes} elementos com overlay/z-index relevante.`);
+  }
   if (overlappingGroups > 0) {
     reasons.push(`Detectados ${overlappingGroups} grupos com sobreposicao visual.`);
   }
@@ -87,10 +102,17 @@ export function analyzeLayoutComplexity(layout: LayoutDocument): ComplexityAnaly
   if (
     score >= 11 ||
     overlappingGroups >= 2 ||
+    overlayNodes >= 3 ||
     (absoluteNodes >= 3 && gridContainers >= 2)
   ) {
     selectedMode = "pixel-perfect";
-  } else if (score >= 5 || gridContainers >= 1 || absoluteNodes >= 1) {
+  } else if (
+    score >= 5 ||
+    gridContainers >= 1 ||
+    absoluteNodes >= 1 ||
+    cardNodes >= 1 ||
+    overlayNodes >= 1
+  ) {
     selectedMode = "hybrid";
   }
 

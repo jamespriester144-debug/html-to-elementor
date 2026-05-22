@@ -1,9 +1,13 @@
 import { createEditableElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/editable";
 import { createHybridElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/hybrid";
 import { createPixelPerfectElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/pixel-perfect";
+import { createSnapshotElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/snapshot";
 import type { PageCapture } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode, OutputMode } from "@/lib/converter-v3/contracts/layout";
-import type { VisualValidationReport } from "@/lib/converter-v3/contracts/output";
+import type {
+  SnapshotVisualSummary,
+  VisualValidationReport
+} from "@/lib/converter-v3/contracts/output";
 import {
   VisualValidationError,
   validateElementorExport
@@ -16,6 +20,8 @@ export type NativeExporterResult = {
   fallbackReason?: string;
   warnings: string[];
   validation: VisualValidationReport;
+  previewHtml?: string;
+  snapshot?: SnapshotVisualSummary;
 };
 
 type EmittedCandidate = {
@@ -23,6 +29,8 @@ type EmittedCandidate = {
   emittedMode: OutputMode;
   warnings: string[];
   fallbackReason?: string;
+  previewHtml?: string;
+  snapshot?: SnapshotVisualSummary;
 };
 
 function parseBackgroundUrl(value?: string): string | undefined {
@@ -145,6 +153,30 @@ function buildHybridCandidate(params: {
   };
 }
 
+async function buildSnapshotCandidate(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+  selectedMode: OutputMode;
+  outputDir?: string;
+}): Promise<EmittedCandidate> {
+  const sections = params.capture.sections ?? [];
+  const snapshotResult = await createSnapshotElementorDocumentV3({
+    capture: params.capture,
+    layout: params.layout,
+    sections,
+    selectedMode: params.selectedMode,
+    outputDir: params.outputDir
+  });
+
+  return {
+    document: snapshotResult.document,
+    emittedMode: "snapshot",
+    warnings: snapshotResult.warnings,
+    previewHtml: snapshotResult.previewHtml,
+    snapshot: snapshotResult.snapshot
+  };
+}
+
 function buildPixelPerfectCandidate(params: {
   capture: PageCapture;
   selectedMode: OutputMode;
@@ -163,6 +195,10 @@ function buildPixelPerfectCandidate(params: {
 }
 
 function getCandidateModes(selectedMode: OutputMode): OutputMode[] {
+  if (selectedMode === "snapshot") {
+    return ["snapshot", "hybrid", "pixel-perfect"];
+  }
+
   if (selectedMode === "editable") {
     return ["editable", "hybrid", "pixel-perfect"];
   }
@@ -174,27 +210,33 @@ function getCandidateModes(selectedMode: OutputMode): OutputMode[] {
   return ["hybrid", "pixel-perfect"];
 }
 
-export function createElementorNativeExport(params: {
+export async function createElementorNativeExport(params: {
   capture: PageCapture;
   layout: LayoutDocument;
   selectedMode: OutputMode;
-}): NativeExporterResult {
+  outputDir?: string;
+}): Promise<NativeExporterResult> {
   const attemptedModes = getCandidateModes(params.selectedMode);
   const warnings: string[] = [];
   let lastValidation: VisualValidationReport | null = null;
 
   for (const mode of attemptedModes) {
     const candidate =
-      mode === "editable"
-        ? buildEditableCandidate(params)
-        : mode === "hybrid"
-          ? buildHybridCandidate(params)
-          : buildPixelPerfectCandidate({
-              capture: params.capture,
-              selectedMode: params.selectedMode,
-              fallbackReason:
-                "Fallback final em iframe por perda detectada nas exportacoes nativas."
-            });
+      mode === "snapshot"
+        ? await buildSnapshotCandidate({
+            ...params,
+            outputDir: params.outputDir
+          })
+        : mode === "editable"
+          ? buildEditableCandidate(params)
+          : mode === "hybrid"
+            ? buildHybridCandidate(params)
+            : buildPixelPerfectCandidate({
+                capture: params.capture,
+                selectedMode: params.selectedMode,
+                fallbackReason:
+                  "Fallback final em iframe por perda detectada nas exportacoes nativas."
+              });
     const enrichedDocument =
       candidate.emittedMode === "pixel-perfect"
         ? candidate.document
@@ -221,7 +263,9 @@ export function createElementorNativeExport(params: {
         emittedMode: candidate.emittedMode,
         fallbackReason,
         warnings,
-        validation
+        validation,
+        previewHtml: candidate.previewHtml,
+        snapshot: candidate.snapshot
       };
     }
 
@@ -249,6 +293,16 @@ export function createElementorNativeExport(params: {
         matchedImages: 0,
         expectedButtons: 0,
         matchedButtons: 0,
+        expectedLinks: 0,
+        matchedLinks: 0,
+        expectedSections: 0,
+        matchedSections: 0,
+        expectedCards: 0,
+        matchedCards: 0,
+        expectedHeaders: 0,
+        matchedHeaders: 0,
+        expectedFooters: 0,
+        matchedFooters: 0,
         expectedPositionedNodes: 0,
         matchedPositionedNodes: 0
       }

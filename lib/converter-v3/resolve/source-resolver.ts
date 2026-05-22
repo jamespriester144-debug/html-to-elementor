@@ -109,7 +109,7 @@ export async function resolveSourceFromUpload(file: File): Promise<ResolvedSourc
     routeFile = snapshot.routeEntries[0] ?? null;
     notes.push(
       sourceKind === "lovable-react-source"
-        ? "ZIP detectado como projeto Lovable/React."
+        ? "ZIP detectado como projeto React com rotas/componentes."
         : "ZIP detectado como arquivo HTML estatico."
     );
   } else {
@@ -150,7 +150,7 @@ export async function resolveSourceFromZipBuffer(buffer: ArrayBuffer): Promise<R
     notes: [
       snapshot.htmlEntries.length > 0
         ? "Fonte resolvida a partir de um HTML exportado do ZIP."
-        : "Fonte resolvida a partir de um projeto Lovable/React do ZIP."
+        : "Fonte resolvida a partir de um projeto React do ZIP."
     ]
   };
 }
