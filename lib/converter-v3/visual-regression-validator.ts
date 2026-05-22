@@ -22,12 +22,78 @@ type ActualRepresentation = {
   globalFallback: boolean;
 };
 
+type SectionContext = {
+  sectionId: string;
+  sectionName: string;
+  sectionType: string;
+};
+
 function normalizeText(value: string | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
 function normalizeImageToken(value: string | undefined): string {
   return (value ?? "").replace(/^url\((['"]?)(.*?)\1\)$/i, "$2").trim();
+}
+
+function buildSectionContextByNodeId(layout: LayoutDocument) {
+  const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  const sectionIndexById = new Map(
+    layout.detectedSections.map((section, index) => [section.id, index + 1])
+  );
+  const detectedSectionById = new Map(
+    layout.detectedSections.map((section) => [section.id, section])
+  );
+  const contextBySectionId = new Map<string, SectionContext>();
+
+  const resolveSectionContext = (sectionId: string): SectionContext => {
+    const existing = contextBySectionId.get(sectionId);
+
+    if (existing) {
+      return existing;
+    }
+
+    const detected = detectedSectionById.get(sectionId);
+    const fallbackNode = nodeById.get(sectionId);
+    const sectionType =
+      detected?.type ??
+      fallbackNode?.detection?.semanticRole ??
+      fallbackNode?.kind ??
+      "section";
+    const sectionIndex =
+      sectionIndexById.get(sectionId) ??
+      layout.sectionIds.findIndex((candidate) => candidate === sectionId) + 1;
+    const context = {
+      sectionId,
+      sectionType,
+      sectionName:
+        sectionIndex > 0 ? `${sectionType}-${sectionIndex}` : `${sectionType}-${sectionId}`
+    };
+
+    contextBySectionId.set(sectionId, context);
+    return context;
+  };
+
+  const byNodeId = new Map<string, SectionContext>();
+
+  layout.nodes.forEach((node) => {
+    let currentId: string | null = node.id;
+
+    while (currentId) {
+      if (detectedSectionById.has(currentId) || layout.sectionIds.includes(currentId)) {
+        byNodeId.set(node.id, resolveSectionContext(currentId));
+        return;
+      }
+
+      currentId = nodeById.get(currentId)?.parentId ?? null;
+    }
+  });
+
+  return byNodeId;
+}
+
+function formatSectionPrefix(section: SectionContext | undefined) {
+  return section ? `na secao ${section.sectionName} (${section.sectionId})` : "";
 }
 
 function collectExpectedTextNodes(layout: LayoutDocument): LayoutNode[] {
@@ -318,6 +384,24 @@ export function validateElementorExport(params: {
   mode: OutputMode;
 }): VisualValidationReport {
   const actual = collectActualRepresentation(params.document);
+  const sectionContextByNodeId = buildSectionContextByNodeId(params.layout);
+  const createIssue = (
+    type: VisualValidationIssue["type"],
+    nodeId: string,
+    message: string
+  ): VisualValidationIssue => {
+    const section = sectionContextByNodeId.get(nodeId);
+    const sectionPrefix = formatSectionPrefix(section);
+
+    return {
+      type,
+      nodeId,
+      message: sectionPrefix ? `${message} Conteudo ausente ${sectionPrefix}.` : message,
+      sectionId: section?.sectionId,
+      sectionName: section?.sectionName,
+      sectionType: section?.sectionType
+    };
+  };
 
   if (actual.globalFallback) {
     const expectedPositionedNodes = collectExpectedPositionNodes(params.layout).length;
@@ -411,11 +495,7 @@ export function validateElementorExport(params: {
       return;
     }
 
-    issues.push({
-      type: "missing-text",
-      nodeId: node.id,
-      message: `Texto visivel perdido: "${text}".`
-    });
+    issues.push(createIssue("missing-text", node.id, `Texto visivel perdido: "${text}".`));
   });
 
   imageMatches.missing.forEach((image) => {
@@ -428,19 +508,19 @@ export function validateElementorExport(params: {
       return;
     }
 
-    issues.push({
-      type: "missing-image",
-      nodeId: node.id,
-      message: `Imagem ou background visual perdido: ${image}.`
-    });
+    issues.push(
+      createIssue("missing-image", node.id, `Imagem ou background visual perdido: ${image}.`)
+    );
   });
 
   buttonMatches.missing.forEach((button) => {
-    issues.push({
-      type: "missing-button",
-      nodeId: button.id,
-      message: `Botao visivel perdido: "${button.text || button.href || button.id}".`
-    });
+    issues.push(
+      createIssue(
+        "missing-button",
+        button.id,
+        `Botao visivel perdido: "${button.text || button.href || button.id}".`
+      )
+    );
   });
 
   expectedButtons.forEach((button) => {
@@ -455,52 +535,40 @@ export function validateElementorExport(params: {
     );
 
     if (!matched) {
-      issues.push({
-        type: "missing-link",
-        nodeId: button.id,
-        message: `Link do botao nao foi preservado para "${normalizeText(button.content.text)}".`
-      });
+      issues.push(
+        createIssue(
+          "missing-link",
+          button.id,
+          `Link do botao nao foi preservado para "${normalizeText(button.content.text)}".`
+        )
+      );
     }
   });
 
   missingSections.forEach((node) => {
-    issues.push({
-      type: "missing-section",
-      nodeId: node.id,
-      message: `Secao visivel perdida: ${node.id}.`
-    });
+    issues.push(createIssue("missing-section", node.id, `Secao visivel perdida: ${node.id}.`));
   });
 
   missingCards.forEach((node) => {
-    issues.push({
-      type: "missing-card",
-      nodeId: node.id,
-      message: `Card visivel perdido: ${node.id}.`
-    });
+    issues.push(createIssue("missing-card", node.id, `Card visivel perdido: ${node.id}.`));
   });
 
   missingHeaders.forEach((node) => {
-    issues.push({
-      type: "missing-header",
-      nodeId: node.id,
-      message: `Header visivel perdido: ${node.id}.`
-    });
+    issues.push(createIssue("missing-header", node.id, `Header visivel perdido: ${node.id}.`));
   });
 
   missingFooters.forEach((node) => {
-    issues.push({
-      type: "missing-footer",
-      nodeId: node.id,
-      message: `Footer visivel perdido: ${node.id}.`
-    });
+    issues.push(createIssue("missing-footer", node.id, `Footer visivel perdido: ${node.id}.`));
   });
 
   missingPositionNodes.forEach((node) => {
-    issues.push({
-      type: "missing-position",
-      nodeId: node.id,
-      message: `No visual sem representacao posicionada no export: ${node.id}.`
-    });
+    issues.push(
+      createIssue(
+        "missing-position",
+        node.id,
+        `No visual sem representacao posicionada no export: ${node.id}.`
+      )
+    );
   });
 
   return {

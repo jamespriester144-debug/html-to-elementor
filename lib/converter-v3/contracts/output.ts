@@ -31,6 +31,8 @@ export type SnapshotSectionReport = {
 };
 
 export type SnapshotVisualSummary = {
+  renderStrategy?: "section-snapshots" | "full-page-snapshot";
+  fullPageFallbackReason?: string;
   overallSimilarity: number;
   threshold: number;
   convertedScreenshotPath?: string;
@@ -63,6 +65,9 @@ export type VisualValidationIssue = {
   type: VisualValidationIssueType;
   nodeId: string;
   message: string;
+  sectionId?: string;
+  sectionName?: string;
+  sectionType?: string;
 };
 
 export type VisualValidationReport = {

@@ -163,7 +163,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error: error.message,
-          validation: error.report
+          validation: error.report,
+          issues: error.report.issues
         },
         { status: 422 }
       );

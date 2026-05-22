@@ -1,9 +1,12 @@
+import { readFile } from "node:fs/promises";
+
 import * as cheerio from "cheerio";
 
 import type {
   PageCapture,
   SectionCapture,
-  SectionCaptureViewport
+  SectionCaptureViewport,
+  SectionOverlayLink
 } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/layout";
 import type {
@@ -32,6 +35,33 @@ type SnapshotDecision = SnapshotSectionReport & {
   widgetHtml: string;
   htmlSimilarity?: number;
   pixelPerfectRequired: boolean;
+};
+
+type SnapshotMarkupViewport = Pick<SectionCaptureViewport, "width" | "height" | "linkOverlays"> & {
+  snapshotDataUrl: string;
+};
+
+type SnapshotMarkupSource = {
+  nodeId: string;
+  desktop: SnapshotMarkupViewport;
+  tablet?: SnapshotMarkupViewport;
+  mobile?: SnapshotMarkupViewport;
+};
+
+type SnapshotSectionInfo = {
+  nodeId: string;
+  name: string;
+  type: string;
+};
+
+type SectionSeparationIssue = SnapshotSectionInfo & {
+  reason: string;
+};
+
+type SectionSeparationAssessment = {
+  safe: boolean;
+  issues: SectionSeparationIssue[];
+  fallbackReason?: string;
 };
 
 type SnapshotEmitterResult = {
@@ -110,15 +140,17 @@ function extractWidgetHtmlFromFrozenDocument(documentHtml: string) {
   return bodyHtml && bodyHtml.length > 0 ? bodyHtml : documentHtml;
 }
 
-function buildSectionSnapshotMarkup(section: SectionCapture) {
-  const desktop = section.viewports.desktop ?? Object.values(section.viewports)[0];
-
-  if (!desktop?.snapshotDataUrl) {
-    return extractWidgetHtmlFromFrozenDocument(section.htmlCandidate);
+async function readSnapshotDataUrl(source: string) {
+  if (source.startsWith("data:")) {
+    return source;
   }
 
-  const tablet = section.viewports.tablet;
-  const mobile = section.viewports.mobile;
+  const buffer = await readFile(source);
+  return `data:image/png;base64,${Buffer.from(buffer).toString("base64")}`;
+}
+
+function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
+  const { desktop, tablet, mobile } = snapshotSource;
   const mergedLinks = new Map<
     string,
     {
@@ -139,7 +171,12 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
   >();
 
   for (const viewportName of ["desktop", "tablet", "mobile"] as const) {
-    const viewport = section.viewports[viewportName];
+    const viewport =
+      viewportName === "desktop"
+        ? desktop
+        : viewportName === "tablet"
+          ? tablet
+          : mobile;
 
     viewport?.linkOverlays.forEach((overlay) => {
       const key = `${overlay.nodeId}:${overlay.href}`;
@@ -159,7 +196,7 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
     });
   }
 
-  const scopeId = `converter-v3-snapshot-${section.nodeId}`;
+  const scopeId = `converter-v3-snapshot-${snapshotSource.nodeId}`;
   const stageBaseStyles = [
     "position:relative",
     "display:block",
@@ -253,7 +290,7 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
     .join("");
 
   return `<div id="${scopeId}" class="converter-v3-snapshot-section" data-converter-v3-snapshot-section="${escapeHtmlAttribute(
-    section.nodeId
+    snapshotSource.nodeId
   )}">
   <style>
     #${scopeId}{position:relative;width:100%;}
@@ -262,7 +299,7 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
       position:absolute;
       display:block;
       z-index:2;
-      background:rgba(255,255,255,0.001);
+      background:transparent;
       color:transparent;
       font-size:0;
       line-height:0;
@@ -282,6 +319,39 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
   </style>
   <div class="converter-v3-snapshot-stage">${linksHtml}</div>
 </div>`;
+}
+
+function buildSectionSnapshotMarkup(section: SectionCapture) {
+  const desktop = section.viewports.desktop ?? Object.values(section.viewports)[0];
+
+  if (!desktop?.snapshotDataUrl) {
+    return extractWidgetHtmlFromFrozenDocument(section.htmlCandidate);
+  }
+
+  const tablet =
+    section.viewports.tablet?.snapshotDataUrl
+      ? {
+          ...section.viewports.tablet,
+          snapshotDataUrl: section.viewports.tablet.snapshotDataUrl
+        }
+      : undefined;
+  const mobile =
+    section.viewports.mobile?.snapshotDataUrl
+      ? {
+          ...section.viewports.mobile,
+          snapshotDataUrl: section.viewports.mobile.snapshotDataUrl
+        }
+      : undefined;
+
+  return buildResponsiveSnapshotMarkup({
+    nodeId: section.nodeId,
+    desktop: {
+      ...desktop,
+      snapshotDataUrl: desktop.snapshotDataUrl
+    },
+    tablet,
+    mobile
+  });
 }
 
 function buildPreviewHtml(params: {
@@ -327,6 +397,361 @@ function buildPreviewHtml(params: {
     <main class="converter-v3-preview-page">${sectionsHtml}</main>
   </body>
 </html>`;
+}
+
+function getViewportProfile(capture: PageCapture, viewportName: "desktop" | "tablet" | "mobile") {
+  return capture.viewports.find((viewport) => viewport.name === viewportName);
+}
+
+function resolveViewportPageHeight(
+  capture: PageCapture,
+  viewportName: "desktop" | "tablet" | "mobile"
+) {
+  const fallbackHeight = getViewportProfile(capture, viewportName)?.height ?? 1;
+  const maxBottom = capture.nodes.reduce((highest, node) => {
+    const state = node.viewportStates[viewportName];
+    const bottom = state?.box ? state.box.y + state.box.height : 0;
+    return Math.max(highest, bottom);
+  }, 0);
+
+  return Math.max(Math.ceil(maxBottom), fallbackHeight, 1);
+}
+
+function getOrderedSectionInfo(
+  layout: LayoutDocument,
+  sections: SectionCapture[]
+): SnapshotSectionInfo[] {
+  const sectionById = new Map(sections.map((section) => [section.nodeId, section]));
+  const nodeById = new Map(layout.nodes.map((node) => [node.id, node]));
+  const baseInfos =
+    layout.detectedSections.length > 0
+      ? layout.detectedSections.map((section, index) => ({
+          nodeId: section.id,
+          name: sectionById.get(section.id)?.name ?? `${section.type}-${index + 1}`,
+          type: sectionById.get(section.id)?.type ?? section.type
+        }))
+      : layout.sectionIds.map((sectionId, index) => ({
+          nodeId: sectionId,
+          name: sectionById.get(sectionId)?.name ?? `section-${index + 1}`,
+          type: sectionById.get(sectionId)?.type ?? nodeById.get(sectionId)?.kind ?? "section"
+        }));
+
+  const seen = new Set<string>();
+
+  return baseInfos
+    .filter((info) => {
+      if (seen.has(info.nodeId)) {
+        return false;
+      }
+
+      seen.add(info.nodeId);
+      return true;
+    })
+    .sort((left, right) => {
+      const leftBox = sectionById.get(left.nodeId)?.box ?? nodeById.get(left.nodeId)?.box;
+      const rightBox = sectionById.get(right.nodeId)?.box ?? nodeById.get(right.nodeId)?.box;
+
+      return (leftBox?.y ?? 0) - (rightBox?.y ?? 0) || (leftBox?.x ?? 0) - (rightBox?.x ?? 0);
+    });
+}
+
+function assessSectionSeparation(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+  sections: SectionCapture[];
+}): SectionSeparationAssessment {
+  const expectedSections = getOrderedSectionInfo(params.layout, params.sections);
+  const sectionById = new Map(params.sections.map((section) => [section.nodeId, section]));
+  const issues: SectionSeparationIssue[] = [];
+
+  if (!expectedSections.length) {
+    return {
+      safe: false,
+      issues: [
+        {
+          nodeId: params.layout.rootNodeId,
+          name: "page-snapshot",
+          type: "page",
+          reason: "Nenhuma secao confiavel foi detectada para snapshot isolado."
+        }
+      ],
+      fallbackReason:
+        "Separacao por secoes desativada: nenhuma secao confiavel foi detectada no layout."
+    };
+  }
+
+  expectedSections.forEach((info) => {
+    const section = sectionById.get(info.nodeId);
+
+    if (!section) {
+      issues.push({
+        ...info,
+        reason: "A secao nao foi capturada com seguranca no navegador."
+      });
+      return;
+    }
+
+    if (!section.originalHtml.trim() || !section.htmlCandidate.trim()) {
+      issues.push({
+        ...info,
+        reason: "O HTML congelado da secao ficou incompleto."
+      });
+    }
+
+    if (section.box.width < 8 || section.box.height < 8) {
+      issues.push({
+        ...info,
+        reason: "A caixa visual da secao ficou invalida para recorte seguro."
+      });
+    }
+
+    params.capture.viewports.forEach((viewport) => {
+      if (!section.viewports[viewport.name]?.snapshotDataUrl) {
+        issues.push({
+          ...info,
+          reason: `A secao ficou sem snapshot ${viewport.name}.`
+        });
+      }
+    });
+  });
+
+  const orderedCapturedSections = expectedSections
+    .map((info) => sectionById.get(info.nodeId))
+    .filter((section): section is SectionCapture => Boolean(section))
+    .sort((left, right) => left.box.y - right.box.y || left.box.x - right.box.x);
+  let coveredHeight = 0;
+  let lastBottom = 0;
+
+  orderedCapturedSections.forEach((section) => {
+    const info = expectedSections.find((candidate) => candidate.nodeId === section.nodeId) ?? {
+      nodeId: section.nodeId,
+      name: section.name,
+      type: section.type
+    };
+    const top = Math.max(section.box.y, 0);
+    const bottom = top + Math.max(section.box.height, 0);
+
+    if (top < lastBottom - 8) {
+      issues.push({
+        ...info,
+        reason: "A secao sobrepoe outra secao e nao pode ser recortada com seguranca."
+      });
+    }
+
+    coveredHeight += Math.max(0, bottom - Math.max(top, lastBottom));
+    lastBottom = Math.max(lastBottom, bottom);
+  });
+
+  const pageHeight = resolveViewportPageHeight(params.capture, "desktop");
+  const coverageRatio = pageHeight > 0 ? coveredHeight / pageHeight : 0;
+
+  if (orderedCapturedSections.length !== expectedSections.length) {
+    issues.push({
+      nodeId: params.layout.rootNodeId,
+      name: "page-snapshot",
+      type: "page",
+      reason:
+        "Nem todas as secoes detectadas receberam um recorte visual completo para o snapshot."
+    });
+  }
+
+  if (coverageRatio < 0.8) {
+    issues.push({
+      nodeId: params.layout.rootNodeId,
+      name: "page-snapshot",
+      type: "page",
+      reason: `As secoes cobriram apenas ${toPercentLabel(
+        coverageRatio
+      )} da altura da pagina no desktop.`
+    });
+  }
+
+  return {
+    safe: issues.length === 0,
+    issues,
+    fallbackReason:
+      issues.length > 0
+        ? `Separacao por secoes desativada: ${issues
+            .map((issue) => `${issue.name} (${issue.nodeId}) - ${issue.reason}`)
+            .join(" | ")}`
+        : undefined
+  };
+}
+
+function clampRatio(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.min(Math.max(value, 0), 1);
+}
+
+function buildPageOverlayLinks(
+  capture: PageCapture,
+  viewportName: "desktop" | "tablet" | "mobile"
+): SectionOverlayLink[] {
+  const viewport = getViewportProfile(capture, viewportName);
+
+  if (!viewport) {
+    return [];
+  }
+
+  const pageHeight = resolveViewportPageHeight(capture, viewportName);
+  const seen = new Set<string>();
+
+  return capture.nodes
+    .filter((node) => Boolean(node.asset.href?.trim()))
+    .sort((left, right) => left.visualOrder - right.visualOrder)
+    .flatMap((node) => {
+      const href = node.asset.href?.trim();
+      const state = node.viewportStates[viewportName];
+      const box = state?.box;
+
+      if (!href || !state?.isVisible || !box || box.width <= 0 || box.height <= 0) {
+        return [];
+      }
+
+      const key = `${node.id}:${href}`;
+
+      if (seen.has(key)) {
+        return [];
+      }
+
+      seen.add(key);
+
+      return [
+        {
+          nodeId: node.id,
+          href,
+          text:
+            node.text ||
+            node.attributes["aria-label"] ||
+            node.attributes.title ||
+            href,
+          title: node.attributes.title || undefined,
+          target: node.attributes.target || undefined,
+          rel: node.attributes.rel || undefined,
+          isButton: node.tag === "button" || node.attributes.role === "button",
+          box: {
+            x: box.x,
+            y: box.y,
+            width: box.width,
+            height: box.height
+          },
+          relativeBox: {
+            x: clampRatio(box.x / viewport.width),
+            y: clampRatio(box.y / pageHeight),
+            width: clampRatio(box.width / viewport.width),
+            height: clampRatio(box.height / pageHeight)
+          }
+        }
+      ];
+    });
+}
+
+async function buildFullPageSnapshotSource(
+  capture: PageCapture,
+  layout: LayoutDocument
+): Promise<SnapshotMarkupSource | null> {
+  const desktopPath = capture.artifacts.screenshots.desktop;
+  const desktopViewport = getViewportProfile(capture, "desktop");
+
+  if (!desktopPath || !desktopViewport) {
+    return null;
+  }
+
+  const buildViewport = async (
+    viewportName: "desktop" | "tablet" | "mobile"
+  ): Promise<SnapshotMarkupViewport | undefined> => {
+    const screenshotPath = capture.artifacts.screenshots[viewportName];
+    const viewport = getViewportProfile(capture, viewportName);
+
+    if (!screenshotPath || !viewport) {
+      return undefined;
+    }
+
+    return {
+      width: viewport.width,
+      height: resolveViewportPageHeight(capture, viewportName),
+      snapshotDataUrl: await readSnapshotDataUrl(screenshotPath),
+      linkOverlays: buildPageOverlayLinks(capture, viewportName)
+    };
+  };
+
+  const desktop = await buildViewport("desktop");
+
+  if (!desktop) {
+    return null;
+  }
+
+  return {
+    nodeId: layout.rootNodeId,
+    desktop,
+    tablet: await buildViewport("tablet"),
+    mobile: await buildViewport("mobile")
+  };
+}
+
+function createSyntheticPageSection(
+  capture: PageCapture,
+  layout: LayoutDocument,
+  snapshotSource: SnapshotMarkupSource
+): SectionCapture {
+  return {
+    id: "page-snapshot-capture",
+    nodeId: layout.rootNodeId,
+    name: "page-snapshot",
+    type: "page",
+    box: {
+      x: 0,
+      y: 0,
+      width: snapshotSource.desktop.width,
+      height: snapshotSource.desktop.height
+    },
+    subtreeNodeIds: [layout.rootNodeId],
+    originalHtml: capture.renderedHtml,
+    htmlCandidate: capture.renderedHtml,
+    complexity: {
+      nodeCount: capture.nodes.length,
+      absoluteNodes: 0,
+      overlappingNodes: 0,
+      interactiveNodes: buildPageOverlayLinks(capture, "desktop").length,
+      imageNodes: 0,
+      overlayNodes: 0,
+      complexZIndexNodes: 0,
+      transformedNodes: 0,
+      gradientNodes: 0,
+      animatedNodes: 0,
+      unsupportedCssNodes: 0,
+      carouselNodes: 0,
+      gridContainers: 0,
+      flexContainers: 0,
+      nestedFlexGridContainers: 0,
+      maxFlexGridDepth: 0,
+      pseudoElementNodes: 0,
+      hasPseudoElements: false,
+      hasTransforms: false,
+      hasEmbeds: false
+    },
+    viewports: {
+      desktop: {
+        viewport: "desktop",
+        ...snapshotSource.desktop
+      },
+      tablet: snapshotSource.tablet
+        ? {
+            viewport: "tablet",
+            ...snapshotSource.tablet
+          }
+        : undefined,
+      mobile: snapshotSource.mobile
+        ? {
+            viewport: "mobile",
+            ...snapshotSource.mobile
+          }
+        : undefined
+    }
+  };
 }
 
 async function validateHtmlSection(section: SectionCapture) {
@@ -382,7 +807,7 @@ function buildSnapshotReason(params: {
     if (params.similarity < PIXEL_PERFECT_SIMILARITY) {
       return `HTML congelado caiu para ${toPercentLabel(
         params.similarity
-      )}; snapshot aplicado e export completo marcado para pixel-perfect.`;
+      )}; snapshot aplicado e fallback da pagina inteira foi armado.`;
     }
 
     if (params.similarity < HTML_BLOCK_SIMILARITY) {
@@ -576,7 +1001,7 @@ async function buildInitialDecisions(sections: SectionCapture[]): Promise<Initia
           ? "HTML congelado bloqueado automaticamente para esse perfil visual."
           : "Secao re-renderizada como snapshot.",
         pixelPerfectRequired
-          ? "Score abaixo de 97%; fallback final em pixel-perfect foi armado."
+          ? "Score abaixo de 97%; snapshot da pagina inteira foi armado como fallback final."
           : ""
       ].filter(Boolean),
       widgetHtml: snapshotWidget,
@@ -635,55 +1060,84 @@ export async function createSnapshotElementorDocumentV3(params: {
   const orderedSections = [...params.sections].sort(
     (left, right) => left.box.y - right.box.y || left.box.x - right.box.x
   );
-  const initial = await buildInitialDecisions(orderedSections);
-  const decisions = initial.decisions;
-  let requiresPixelPerfect = initial.requiresPixelPerfect;
-  let pixelPerfectReason = initial.pixelPerfectReason;
+  const convertedScreenshotPath = params.outputDir
+    ? `${params.outputDir}/snapshot-preview.png`
+    : undefined;
+  const sectionSeparation = assessSectionSeparation({
+    capture: params.capture,
+    layout: params.layout,
+    sections: orderedSections
+  });
+  const initial = sectionSeparation.safe
+    ? await buildInitialDecisions(orderedSections)
+    : {
+        decisions: [] as SnapshotDecision[],
+        learningNotes: sectionSeparation.issues.map(
+          (issue) => `${issue.name} (${issue.nodeId}): ${issue.reason}`
+        ),
+        requiresPixelPerfect: false,
+        pixelPerfectReason: undefined
+      };
+  let decisions = initial.decisions;
   let previewHtml = buildPreviewHtml({
     capture: params.capture,
     decisions
   });
-  let overallSimilarity = await computeOverallSimilarity({
-    capture: params.capture,
-    previewHtml,
-    convertedScreenshotPath: params.outputDir
-      ? `${params.outputDir}/snapshot-preview.png`
-      : undefined
-  });
+  let overallSimilarity =
+    decisions.length > 0
+      ? await computeOverallSimilarity({
+          capture: params.capture,
+          previewHtml,
+          convertedScreenshotPath
+        })
+      : {
+          passed: false,
+          similarity: 0
+        };
+  let usedFullPageSnapshot = false;
+  let fullPageFallbackReason = sectionSeparation.fallbackReason;
+  let syntheticPageSection: SectionCapture | null = null;
+  const diagnosticWarnings = sectionSeparation.issues.map(
+    (issue) =>
+      `Snapshot por secao desativado para ${issue.name} (${issue.nodeId}): ${issue.reason}`
+  );
 
-  while (!overallSimilarity.passed) {
-    const weakestHtmlDecision = decisions
-      .filter((candidate) => candidate.mode === "html")
-      .sort((left, right) => left.similarity - right.similarity)[0];
+  const switchToFullPageSnapshot = async (reason: string) => {
+    const snapshotSource = await buildFullPageSnapshotSource(params.capture, params.layout);
 
-    if (!weakestHtmlDecision) {
-      requiresPixelPerfect = true;
-      pixelPerfectReason ??= `Mesmo apos snapshots por secao, a pagina ficou em ${toPercentLabel(
-        overallSimilarity.similarity
-      )}; fallback final em pixel-perfect exigido.`;
-      break;
+    if (!snapshotSource) {
+      fullPageFallbackReason = reason;
+      return false;
     }
 
-    const section = orderedSections.find(
-      (candidate) => candidate.nodeId === weakestHtmlDecision.nodeId
-    );
+    usedFullPageSnapshot = true;
+    fullPageFallbackReason = reason;
+    syntheticPageSection = createSyntheticPageSection(params.capture, params.layout, snapshotSource);
+    const pageLinkCount = getUniqueLinkCount(syntheticPageSection);
 
-    if (!section) {
-      break;
-    }
-
-    weakestHtmlDecision.mode = "snapshot";
-    weakestHtmlDecision.reason =
-      "Secao rebaixada para snapshot apos validacao da pagina completa para manter a fidelidade visual global.";
-    weakestHtmlDecision.similarity = 1;
-    weakestHtmlDecision.fidelityScore = 1;
-    weakestHtmlDecision.htmlBlocked = true;
-    weakestHtmlDecision.healingSteps = [
-      ...(weakestHtmlDecision.healingSteps ?? []),
-      `Validacao da pagina completa caiu para ${toPercentLabel(overallSimilarity.similarity)}.`,
-      "Secao re-renderizada como snapshot."
+    decisions = [
+      {
+        nodeId: syntheticPageSection.nodeId,
+        name: syntheticPageSection.name,
+        type: syntheticPageSection.type,
+        mode: "snapshot",
+        reason,
+        similarity: 1,
+        fidelityScore: 1,
+        riskScore: 0,
+        htmlBlocked: true,
+        instabilityReasons: undefined,
+        healingIssues: [],
+        healingSteps: [
+          reason,
+          "Snapshot responsivo da pagina inteira aplicado com overlays de links."
+        ],
+        preservedLinks: pageLinkCount,
+        totalLinks: pageLinkCount,
+        widgetHtml: buildResponsiveSnapshotMarkup(snapshotSource),
+        pixelPerfectRequired: false
+      }
     ];
-    weakestHtmlDecision.widgetHtml = buildSectionSnapshotMarkup(section);
     previewHtml = buildPreviewHtml({
       capture: params.capture,
       decisions
@@ -691,26 +1145,90 @@ export async function createSnapshotElementorDocumentV3(params: {
     overallSimilarity = await computeOverallSimilarity({
       capture: params.capture,
       previewHtml,
-      convertedScreenshotPath: params.outputDir
-        ? `${params.outputDir}/snapshot-preview.png`
-        : undefined
+      convertedScreenshotPath
     });
+    return true;
+  };
+
+  if (!sectionSeparation.safe) {
+    await switchToFullPageSnapshot(
+      sectionSeparation.fallbackReason ??
+        "Separacao por secoes falhou; snapshot da pagina inteira aplicado."
+    );
+  } else {
+    while (!overallSimilarity.passed) {
+      const weakestHtmlDecision = decisions
+        .filter((candidate) => candidate.mode === "html")
+        .sort((left, right) => left.similarity - right.similarity)[0];
+
+      if (!weakestHtmlDecision) {
+        await switchToFullPageSnapshot(
+          `Snapshots por secao ficaram em ${toPercentLabel(
+            overallSimilarity.similarity
+          )}; snapshot da pagina inteira aplicado.`
+        );
+        break;
+      }
+
+      const section = orderedSections.find(
+        (candidate) => candidate.nodeId === weakestHtmlDecision.nodeId
+      );
+
+      if (!section) {
+        break;
+      }
+
+      weakestHtmlDecision.mode = "snapshot";
+      weakestHtmlDecision.reason = `Secao ${weakestHtmlDecision.name} (${weakestHtmlDecision.nodeId}) rebaixada para snapshot apos validacao global da pagina.`;
+      weakestHtmlDecision.similarity = 1;
+      weakestHtmlDecision.fidelityScore = 1;
+      weakestHtmlDecision.htmlBlocked = true;
+      weakestHtmlDecision.healingSteps = [
+        ...(weakestHtmlDecision.healingSteps ?? []),
+        `Validacao da pagina completa caiu para ${toPercentLabel(overallSimilarity.similarity)}.`,
+        "Secao re-renderizada como snapshot."
+      ];
+      weakestHtmlDecision.widgetHtml = buildSectionSnapshotMarkup(section);
+      previewHtml = buildPreviewHtml({
+        capture: params.capture,
+        decisions
+      });
+      overallSimilarity = await computeOverallSimilarity({
+        capture: params.capture,
+        previewHtml,
+        convertedScreenshotPath
+      });
+    }
   }
 
-  const content = decisions.map((decision, index) =>
-    buildContainerElement({
-      section: orderedSections[index],
-      widgetHtml: decision.widgetHtml,
-      mode: decision.mode,
-      similarity: decision.similarity,
-      fidelityScore: decision.fidelityScore,
-      riskScore: decision.riskScore,
-      htmlBlocked: decision.htmlBlocked,
-      instabilityReasons: decision.instabilityReasons,
-      healingSteps: decision.healingSteps,
-      index
-    })
-  );
+  const contentSections =
+    usedFullPageSnapshot
+      ? syntheticPageSection
+        ? [syntheticPageSection]
+        : []
+      : orderedSections;
+  const content = decisions.flatMap((decision, index) => {
+    const section = contentSections[index];
+
+    if (!section) {
+      return [];
+    }
+
+    return [
+      buildContainerElement({
+        section,
+        widgetHtml: decision.widgetHtml,
+        mode: decision.mode,
+        similarity: decision.similarity,
+        fidelityScore: decision.fidelityScore,
+        riskScore: decision.riskScore,
+        htmlBlocked: decision.htmlBlocked,
+        instabilityReasons: decision.instabilityReasons,
+        healingSteps: decision.healingSteps,
+        index
+      })
+    ];
+  });
   const sectionReports = decisions.map<SnapshotSectionReport>((decision) => ({
     nodeId: decision.nodeId,
     name: decision.name,
@@ -727,17 +1245,20 @@ export async function createSnapshotElementorDocumentV3(params: {
     preservedLinks: decision.preservedLinks,
     totalLinks: decision.totalLinks
   }));
-  const warnings = sectionReports
-    .filter((section) => section.mode === "snapshot")
-    .map((section) => `${section.name} (${section.nodeId}) exportada como snapshot.`)
+  const warnings = diagnosticWarnings
     .concat(
-      requiresPixelPerfect && pixelPerfectReason ? [pixelPerfectReason] : [],
+      usedFullPageSnapshot && fullPageFallbackReason
+        ? [fullPageFallbackReason]
+        : [],
+      sectionReports
+        .filter((section) => section.mode === "snapshot")
+        .map((section) => `${section.name} (${section.nodeId}) exportada como snapshot.`),
       overallSimilarity.passed
         ? []
         : [
             `Similaridade final da pagina ficou em ${toPercentLabel(
               overallSimilarity.similarity
-            )} mesmo apos os fallbacks por secao.`
+            )}, abaixo do minimo de ${toPercentLabel(PAGE_SIMILARITY_THRESHOLD)}.`
           ]
     );
 
@@ -750,15 +1271,15 @@ export async function createSnapshotElementorDocumentV3(params: {
     },
     previewHtml,
     snapshot: {
+      renderStrategy: usedFullPageSnapshot ? "full-page-snapshot" : "section-snapshots",
+      fullPageFallbackReason,
       overallSimilarity: overallSimilarity.similarity,
       threshold: PAGE_SIMILARITY_THRESHOLD,
-      convertedScreenshotPath: params.outputDir
-        ? `${params.outputDir}/snapshot-preview.png`
-        : undefined,
+      convertedScreenshotPath,
       originalScreenshotPath: params.capture.artifacts.screenshots.desktop,
       sectionReports,
-      requiresPixelPerfect,
-      pixelPerfectReason,
+      requiresPixelPerfect: false,
+      pixelPerfectReason: undefined,
       learningNotes: initial.learningNotes,
       totals: {
         htmlSections: sectionReports.filter((section) => section.mode === "html").length,

@@ -9,6 +9,7 @@ import { runCapturePipelineV3 } from "@/lib/converter-v3/orchestration/pipeline-
 import { buildExportReport } from "@/lib/converter-v3/reports/report-builder";
 import { resolveSourceFromHtml, resolveSourceFromUpload } from "@/lib/converter-v3/resolve/source-resolver";
 import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
+import { isForceVisualSnapshotEnabled } from "@/lib/env";
 
 async function writeJson(filePath: string, value: unknown) {
   await writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
@@ -52,11 +53,16 @@ function resolveSnapshotStatus(params: {
   }
 
   if (params.emittedMode === "snapshot" && params.snapshot) {
+    const renderStrategyLabel =
+      params.snapshot.renderStrategy === "full-page-snapshot"
+        ? "pagina inteira"
+        : "secoes";
+
     return {
       snapshotEnabled: true,
-      snapshotReason: `Snapshot validado com similaridade ${(params.snapshot.overallSimilarity * 100).toFixed(
-        2
-      )}%.`
+      snapshotReason: `Snapshot visual (${renderStrategyLabel}) validado com similaridade ${(
+        params.snapshot.overallSimilarity * 100
+      ).toFixed(2)}%.`
     };
   }
 
@@ -78,6 +84,7 @@ export async function runExportPipelineV3(
   resolvedSource: ResolvedSource,
   options: CapturePipelineOptions = {}
 ): Promise<ExportPipelineResult> {
+  const forceVisualSnapshot = isForceVisualSnapshotEnabled();
   const captureResult = await runCapturePipelineV3(resolvedSource, options);
   const outputDir = captureResult.capture.artifacts.outputDir;
   let selectedMode = captureResult.analysis.selectedMode;
@@ -93,7 +100,19 @@ export async function runExportPipelineV3(
     captureResult.capture.artifacts.sectionArtifactsPath = path.join(outputDir, "sections.json");
     await writeJson(captureResult.capture.artifacts.sectionArtifactsPath, sections);
 
-    if (sections.length > 0) {
+    if (forceVisualSnapshot) {
+      selectedMode = "snapshot";
+      captureResult.analysis = {
+        ...captureResult.analysis,
+        selectedMode,
+        reasons: [
+          sections.length > 0
+            ? "FORCE_VISUAL_SNAPSHOT ativo: snapshots visuais por secao/pagina inteira sao o modo principal."
+            : "FORCE_VISUAL_SNAPSHOT ativo: secoes nao ficaram prontas, entao o snapshot responsivo da pagina inteira sera o modo principal.",
+          ...captureResult.analysis.reasons
+        ]
+      };
+    } else if (sections.length > 0) {
       selectedMode = "snapshot";
       captureResult.analysis = {
         ...captureResult.analysis,

@@ -864,7 +864,7 @@ export async function buildVisualSectionCaptures(params: {
     const detectedSection = detectedSectionById.get(sectionNode.id);
     const name = `${detectedSection?.type ?? "section"}-${index + 1}`;
     const linkNodeIds = subtreeNodes
-      .filter((node) => node.kind === "button" && Boolean(node.content.href?.trim()))
+      .filter((node) => Boolean(node.content.href?.trim()))
       .map((node) => node.id);
 
     sections.push({

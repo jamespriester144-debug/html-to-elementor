@@ -12,6 +12,7 @@ import {
   VisualValidationError,
   validateElementorExport
 } from "@/lib/converter-v3/visual-regression-validator";
+import { isForceVisualSnapshotEnabled } from "@/lib/env";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
 export type NativeExporterResult = {
@@ -194,7 +195,11 @@ function buildPixelPerfectCandidate(params: {
   };
 }
 
-function getCandidateModes(selectedMode: OutputMode): OutputMode[] {
+function getCandidateModes(selectedMode: OutputMode, forceVisualSnapshot: boolean): OutputMode[] {
+  if (forceVisualSnapshot) {
+    return ["snapshot"];
+  }
+
   if (selectedMode === "snapshot") {
     return ["snapshot", "pixel-perfect"];
   }
@@ -220,7 +225,8 @@ export async function createElementorNativeExport(params: {
   selectedMode: OutputMode;
   outputDir?: string;
 }): Promise<NativeExporterResult> {
-  const attemptedModes = getCandidateModes(params.selectedMode);
+  const forceVisualSnapshot = isForceVisualSnapshotEnabled();
+  const attemptedModes = getCandidateModes(params.selectedMode, forceVisualSnapshot);
   const warnings: string[] = [];
   let lastValidation: VisualValidationReport | null = null;
 
@@ -258,7 +264,8 @@ export async function createElementorNativeExport(params: {
     if (
       candidate.emittedMode === "snapshot" &&
       candidate.snapshot &&
-      candidate.snapshot.requiresPixelPerfect
+      candidate.snapshot.requiresPixelPerfect &&
+      !forceVisualSnapshot
     ) {
       warnings.push(
         candidate.snapshot.pixelPerfectReason ??
@@ -272,6 +279,22 @@ export async function createElementorNativeExport(params: {
       candidate.snapshot &&
       candidate.snapshot.overallSimilarity < candidate.snapshot.threshold
     ) {
+      lastValidation = {
+        ...validation,
+        passed: false,
+        issueCount: 1,
+        issues: [
+          {
+            type: "missing-position",
+            nodeId: params.layout.rootNodeId,
+            message: `Similaridade visual final ficou em ${(
+              candidate.snapshot.overallSimilarity * 100
+            ).toFixed(2)}%, abaixo do minimo de ${(
+              candidate.snapshot.threshold * 100
+            ).toFixed(2)}%.`
+          }
+        ]
+      };
       warnings.push(
         `Modo snapshot ficou abaixo da similaridade minima (${(
           candidate.snapshot.overallSimilarity * 100

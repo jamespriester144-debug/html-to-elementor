@@ -4515,7 +4515,7 @@ async function testV3SnapshotEmitterBlocksHtmlProfilesAfterHardFailure() {
   assert.equal(result.snapshot.requiresPixelPerfect, false);
 }
 
-async function testV3SnapshotEmitterRequiresPixelPerfectBelowNinetySeven() {
+async function testV3SnapshotEmitterKeepsSnapshotOutputWhenSectionAlreadyMatchesVisually() {
   const width = 100;
   const sectionHeight = 100;
   const reference = createSvgDataUrl(
@@ -4622,9 +4622,269 @@ async function testV3SnapshotEmitterRequiresPixelPerfectBelowNinetySeven() {
 
   assert.equal(result.snapshot.sectionReports[0]?.mode, "snapshot");
   assert.equal(result.snapshot.sectionReports[0]?.htmlBlocked, true);
-  assert.equal(result.snapshot.requiresPixelPerfect, true);
-  assert.match(String(result.snapshot.pixelPerfectReason), /pixel-perfect/i);
+  assert.equal(result.snapshot.renderStrategy, "section-snapshots");
+  assert.equal(result.snapshot.requiresPixelPerfect, false);
+  assert.equal(result.snapshot.pixelPerfectReason, undefined);
   assert.equal(result.snapshot.totals.pixelPerfectRequiredSections, 1);
+}
+
+async function testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUnsafe() {
+  const width = 1200;
+  const tabletWidth = 900;
+  const mobileWidth = 600;
+  const topSectionHeight = 100;
+  const bottomSectionHeight = 100;
+  const pageHeight = topSectionHeight + bottomSectionHeight;
+  const topDesktop = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${topSectionHeight}" viewBox="0 0 ${width} ${topSectionHeight}"><rect width="${width}" height="${topSectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const bottomDesktop = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${bottomSectionHeight}" viewBox="0 0 ${width} ${bottomSectionHeight}"><rect width="${width}" height="${bottomSectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const fullPageDesktop = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${pageHeight}" viewBox="0 0 ${width} ${pageHeight}"><rect width="${width}" height="${topSectionHeight}" fill="#f2545b" /><rect y="${topSectionHeight}" width="${width}" height="${bottomSectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const fullPageTablet = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${tabletWidth}" height="${pageHeight}" viewBox="0 0 ${tabletWidth} ${pageHeight}"><rect width="${tabletWidth}" height="${topSectionHeight}" fill="#f2545b" /><rect y="${topSectionHeight}" width="${tabletWidth}" height="${bottomSectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const fullPageMobile = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${mobileWidth}" height="${pageHeight}" viewBox="0 0 ${mobileWidth} ${pageHeight}"><rect width="${mobileWidth}" height="${topSectionHeight}" fill="#f2545b" /><rect y="${topSectionHeight}" width="${mobileWidth}" height="${bottomSectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-full-page",
+    sourceKind: "raw-html",
+    title: "Snapshot Full Page",
+    sourceHtml: "<body></body>",
+    renderedHtml: "<html><body></body></html>",
+    renderer: "browser",
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height: pageHeight
+      },
+      {
+        name: "tablet",
+        width: tabletWidth,
+        height: pageHeight
+      },
+      {
+        name: "mobile",
+        width: mobileWidth,
+        height: pageHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [
+      {
+        id: "hero-link",
+        tag: "a",
+        text: "Buy",
+        attributes: {
+          href: "#buy"
+        },
+        parentId: "page",
+        childIds: [],
+        computedStyles: {},
+        box: {
+          x: 120,
+          y: 40,
+          top: 40,
+          right: 520,
+          bottom: 60,
+          left: 120,
+          width: 400,
+          height: 20,
+          centerX: 320,
+          centerY: 50
+        },
+        viewportStates: {
+          desktop: {
+            computedStyles: {},
+            box: {
+              x: 120,
+              y: 40,
+              top: 40,
+              right: 520,
+              bottom: 60,
+              left: 120,
+              width: 400,
+              height: 20,
+              centerX: 320,
+              centerY: 50
+            },
+            isVisible: true
+          },
+          tablet: {
+            computedStyles: {},
+            box: {
+              x: 90,
+              y: 40,
+              top: 40,
+              right: 390,
+              bottom: 60,
+              left: 90,
+              width: 300,
+              height: 20,
+              centerX: 240,
+              centerY: 50
+            },
+            isVisible: true
+          },
+          mobile: {
+            computedStyles: {},
+            box: {
+              x: 60,
+              y: 40,
+              top: 40,
+              right: 260,
+              bottom: 60,
+              left: 60,
+              width: 200,
+              height: 20,
+              centerX: 160,
+              centerY: 50
+            },
+            isVisible: true
+          }
+        },
+        visualOrder: 1,
+        isVisible: true,
+        asset: {
+          href: "#buy"
+        }
+      }
+    ],
+    summary: {
+      totalNodes: 1,
+      visibleNodes: 1,
+      images: 0,
+      buttons: 1,
+      textBlocks: 0,
+      sections: 2
+    },
+    artifacts: {
+      outputDir: path.join(os.tmpdir(), "snapshot-full-page-tests"),
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: fullPageDesktop,
+        tablet: fullPageTablet,
+        mobile: fullPageMobile
+      }
+    }
+  } satisfies PageCapture;
+  const sections: SectionCapture[] = [
+    {
+      id: "hero-section",
+      nodeId: "hero-section",
+      name: "hero-1",
+      type: "hero",
+      box: {
+        x: 0,
+        y: 0,
+        width,
+        height: topSectionHeight
+      },
+      subtreeNodeIds: ["hero-section"],
+      originalHtml: `<section style="width:${width}px;height:${topSectionHeight}px;background:#f2545b;"></section>`,
+      htmlCandidate: `<!doctype html><html><body><section style="width:${width}px;height:${topSectionHeight}px;background:#f2545b;"></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height: topSectionHeight,
+          snapshotDataUrl: topDesktop,
+          linkOverlays: []
+        }
+      }
+    },
+    {
+      id: "feature-section",
+      nodeId: "feature-section",
+      name: "section-2",
+      type: "section",
+      box: {
+        x: 0,
+        y: topSectionHeight,
+        width,
+        height: bottomSectionHeight
+      },
+      subtreeNodeIds: ["feature-section"],
+      originalHtml: `<section style="width:${width}px;height:${bottomSectionHeight}px;background:#2e86ab;"></section>`,
+      htmlCandidate: `<!doctype html><html><body><section style="width:${width}px;height:${bottomSectionHeight}px;background:#2e86ab;"></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height: bottomSectionHeight,
+          snapshotDataUrl: bottomDesktop,
+          linkOverlays: []
+        }
+      }
+    }
+  ];
+  const layout: LayoutDocument = {
+    id: "snapshot-full-page-layout",
+    title: "Snapshot Full Page Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 3,
+    sectionIds: ["hero-section", "feature-section"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      },
+      {
+        id: "feature-section",
+        type: "section",
+        confidence: 0.9,
+        childIds: [],
+        anchors: [],
+        contains: ["section"]
+      }
+    ],
+    nodes: []
+  };
+
+  const result = await createSnapshotElementorDocumentV3({
+    capture,
+    layout,
+    sections,
+    selectedMode: "snapshot"
+  });
+
+  assert.equal(result.document.content.length, 1);
+  assert.equal(result.snapshot.renderStrategy, "full-page-snapshot");
+  assert.equal(result.snapshot.totals.htmlSections, 0);
+  assert.equal(result.snapshot.totals.snapshotSections, 1);
+  assert.equal(result.snapshot.totals.totalLinks, 1);
+  assert.equal(result.snapshot.totals.preservedLinks, 1);
+  assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
+  assert.match(String(result.snapshot.fullPageFallbackReason), /hero-1|section-2/);
+  assert.match(
+    String(result.document.content[0]?.elements?.[0]?.settings?.html ?? ""),
+    /converter-v3-snapshot-link-1/
+  );
 }
 
 async function main() {
@@ -4660,7 +4920,8 @@ async function main() {
   testSectionClassifierDetectsSemanticSections();
   await testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSection();
   await testV3SnapshotEmitterBlocksHtmlProfilesAfterHardFailure();
-  await testV3SnapshotEmitterRequiresPixelPerfectBelowNinetySeven();
+  await testV3SnapshotEmitterKeepsSnapshotOutputWhenSectionAlreadyMatchesVisually();
+  await testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUnsafe();
   console.log("converter-v3 tests passed");
 }
 
