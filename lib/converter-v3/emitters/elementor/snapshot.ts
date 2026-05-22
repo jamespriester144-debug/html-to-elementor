@@ -1,17 +1,37 @@
 import * as cheerio from "cheerio";
 
-import type { PageCapture, SectionCapture, SectionCaptureViewport } from "@/lib/converter-v3/contracts/capture";
+import type {
+  PageCapture,
+  SectionCapture,
+  SectionCaptureViewport
+} from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/layout";
 import type {
   SnapshotSectionRenderMode,
   SnapshotSectionReport,
   SnapshotVisualSummary
 } from "@/lib/converter-v3/contracts/output";
-import { compareImagesPixelByPixel, renderHtmlToScreenshot } from "@/lib/converter-v3/visual-similarity";
+import {
+  HTML_BLOCK_SIMILARITY,
+  HTML_TO_SNAPSHOT_SIMILARITY,
+  PIXEL_PERFECT_SIMILARITY,
+  createSectionStrategyLearningState,
+  inferHealingIssues,
+  learnFromSectionSimilarity,
+  resolveSectionFidelityDecision,
+  type SectionFidelityDecision,
+  type SectionHealingIssue
+} from "@/lib/converter-v3/section-fidelity-policy";
+import {
+  compareImagesPixelByPixel,
+  renderHtmlToScreenshot
+} from "@/lib/converter-v3/visual-similarity";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
 type SnapshotDecision = SnapshotSectionReport & {
   widgetHtml: string;
+  htmlSimilarity?: number;
+  pixelPerfectRequired: boolean;
 };
 
 type SnapshotEmitterResult = {
@@ -21,7 +41,13 @@ type SnapshotEmitterResult = {
   warnings: string[];
 };
 
-const SECTION_SIMILARITY_THRESHOLD = 0.985;
+type InitialDecisionResult = {
+  decisions: SnapshotDecision[];
+  learningNotes: string[];
+  requiresPixelPerfect: boolean;
+  pixelPerfectReason?: string;
+};
+
 const PAGE_SIMILARITY_THRESHOLD = 0.99;
 const TABLET_BREAKPOINT = 1024;
 const MOBILE_BREAKPOINT = 767;
@@ -43,6 +69,10 @@ function zeroSpacing() {
     left: 0,
     isLinked: true
   };
+}
+
+function toPercentLabel(value: number) {
+  return `${(value * 100).toFixed(2)}%`;
 }
 
 function escapeHtmlAttribute(value: string) {
@@ -73,24 +103,6 @@ function getUniqueLinkCount(section: SectionCapture) {
   return unique.size;
 }
 
-function shouldAttemptHtml(section: SectionCapture) {
-  const desktopViewport = getDesktopViewport(section);
-
-  if (!desktopViewport?.snapshotDataUrl || !section.htmlCandidate.trim()) {
-    return false;
-  }
-
-  if (section.complexity.hasEmbeds || section.complexity.hasPseudoElements || section.complexity.hasTransforms) {
-    return false;
-  }
-
-  if (section.complexity.absoluteNodes > 1 || section.complexity.overlappingNodes > 0) {
-    return false;
-  }
-
-  return section.complexity.nodeCount <= 40;
-}
-
 function extractWidgetHtmlFromFrozenDocument(documentHtml: string) {
   const $ = cheerio.load(documentHtml);
   const bodyHtml = $("body").html()?.trim();
@@ -117,7 +129,12 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
       target?: string;
       rel?: string;
       isButton: boolean;
-      positions: Partial<Record<"desktop" | "tablet" | "mobile", SectionCaptureViewport["linkOverlays"][number]["relativeBox"]>>;
+      positions: Partial<
+        Record<
+          "desktop" | "tablet" | "mobile",
+          SectionCaptureViewport["linkOverlays"][number]["relativeBox"]
+        >
+      >;
     }
   >();
 
@@ -149,7 +166,10 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
     "width:100%",
     `max-width:${Math.round(desktop.width)}px`,
     "margin:0 auto",
-    `aspect-ratio:${Math.max(Math.round(desktop.width), 1)} / ${Math.max(Math.round(desktop.height), 1)}`,
+    `aspect-ratio:${Math.max(Math.round(desktop.width), 1)} / ${Math.max(
+      Math.round(desktop.height),
+      1
+    )}`,
     `background-image:url("${escapeCssValue(desktop.snapshotDataUrl)}")`,
     "background-size:100% 100%",
     "background-position:center top",
@@ -269,7 +289,8 @@ function buildPreviewHtml(params: {
   decisions: SnapshotDecision[];
 }) {
   const desktopViewport =
-    params.capture.viewports.find((viewport) => viewport.name === "desktop") ?? params.capture.viewports[0];
+    params.capture.viewports.find((viewport) => viewport.name === "desktop") ??
+    params.capture.viewports[0];
   const pageWidth = desktopViewport?.width ?? 1440;
   const sectionsHtml = params.decisions
     .map(
@@ -327,10 +348,59 @@ async function validateHtmlSection(section: SectionCapture) {
   const comparison = await compareImagesPixelByPixel({
     reference: desktopViewport.snapshotDataUrl,
     candidate: screenshot.dataUrl,
-    similarityThreshold: SECTION_SIMILARITY_THRESHOLD
+    similarityThreshold: HTML_TO_SNAPSHOT_SIMILARITY
   });
 
   return comparison;
+}
+
+function describeHealingIssue(issue: SectionHealingIssue) {
+  switch (issue) {
+    case "image-out-of-place":
+      return "Healing detectou imagem fora do lugar.";
+    case "missing-button":
+      return "Healing detectou CTA/botao com risco de sumir.";
+    case "text-misaligned":
+      return "Healing detectou risco de texto desalinhado.";
+    case "broken-overlay":
+      return "Healing detectou overlay/camada quebravel.";
+    case "wrong-spacing":
+      return "Healing detectou espacamento/layout instavel.";
+    case "visual-overlap":
+      return "Healing detectou overlap visual sensivel.";
+    default:
+      return "Healing detectou perda visual.";
+  }
+}
+
+function buildSnapshotReason(params: {
+  section: SectionCapture;
+  decision: SectionFidelityDecision;
+  similarity?: number;
+}) {
+  if (typeof params.similarity === "number") {
+    if (params.similarity < PIXEL_PERFECT_SIMILARITY) {
+      return `HTML congelado caiu para ${toPercentLabel(
+        params.similarity
+      )}; snapshot aplicado e export completo marcado para pixel-perfect.`;
+    }
+
+    if (params.similarity < HTML_BLOCK_SIMILARITY) {
+      return `HTML congelado caiu para ${toPercentLabel(
+        params.similarity
+      )}; snapshot aplicado e HTML bloqueado para esse perfil visual.`;
+    }
+
+    return `HTML congelado caiu para ${toPercentLabel(
+      params.similarity
+    )}; snapshot aplicado automaticamente para preservar a aparencia.`;
+  }
+
+  if (params.decision.narrativeReasons.length > 0) {
+    return `Secao instavel para Elementor nativo. ${params.decision.narrativeReasons.join(" ")}`;
+  }
+
+  return "Secao convertida diretamente para snapshot para preservar a aparencia.";
 }
 
 function buildContainerElement(params: {
@@ -338,6 +408,11 @@ function buildContainerElement(params: {
   widgetHtml: string;
   mode: SnapshotSectionRenderMode;
   similarity: number;
+  fidelityScore: number | undefined;
+  riskScore: number | undefined;
+  htmlBlocked: boolean | undefined;
+  instabilityReasons: string[] | undefined;
+  healingSteps: string[] | undefined;
   index: number;
 }) {
   const desktopViewport = getDesktopViewport(params.section);
@@ -356,6 +431,11 @@ function buildContainerElement(params: {
       converter_v3_section_type: params.section.type,
       converter_v3_section_render_mode: params.mode,
       converter_v3_section_similarity: params.similarity,
+      converter_v3_section_fidelity_score: params.fidelityScore,
+      converter_v3_section_risk_score: params.riskScore,
+      converter_v3_section_html_blocked: params.htmlBlocked,
+      converter_v3_section_instability_reasons: params.instabilityReasons,
+      converter_v3_section_healing_steps: params.healingSteps,
       html_to_elementor_strategy: "snapshot-elementor"
     },
     elements: [
@@ -374,64 +454,143 @@ function buildContainerElement(params: {
   } satisfies ElementorElement;
 }
 
-async function buildInitialDecisions(sections: SectionCapture[]) {
+async function buildInitialDecisions(sections: SectionCapture[]): Promise<InitialDecisionResult> {
+  const learning = createSectionStrategyLearningState();
   const decisions: SnapshotDecision[] = [];
+  let requiresPixelPerfect = false;
+  let pixelPerfectReason: string | undefined;
 
   for (const section of sections) {
     const totalLinks = getUniqueLinkCount(section);
+    const decision = resolveSectionFidelityDecision(section, learning);
+    const desktopViewport = getDesktopViewport(section);
+    const snapshotWidget = buildSectionSnapshotMarkup(section);
+    const baseReport = {
+      nodeId: section.nodeId,
+      name: section.name,
+      type: section.type,
+      preservedLinks: totalLinks,
+      totalLinks,
+      fidelityScore: 1,
+      riskScore: decision.riskScore,
+      htmlBlocked: decision.htmlBlocked,
+      instabilityReasons: decision.narrativeReasons
+    };
 
-    if (!shouldAttemptHtml(section)) {
+    if (!desktopViewport?.snapshotDataUrl || !section.htmlCandidate.trim()) {
       decisions.push({
-        nodeId: section.nodeId,
-        name: section.name,
-        type: section.type,
+        ...baseReport,
         mode: "snapshot",
         reason:
-          "Secao complexa para HTML congelado; mantendo snapshot para preservar a aparencia.",
+          "Secao sem captura segura para HTML congelado; snapshot aplicado automaticamente.",
         similarity: 1,
-        preservedLinks: totalLinks,
-        totalLinks,
-        widgetHtml: buildSectionSnapshotMarkup(section)
+        healingIssues: [],
+        healingSteps: [
+          "Captura visual indisponivel para validar HTML congelado.",
+          "Snapshot aplicado automaticamente."
+        ],
+        widgetHtml: snapshotWidget,
+        pixelPerfectRequired: false
+      });
+      continue;
+    }
+
+    if (decision.forcePixelPerfect) {
+      requiresPixelPerfect = true;
+      pixelPerfectReason ??= `Secao ${section.name} exige pixel-perfect por risco visual critico.`;
+    }
+
+    if (!decision.htmlAllowed) {
+      decisions.push({
+        ...baseReport,
+        mode: "snapshot",
+        reason: buildSnapshotReason({ section, decision }),
+        similarity: 1,
+        healingIssues: [],
+        healingSteps: [
+          ...decision.narrativeReasons,
+          "Snapshot aplicado automaticamente para evitar reconstrucao nativa instavel."
+        ],
+        widgetHtml: snapshotWidget,
+        pixelPerfectRequired: decision.forcePixelPerfect
       });
       continue;
     }
 
     const htmlValidation = await validateHtmlSection(section);
-    const htmlWidget = extractWidgetHtmlFromFrozenDocument(section.htmlCandidate);
+    const htmlSimilarity = htmlValidation.similarity;
+    const healingIssues = inferHealingIssues(section, decision, htmlSimilarity);
+    const healingSteps = [
+      `HTML congelado validado por secao em ${toPercentLabel(htmlSimilarity)}.`,
+      ...healingIssues.map((issue) => describeHealingIssue(issue))
+    ];
+    learnFromSectionSimilarity({
+      decision,
+      learning,
+      similarity: htmlSimilarity
+    });
 
     if (htmlValidation.passed) {
       decisions.push({
-        nodeId: section.nodeId,
-        name: section.name,
-        type: section.type,
+        ...baseReport,
         mode: "html",
-        reason: `Secao preservada em HTML congelado com similaridade ${(htmlValidation.similarity * 100).toFixed(
-          2
-        )}%.`,
-        similarity: htmlValidation.similarity,
-        preservedLinks: totalLinks,
-        totalLinks,
-        widgetHtml: htmlWidget
+        reason: `Secao preservada em HTML congelado com similaridade ${toPercentLabel(
+          htmlSimilarity
+        )}.`,
+        similarity: htmlSimilarity,
+        fidelityScore: htmlSimilarity,
+        healingIssues: [],
+        healingSteps,
+        widgetHtml: extractWidgetHtmlFromFrozenDocument(section.htmlCandidate),
+        htmlSimilarity,
+        pixelPerfectRequired: false
       });
       continue;
     }
 
+    const htmlBlocked = htmlSimilarity < HTML_BLOCK_SIMILARITY ? true : decision.htmlBlocked;
+    const pixelPerfectRequired = htmlSimilarity < PIXEL_PERFECT_SIMILARITY;
+
+    if (pixelPerfectRequired) {
+      requiresPixelPerfect = true;
+      pixelPerfectReason ??= `Secao ${section.name} caiu para ${toPercentLabel(
+        htmlSimilarity
+      )}; pixel-perfect global exigido.`;
+    }
+
     decisions.push({
-      nodeId: section.nodeId,
-      name: section.name,
-      type: section.type,
+      ...baseReport,
       mode: "snapshot",
-      reason: `HTML congelado ficou abaixo do limite visual (${(htmlValidation.similarity * 100).toFixed(
-        2
-      )}%); usando snapshot fiel da secao.`,
+      reason: buildSnapshotReason({
+        section,
+        decision,
+        similarity: htmlSimilarity
+      }),
       similarity: 1,
-      preservedLinks: totalLinks,
-      totalLinks,
-      widgetHtml: buildSectionSnapshotMarkup(section)
+      fidelityScore: 1,
+      htmlBlocked,
+      healingIssues,
+      healingSteps: [
+        ...healingSteps,
+        htmlSimilarity < HTML_BLOCK_SIMILARITY
+          ? "HTML congelado bloqueado automaticamente para esse perfil visual."
+          : "Secao re-renderizada como snapshot.",
+        pixelPerfectRequired
+          ? "Score abaixo de 97%; fallback final em pixel-perfect foi armado."
+          : ""
+      ].filter(Boolean),
+      widgetHtml: snapshotWidget,
+      htmlSimilarity,
+      pixelPerfectRequired
     });
   }
 
-  return decisions;
+  return {
+    decisions,
+    learningNotes: learning.notes,
+    requiresPixelPerfect,
+    pixelPerfectReason
+  };
 }
 
 async function computeOverallSimilarity(params: {
@@ -440,7 +599,8 @@ async function computeOverallSimilarity(params: {
   convertedScreenshotPath?: string;
 }) {
   const desktopViewport =
-    params.capture.viewports.find((viewport) => viewport.name === "desktop") ?? params.capture.viewports[0];
+    params.capture.viewports.find((viewport) => viewport.name === "desktop") ??
+    params.capture.viewports[0];
   const originalScreenshotPath = params.capture.artifacts.screenshots.desktop;
 
   if (!originalScreenshotPath || !desktopViewport) {
@@ -471,11 +631,14 @@ export async function createSnapshotElementorDocumentV3(params: {
   sections: SectionCapture[];
   selectedMode: OutputMode;
   outputDir?: string;
-}) : Promise<SnapshotEmitterResult> {
+}): Promise<SnapshotEmitterResult> {
   const orderedSections = [...params.sections].sort(
     (left, right) => left.box.y - right.box.y || left.box.x - right.box.x
   );
-  const decisions = await buildInitialDecisions(orderedSections);
+  const initial = await buildInitialDecisions(orderedSections);
+  const decisions = initial.decisions;
+  let requiresPixelPerfect = initial.requiresPixelPerfect;
+  let pixelPerfectReason = initial.pixelPerfectReason;
   let previewHtml = buildPreviewHtml({
     capture: params.capture,
     decisions
@@ -490,14 +653,20 @@ export async function createSnapshotElementorDocumentV3(params: {
 
   while (!overallSimilarity.passed) {
     const weakestHtmlDecision = decisions
-      .filter((decision) => decision.mode === "html")
+      .filter((candidate) => candidate.mode === "html")
       .sort((left, right) => left.similarity - right.similarity)[0];
 
     if (!weakestHtmlDecision) {
+      requiresPixelPerfect = true;
+      pixelPerfectReason ??= `Mesmo apos snapshots por secao, a pagina ficou em ${toPercentLabel(
+        overallSimilarity.similarity
+      )}; fallback final em pixel-perfect exigido.`;
       break;
     }
 
-    const section = orderedSections.find((candidate) => candidate.nodeId === weakestHtmlDecision.nodeId);
+    const section = orderedSections.find(
+      (candidate) => candidate.nodeId === weakestHtmlDecision.nodeId
+    );
 
     if (!section) {
       break;
@@ -507,6 +676,13 @@ export async function createSnapshotElementorDocumentV3(params: {
     weakestHtmlDecision.reason =
       "Secao rebaixada para snapshot apos validacao da pagina completa para manter a fidelidade visual global.";
     weakestHtmlDecision.similarity = 1;
+    weakestHtmlDecision.fidelityScore = 1;
+    weakestHtmlDecision.htmlBlocked = true;
+    weakestHtmlDecision.healingSteps = [
+      ...(weakestHtmlDecision.healingSteps ?? []),
+      `Validacao da pagina completa caiu para ${toPercentLabel(overallSimilarity.similarity)}.`,
+      "Secao re-renderizada como snapshot."
+    ];
     weakestHtmlDecision.widgetHtml = buildSectionSnapshotMarkup(section);
     previewHtml = buildPreviewHtml({
       capture: params.capture,
@@ -527,6 +703,11 @@ export async function createSnapshotElementorDocumentV3(params: {
       widgetHtml: decision.widgetHtml,
       mode: decision.mode,
       similarity: decision.similarity,
+      fidelityScore: decision.fidelityScore,
+      riskScore: decision.riskScore,
+      htmlBlocked: decision.htmlBlocked,
+      instabilityReasons: decision.instabilityReasons,
+      healingSteps: decision.healingSteps,
       index
     })
   );
@@ -537,6 +718,12 @@ export async function createSnapshotElementorDocumentV3(params: {
     mode: decision.mode,
     reason: decision.reason,
     similarity: decision.similarity,
+    fidelityScore: decision.fidelityScore,
+    riskScore: decision.riskScore,
+    htmlBlocked: decision.htmlBlocked,
+    instabilityReasons: decision.instabilityReasons,
+    healingIssues: decision.healingIssues,
+    healingSteps: decision.healingSteps,
     preservedLinks: decision.preservedLinks,
     totalLinks: decision.totalLinks
   }));
@@ -544,12 +731,13 @@ export async function createSnapshotElementorDocumentV3(params: {
     .filter((section) => section.mode === "snapshot")
     .map((section) => `${section.name} (${section.nodeId}) exportada como snapshot.`)
     .concat(
+      requiresPixelPerfect && pixelPerfectReason ? [pixelPerfectReason] : [],
       overallSimilarity.passed
         ? []
         : [
-            `Similaridade final da pagina ficou em ${(overallSimilarity.similarity * 100).toFixed(
-              2
-            )}% mesmo apos os fallbacks por secao.`
+            `Similaridade final da pagina ficou em ${toPercentLabel(
+              overallSimilarity.similarity
+            )} mesmo apos os fallbacks por secao.`
           ]
     );
 
@@ -569,10 +757,18 @@ export async function createSnapshotElementorDocumentV3(params: {
         : undefined,
       originalScreenshotPath: params.capture.artifacts.screenshots.desktop,
       sectionReports,
+      requiresPixelPerfect,
+      pixelPerfectReason,
+      learningNotes: initial.learningNotes,
       totals: {
         htmlSections: sectionReports.filter((section) => section.mode === "html").length,
         snapshotSections: sectionReports.filter((section) => section.mode === "snapshot").length,
-        preservedLinks: sectionReports.reduce((sum, section) => sum + section.preservedLinks, 0),
+        pixelPerfectRequiredSections: decisions.filter((decision) => decision.pixelPerfectRequired)
+          .length,
+        preservedLinks: sectionReports.reduce(
+          (sum, section) => sum + section.preservedLinks,
+          0
+        ),
         totalLinks: sectionReports.reduce((sum, section) => sum + section.totalLinks, 0)
       }
     },

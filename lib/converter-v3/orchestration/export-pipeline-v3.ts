@@ -14,6 +14,9 @@ async function writeJson(filePath: string, value: unknown) {
   await writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
+const BROWSER_CAPTURE_FAILURE_MESSAGE =
+  "Captura visual do navegador falhou. Snapshot não pôde ser gerado.";
+
 function resolveFallbackReason(selectedMode: ExportPipelineResult["analysis"]["selectedMode"]) {
   if (
     selectedMode === "snapshot" ||
@@ -25,6 +28,50 @@ function resolveFallbackReason(selectedMode: ExportPipelineResult["analysis"]["s
   }
 
   return `Emitter ${selectedMode} ainda nao implementado na converter-v3; exportando em pixel-perfect por enquanto.`;
+}
+
+function resolveSnapshotStatus(params: {
+  renderer: ExportPipelineResult["capture"]["renderer"];
+  sectionCount: number;
+  emittedMode: ExportPipelineResult["emittedMode"];
+  snapshot?: ExportPipelineResult["snapshot"];
+}) {
+  if (params.renderer !== "browser") {
+    return {
+      snapshotEnabled: false,
+      snapshotReason: BROWSER_CAPTURE_FAILURE_MESSAGE
+    };
+  }
+
+  if (params.sectionCount === 0) {
+    return {
+      snapshotEnabled: false,
+      snapshotReason:
+        "Captura do navegador concluida, mas nenhuma secao elegivel para snapshot foi detectada."
+    };
+  }
+
+  if (params.emittedMode === "snapshot" && params.snapshot) {
+    return {
+      snapshotEnabled: true,
+      snapshotReason: `Snapshot validado com similaridade ${(params.snapshot.overallSimilarity * 100).toFixed(
+        2
+      )}%.`
+    };
+  }
+
+  if (params.emittedMode === "pixel-perfect") {
+    return {
+      snapshotEnabled: true,
+      snapshotReason:
+        "Snapshot foi tentado com captura real do navegador, mas o export final precisou usar pixel-perfect."
+    };
+  }
+
+  return {
+    snapshotEnabled: true,
+    snapshotReason: "Captura do navegador disponivel para snapshot visual."
+  };
 }
 
 export async function runExportPipelineV3(
@@ -56,6 +103,16 @@ export async function runExportPipelineV3(
           ...captureResult.analysis.reasons
         ]
       };
+    } else {
+      selectedMode = "pixel-perfect";
+      captureResult.analysis = {
+        ...captureResult.analysis,
+        selectedMode,
+        reasons: [
+          "Nao houve secoes elegiveis para snapshot; exportando em pixel-perfect para preservar a fidelidade visual.",
+          ...captureResult.analysis.reasons
+        ]
+      };
     }
   }
 
@@ -72,6 +129,12 @@ export async function runExportPipelineV3(
   const validation = exportResult.validation;
   const previewHtml = exportResult.previewHtml;
   const snapshot = exportResult.snapshot;
+  const snapshotStatus = resolveSnapshotStatus({
+    renderer: captureResult.capture.renderer,
+    sectionCount: captureResult.capture.sections?.length ?? 0,
+    emittedMode,
+    snapshot
+  });
 
   const report = buildExportReport({
     capture: captureResult.capture,
@@ -79,6 +142,8 @@ export async function runExportPipelineV3(
     analysis: captureResult.analysis,
     emittedMode,
     validation,
+    snapshotEnabled: snapshotStatus.snapshotEnabled,
+    snapshotReason: snapshotStatus.snapshotReason,
     fallbackReason,
     warnings,
     snapshot

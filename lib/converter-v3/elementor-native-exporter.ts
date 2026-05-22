@@ -196,7 +196,11 @@ function buildPixelPerfectCandidate(params: {
 
 function getCandidateModes(selectedMode: OutputMode): OutputMode[] {
   if (selectedMode === "snapshot") {
-    return ["snapshot", "hybrid", "pixel-perfect"];
+    return ["snapshot", "pixel-perfect"];
+  }
+
+  if (selectedMode === "pixel-perfect") {
+    return ["pixel-perfect"];
   }
 
   if (selectedMode === "editable") {
@@ -250,6 +254,33 @@ export async function createElementorNativeExport(params: {
 
     warnings.push(...candidate.warnings);
     lastValidation = validation;
+
+    if (
+      candidate.emittedMode === "snapshot" &&
+      candidate.snapshot &&
+      candidate.snapshot.requiresPixelPerfect
+    ) {
+      warnings.push(
+        candidate.snapshot.pixelPerfectReason ??
+          "Uma ou mais secoes exigiram pixel-perfect por perda critica de fidelidade visual."
+      );
+      continue;
+    }
+
+    if (
+      candidate.emittedMode === "snapshot" &&
+      candidate.snapshot &&
+      candidate.snapshot.overallSimilarity < candidate.snapshot.threshold
+    ) {
+      warnings.push(
+        `Modo snapshot ficou abaixo da similaridade minima (${(
+          candidate.snapshot.overallSimilarity * 100
+        ).toFixed(2)}% < ${(candidate.snapshot.threshold * 100).toFixed(
+          2
+        )}%); escalando para fallback mais seguro.`
+      );
+      continue;
+    }
 
     if (validation.passed) {
       const fallbackReason =

@@ -124,6 +124,44 @@ export type SectionCaptureViewport = {
   linkOverlays: SectionOverlayLink[];
 };
 
+export type SectionInstabilityReason =
+  | "absolute-positioning"
+  | "complex-z-index"
+  | "overlays"
+  | "transforms"
+  | "complex-gradients"
+  | "pseudo-elements"
+  | "fragile-grid"
+  | "carousel"
+  | "animations"
+  | "unsupported-css"
+  | "dense-dom"
+  | "visual-overlap"
+  | "complex-nested-layout";
+
+export type SectionComplexity = {
+  nodeCount: number;
+  absoluteNodes: number;
+  overlappingNodes: number;
+  interactiveNodes: number;
+  imageNodes: number;
+  overlayNodes: number;
+  complexZIndexNodes: number;
+  transformedNodes: number;
+  gradientNodes: number;
+  animatedNodes: number;
+  unsupportedCssNodes: number;
+  carouselNodes: number;
+  gridContainers: number;
+  flexContainers: number;
+  nestedFlexGridContainers: number;
+  maxFlexGridDepth: number;
+  pseudoElementNodes: number;
+  hasPseudoElements: boolean;
+  hasTransforms: boolean;
+  hasEmbeds: boolean;
+};
+
 export type SectionCapture = {
   id: string;
   nodeId: string;
@@ -138,16 +176,7 @@ export type SectionCapture = {
   subtreeNodeIds: string[];
   originalHtml: string;
   htmlCandidate: string;
-  complexity: {
-    nodeCount: number;
-    absoluteNodes: number;
-    overlappingNodes: number;
-    interactiveNodes: number;
-    imageNodes: number;
-    hasPseudoElements: boolean;
-    hasTransforms: boolean;
-    hasEmbeds: boolean;
-  };
+  complexity: SectionComplexity;
   viewports: Partial<Record<CaptureViewportName, SectionCaptureViewport>>;
 };
 

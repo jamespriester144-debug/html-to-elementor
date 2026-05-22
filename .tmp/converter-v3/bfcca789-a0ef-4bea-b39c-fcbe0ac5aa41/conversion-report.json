@@ -1,0 +1,78 @@
+{
+  "id": "bfcca789-a0ef-4bea-b39c-fcbe0ac5aa41",
+  "title": "Advanced Collagen Plus — 5 Collagen Types from 4 Premium Sources",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "snapshotEnabled": true,
+  "snapshotReason": "Snapshot foi tentado com captura real do navegador, mas o export final precisou usar pixel-perfect.",
+  "selectedMode": "snapshot",
+  "emittedMode": "pixel-perfect",
+  "fallbackReason": "Fallback final em iframe por perda detectada nas exportacoes nativas.",
+  "summary": {
+    "totalNodes": 221,
+    "visibleNodes": 216,
+    "images": 9,
+    "buttons": 17,
+    "textBlocks": 72,
+    "sections": 11
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 221,
+    "sectionCount": 0
+  },
+  "analysis": {
+    "score": 54,
+    "overlappingGroups": 5,
+    "gridContainers": 9,
+    "flexContainers": 40,
+    "absoluteNodes": 7,
+    "decorativeNodes": 11,
+    "interactiveNodes": 17,
+    "selectedMode": "snapshot",
+    "reasons": [
+      "Snapshot Elementor habilitado por haver captura real no navegador.",
+      "Detectados 9 containers em grid.",
+      "Detectados 7 elementos absolutos/fixos.",
+      "Detectados 11 elementos decorativos.",
+      "Detectados 11 cards reutilizaveis.",
+      "Detectados 216 elementos com overlay/z-index relevante.",
+      "Detectados 5 grupos com sobreposicao visual.",
+      "Documento com 221 nos visuais."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "pixel-perfect",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 84,
+      "matchedTexts": 84,
+      "expectedImages": 11,
+      "matchedImages": 11,
+      "expectedButtons": 17,
+      "matchedButtons": 17,
+      "expectedLinks": 7,
+      "matchedLinks": 7,
+      "expectedSections": 0,
+      "matchedSections": 0,
+      "expectedCards": 11,
+      "matchedCards": 11,
+      "expectedHeaders": 1,
+      "matchedHeaders": 1,
+      "expectedFooters": 0,
+      "matchedFooters": 0,
+      "expectedPositionedNodes": 209,
+      "matchedPositionedNodes": 209
+    }
+  },
+  "warnings": [
+    "header-1 (capture-node-2) exportada como snapshot.",
+    "Secao header-1 exige pixel-perfect por risco visual critico.",
+    "Similaridade final da pagina ficou em 85.56% mesmo apos os fallbacks por secao.",
+    "Secao header-1 exige pixel-perfect por risco visual critico.",
+    "Fallback final em iframe por perda detectada nas exportacoes nativas.",
+    "Fallback final em iframe por perda detectada nas exportacoes nativas."
+  ]
+}

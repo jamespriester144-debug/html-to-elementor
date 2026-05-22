@@ -1,0 +1,105 @@
+{
+  "id": "aee80df3-ea37-4740-b526-f29ebb4eb86b",
+  "title": "Radiant Skin",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "snapshotEnabled": true,
+  "snapshotReason": "Snapshot validado com similaridade 100.00%.",
+  "selectedMode": "snapshot",
+  "emittedMode": "snapshot",
+  "summary": {
+    "totalNodes": 2,
+    "visibleNodes": 2,
+    "images": 0,
+    "buttons": 0,
+    "textBlocks": 0,
+    "sections": 1
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 2,
+    "sectionCount": 1
+  },
+  "analysis": {
+    "score": 6,
+    "overlappingGroups": 0,
+    "gridContainers": 0,
+    "flexContainers": 0,
+    "absoluteNodes": 0,
+    "decorativeNodes": 1,
+    "interactiveNodes": 0,
+    "selectedMode": "snapshot",
+    "reasons": [
+      "Snapshot Elementor habilitado por haver captura real no navegador.",
+      "Detectados 1 elementos decorativos.",
+      "Detectados 2 elementos com overlay/z-index relevante."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "snapshot",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 0,
+      "matchedTexts": 0,
+      "expectedImages": 0,
+      "matchedImages": 0,
+      "expectedButtons": 0,
+      "matchedButtons": 0,
+      "expectedLinks": 0,
+      "matchedLinks": 0,
+      "expectedSections": 1,
+      "matchedSections": 1,
+      "expectedCards": 0,
+      "matchedCards": 0,
+      "expectedHeaders": 0,
+      "matchedHeaders": 0,
+      "expectedFooters": 0,
+      "matchedFooters": 0,
+      "expectedPositionedNodes": 0,
+      "matchedPositionedNodes": 0
+    }
+  },
+  "warnings": [
+    "section-1 (capture-node-2) exportada como snapshot."
+  ],
+  "snapshot": {
+    "overallSimilarity": 1,
+    "threshold": 0.99,
+    "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\aee80df3-ea37-4740-b526-f29ebb4eb86b/snapshot-preview.png",
+    "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\aee80df3-ea37-4740-b526-f29ebb4eb86b\\screenshot-desktop.png",
+    "sectionReports": [
+      {
+        "nodeId": "capture-node-2",
+        "name": "section-1",
+        "type": "section",
+        "mode": "snapshot",
+        "reason": "Secao instavel para Elementor nativo. Overlays visuais detectados (1).",
+        "similarity": 1,
+        "fidelityScore": 1,
+        "riskScore": 8,
+        "htmlBlocked": true,
+        "instabilityReasons": [
+          "Overlays visuais detectados (1)."
+        ],
+        "healingIssues": [],
+        "healingSteps": [
+          "Overlays visuais detectados (1).",
+          "Snapshot aplicado automaticamente para evitar reconstrucao nativa instavel."
+        ],
+        "preservedLinks": 0,
+        "totalLinks": 0
+      }
+    ],
+    "requiresPixelPerfect": false,
+    "learningNotes": [],
+    "totals": {
+      "htmlSections": 0,
+      "snapshotSections": 1,
+      "pixelPerfectRequiredSections": 0,
+      "preservedLinks": 0,
+      "totalLinks": 0
+    }
+  }
+}

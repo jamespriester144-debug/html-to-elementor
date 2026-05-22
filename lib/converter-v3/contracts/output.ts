@@ -20,6 +20,12 @@ export type SnapshotSectionReport = {
   mode: SnapshotSectionRenderMode;
   reason: string;
   similarity: number;
+  fidelityScore?: number;
+  riskScore?: number;
+  htmlBlocked?: boolean;
+  instabilityReasons?: string[];
+  healingIssues?: string[];
+  healingSteps?: string[];
   preservedLinks: number;
   totalLinks: number;
 };
@@ -30,9 +36,13 @@ export type SnapshotVisualSummary = {
   convertedScreenshotPath?: string;
   originalScreenshotPath?: string;
   sectionReports: SnapshotSectionReport[];
+  requiresPixelPerfect?: boolean;
+  pixelPerfectReason?: string;
+  learningNotes?: string[];
   totals: {
     htmlSections: number;
     snapshotSections: number;
+    pixelPerfectRequiredSections?: number;
     preservedLinks: number;
     totalLinks: number;
   };
@@ -87,6 +97,8 @@ export type ExportReport = {
   title: string;
   sourceKind: SourceKind;
   renderer: PageCapture["renderer"];
+  snapshotEnabled: boolean;
+  snapshotReason: string;
   selectedMode: OutputMode;
   emittedMode: OutputMode;
   fallbackReason?: string;

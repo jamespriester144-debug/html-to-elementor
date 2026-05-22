@@ -4,6 +4,10 @@ import { join } from "node:path";
 
 import { JSDOM } from "jsdom";
 
+import type {
+  BrowserPage,
+  BrowserPageSession
+} from "@/lib/converter-v3/browser-page";
 import {
   CAPTURED_STYLE_PROPERTIES,
   extractRenderedDomNodes,
@@ -31,11 +35,6 @@ export type BrowserRenderArtifact = {
 
 export type BrowserRenderOptions = {
   preferBrowser?: boolean;
-};
-
-type PageSession = {
-  page: any;
-  close: () => Promise<void>;
 };
 
 function parseInlineStyle(style: string | null): Record<string, string> {
@@ -176,19 +175,19 @@ function collectFallbackNodes(html: string): Omit<BrowserRenderArtifact, "screen
   };
 }
 
-async function waitForStablePage(page: PageSession["page"]) {
+async function waitForStablePage(page: BrowserPage) {
   await page.setJavaScriptEnabled?.(true).catch(() => undefined);
   await page.waitForSelector?.("body", { timeout: 10000 }).catch(() => undefined);
   await page.waitForLoadState?.("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
   await page.waitForLoadState?.("networkidle", { timeout: 5000 }).catch(() => undefined);
   await page.waitForNetworkIdle?.({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
-  await page.evaluate(() => document.fonts?.ready, undefined).catch(() => undefined);
+  await page.evaluate(() => document.fonts?.ready).catch(() => undefined);
 }
 
 async function captureUsingPageFactory(
   documentHtml: string,
   outputDir: string,
-  createPageSession: (viewport: CaptureViewportProfile) => Promise<PageSession>
+  createPageSession: (viewport: CaptureViewportProfile) => Promise<BrowserPageSession>
 ): Promise<BrowserRenderArtifact> {
   const desktopViewport = CAPTURE_VIEWPORTS[0];
   const desktopSession = await createPageSession(desktopViewport);
@@ -299,7 +298,7 @@ async function tryRenderWithPlaywright(
           await page.close().catch(() => undefined);
           await context.close().catch(() => undefined);
         }
-      };
+      } satisfies BrowserPageSession;
     });
   } finally {
     await browser.close().catch(() => undefined);
@@ -333,7 +332,7 @@ async function tryRenderWithPuppeteer(
         close: async () => {
           await page.close().catch(() => undefined);
         }
-      };
+      } satisfies BrowserPageSession;
     });
   } finally {
     await browser.close().catch(() => undefined);

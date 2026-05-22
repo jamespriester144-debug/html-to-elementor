@@ -12,6 +12,8 @@ export function buildExportReport(params: {
   analysis: ComplexityAnalysis;
   emittedMode: OutputMode;
   validation: VisualValidationReport;
+  snapshotEnabled: boolean;
+  snapshotReason: string;
   fallbackReason?: string;
   warnings?: string[];
   snapshot?: SnapshotVisualSummary;
@@ -26,6 +28,8 @@ export function buildExportReport(params: {
     title: params.capture.title,
     sourceKind: params.capture.sourceKind,
     renderer: params.capture.renderer,
+    snapshotEnabled: params.snapshotEnabled,
+    snapshotReason: params.snapshotReason,
     selectedMode: params.analysis.selectedMode,
     emittedMode: params.emittedMode,
     fallbackReason: params.fallbackReason,

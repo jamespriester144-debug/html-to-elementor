@@ -2,10 +2,12 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { BrowserPage } from "@/lib/converter-v3/browser-page";
+
 type BrowserSessionFactory = {
   withPage: <T>(
     viewport: { width: number; height: number },
-    callback: (page: any) => Promise<T>
+    callback: (page: BrowserPage) => Promise<T>
   ) => Promise<T>;
   close: () => Promise<void>;
 };
@@ -20,8 +22,8 @@ export type PixelComparisonResult = {
   height: number;
 };
 
-function toDataUrlFromBuffer(buffer: Buffer, contentType = "image/png") {
-  return `data:${contentType};base64,${buffer.toString("base64")}`;
+function toDataUrlFromBuffer(buffer: Uint8Array, contentType = "image/png") {
+  return `data:${contentType};base64,${Buffer.from(buffer).toString("base64")}`;
 }
 
 async function readImageInputAsDataUrl(source: string) {
@@ -33,13 +35,13 @@ async function readImageInputAsDataUrl(source: string) {
   return toDataUrlFromBuffer(buffer);
 }
 
-async function waitForStablePage(page: any) {
+async function waitForStablePage(page: BrowserPage) {
   await page.setJavaScriptEnabled?.(true).catch(() => undefined);
   await page.waitForSelector?.("body", { timeout: 10000 }).catch(() => undefined);
   await page.waitForLoadState?.("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
   await page.waitForLoadState?.("networkidle", { timeout: 5000 }).catch(() => undefined);
   await page.waitForNetworkIdle?.({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
-  await page.evaluate(() => document.fonts?.ready, undefined).catch(() => undefined);
+  await page.evaluate(() => document.fonts?.ready).catch(() => undefined);
 }
 
 async function createPlaywrightFactory(): Promise<BrowserSessionFactory> {

@@ -3,21 +3,31 @@ import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 
 import type {
+  BrowserLocator,
+  BrowserPage,
+  BrowserScreenshotOptions,
+  BrowserPageSessionWithLocator
+} from "@/lib/converter-v3/browser-page";
+import type {
   CaptureViewportProfile,
   PageCapture,
+  SectionComplexity,
   SectionCapture,
   SectionOverlayLink
 } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode } from "@/lib/converter-v3/contracts/layout";
 
-type PageSession = {
-  page: any;
+type BrowserSessionFactory = {
+  createPageSession: (viewport: CaptureViewportProfile) => Promise<BrowserPageSessionWithLocator>;
   close: () => Promise<void>;
 };
 
-type BrowserSessionFactory = {
-  createPageSession: (viewport: CaptureViewportProfile) => Promise<PageSession>;
-  close: () => Promise<void>;
+type PageWithOptionalLocator = BrowserPage & {
+  locator?: (selector: string) => unknown;
+  $?: (selector: string) => Promise<{
+    screenshot: (options?: BrowserScreenshotOptions) => Promise<Uint8Array>;
+  } | null>;
+  $$?: (selector: string) => Promise<unknown[]>;
 };
 
 type ExtractedSectionViewport = {
@@ -30,8 +40,16 @@ type ExtractedSectionViewport = {
   originalHtml: string;
   frozenHtmlMarkup: string;
   linkOverlays: SectionOverlayLink[];
+  pseudoElementNodes: number;
   hasPseudoElements: boolean;
+  transformedNodes: number;
   hasTransforms: boolean;
+  overlayNodes: number;
+  complexZIndexNodes: number;
+  gradientNodes: number;
+  animatedNodes: number;
+  unsupportedCssNodes: number;
+  carouselNodes: number;
 };
 
 type PreparedSectionCapture = SectionCapture & {
@@ -108,6 +126,80 @@ function buildLayoutNodeMap(layout: LayoutDocument) {
   return new Map(layout.nodes.map((node) => [node.id, node]));
 }
 
+function isBrowserLocator(value: unknown): value is BrowserLocator {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "count" in value &&
+    typeof value.count === "function" &&
+    "screenshot" in value &&
+    typeof value.screenshot === "function"
+  );
+}
+
+function createPageLocator(page: PageWithOptionalLocator, selector: string): BrowserLocator {
+  return {
+    count: async () => {
+      const locator = page.locator?.(selector);
+
+      if (isBrowserLocator(locator)) {
+        return locator.count();
+      }
+
+      if (!page.$$) {
+        throw new Error(`The active browser page does not support counting "${selector}".`);
+      }
+
+      const elements = await page.$$(selector);
+      return elements.length;
+    },
+    screenshot: async (options) => {
+      const locator = page.locator?.(selector);
+
+      if (isBrowserLocator(locator)) {
+        return locator.screenshot(options);
+      }
+
+      if (!page.$) {
+        throw new Error(`The active browser page does not support screenshotting "${selector}".`);
+      }
+
+      const element = await page.$(selector);
+
+      if (!element) {
+        throw new Error(`Unable to find "${selector}" while capturing a section screenshot.`);
+      }
+
+      return element.screenshot(options);
+    }
+  };
+}
+
+export function createBrowserPageWithLocator(
+  page: PageWithOptionalLocator
+): BrowserPageSessionWithLocator["page"] {
+  return {
+    close: () => page.close(),
+    evaluate: page.evaluate.bind(page) as BrowserPageSessionWithLocator["page"]["evaluate"],
+    screenshot: (options) => page.screenshot(options),
+    setContent: (html, options) => page.setContent(html, options),
+    setJavaScriptEnabled: page.setJavaScriptEnabled
+      ? page.setJavaScriptEnabled.bind(page)
+      : undefined,
+    setViewport: page.setViewport ? page.setViewport.bind(page) : undefined,
+    waitForLoadState: page.waitForLoadState
+      ? page.waitForLoadState.bind(page)
+      : undefined,
+    waitForNetworkIdle: page.waitForNetworkIdle
+      ? page.waitForNetworkIdle.bind(page)
+      : undefined,
+    waitForSelector: page.waitForSelector
+      ? page.waitForSelector.bind(page)
+      : undefined,
+    locator: (selector) => createPageLocator(page, selector)
+  };
+}
+
 function collectSubtreeNodeIds(rootId: string, nodeById: Map<string, LayoutNode>) {
   const ids: string[] = [];
   const queue = [rootId];
@@ -161,6 +253,54 @@ function countSubtreeOverlaps(nodes: LayoutNode[]) {
   return overlaps;
 }
 
+function isFlexGridContainer(node: LayoutNode) {
+  return (
+    node.layout.display === "flex" ||
+    node.layout.display === "grid" ||
+    Boolean(node.layout.gridTemplateColumns)
+  );
+}
+
+function computeLayoutDepthMetrics(rootId: string, nodeById: Map<string, LayoutNode>) {
+  let nestedFlexGridContainers = 0;
+  let maxFlexGridDepth = 0;
+  const queue = [{ id: rootId, depth: 0 }];
+
+  while (queue.length) {
+    const current = queue.shift();
+
+    if (!current) {
+      continue;
+    }
+
+    const node = nodeById.get(current.id);
+
+    if (!node) {
+      continue;
+    }
+
+    const nextDepth = isFlexGridContainer(node) ? current.depth + 1 : current.depth;
+
+    if (isFlexGridContainer(node) && nextDepth > 1) {
+      nestedFlexGridContainers += 1;
+    }
+
+    maxFlexGridDepth = Math.max(maxFlexGridDepth, nextDepth);
+
+    node.children.forEach((childId) => {
+      queue.push({
+        id: childId,
+        depth: nextDepth
+      });
+    });
+  }
+
+  return {
+    nestedFlexGridContainers,
+    maxFlexGridDepth
+  };
+}
+
 function buildSectionNodeIds(layout: LayoutDocument) {
   const ids =
     layout.detectedSections.length > 0
@@ -170,8 +310,8 @@ function buildSectionNodeIds(layout: LayoutDocument) {
   return [...new Set(ids)];
 }
 
-function toPngDataUrl(buffer: Buffer) {
-  return `data:image/png;base64,${buffer.toString("base64")}`;
+function toPngDataUrl(buffer: Uint8Array) {
+  return `data:image/png;base64,${Buffer.from(buffer).toString("base64")}`;
 }
 
 function escapeHtml(value: string) {
@@ -215,13 +355,13 @@ function buildFrozenSectionDocument(params: {
 </html>`;
 }
 
-async function waitForStablePage(page: PageSession["page"]) {
+async function waitForStablePage(page: BrowserPage) {
   await page.setJavaScriptEnabled?.(true).catch(() => undefined);
   await page.waitForSelector?.("body", { timeout: 10000 }).catch(() => undefined);
   await page.waitForLoadState?.("domcontentloaded", { timeout: 10000 }).catch(() => undefined);
   await page.waitForLoadState?.("networkidle", { timeout: 5000 }).catch(() => undefined);
   await page.waitForNetworkIdle?.({ idleTime: 500, timeout: 5000 }).catch(() => undefined);
-  await page.evaluate(() => document.fonts?.ready, undefined).catch(() => undefined);
+  await page.evaluate(() => document.fonts?.ready).catch(() => undefined);
 }
 
 async function createPlaywrightFactory(): Promise<BrowserSessionFactory> {
@@ -244,7 +384,7 @@ async function createPlaywrightFactory(): Promise<BrowserSessionFactory> {
       const page = await context.newPage();
 
       return {
-        page,
+        page: createBrowserPageWithLocator(page),
         close: async () => {
           await page.close().catch(() => undefined);
           await context.close().catch(() => undefined);
@@ -276,7 +416,7 @@ async function createPuppeteerFactory(userDataDir: string): Promise<BrowserSessi
       });
 
       return {
-        page,
+        page: createBrowserPageWithLocator(page),
         close: async () => {
           await page.close().catch(() => undefined);
         }
@@ -328,7 +468,7 @@ async function createBrowserFactory(): Promise<BrowserSessionFactory> {
 }
 
 async function extractViewportSectionData(params: {
-  page: PageSession["page"];
+  page: BrowserPage;
   nodeId: string;
   linkNodeIds: string[];
 }) {
@@ -439,14 +579,118 @@ async function extractViewportSectionData(params: {
               (computed.display !== "none" || width > 0 || height > 0)
             );
           };
+          const isTransitionAnimated = function(computed) {
+            const duration = (computed.transitionDuration || "")
+              .split(",")
+              .map((value) => Number.parseFloat(value) || 0);
+            return duration.some((value) => value > 0);
+          };
+          const isComplexGradient = function(computed) {
+            const backgroundImage = computed.backgroundImage || "";
+            if (!/gradient\\(/i.test(backgroundImage)) {
+              return false;
+            }
+
+            const gradientSegments = backgroundImage.split(/,(?![^()]*\\))/);
+            return gradientSegments.length > 1 || /conic-gradient|radial-gradient/i.test(backgroundImage);
+          };
+          const usesUnsupportedCss = function(computed) {
+            const filter = computed.filter || "";
+            const backdropFilter = computed.getPropertyValue("backdrop-filter") || "";
+            const clipPath = computed.clipPath || computed.getPropertyValue("clip-path") || "";
+            const maskImage =
+              computed.maskImage ||
+              computed.webkitMaskImage ||
+              computed.getPropertyValue("mask-image") ||
+              computed.getPropertyValue("-webkit-mask-image") ||
+              "";
+            const mixBlendMode = computed.mixBlendMode || "";
+
+            return (
+              (filter && filter !== "none") ||
+              (backdropFilter && backdropFilter !== "none") ||
+              (clipPath && clipPath !== "none") ||
+              (maskImage && maskImage !== "none") ||
+              (mixBlendMode && mixBlendMode !== "normal")
+            );
+          };
+          const isCarouselLike = function(element, computed) {
+            const fingerprint = [
+              element.getAttribute("class") || "",
+              element.getAttribute("id") || "",
+              element.getAttribute("role") || "",
+              element.getAttribute("aria-roledescription") || "",
+              element.getAttribute("aria-label") || "",
+              element.getAttribute("data-slider") || "",
+              element.getAttribute("data-carousel") || ""
+            ]
+              .join(" ")
+              .toLowerCase();
+
+            return (
+              /carousel|slider|swiper|slick|glide|splide|flickity|embla|marquee/.test(fingerprint) ||
+              (computed.scrollSnapType && computed.scrollSnapType !== "none") ||
+              ((computed.overflowX === "auto" || computed.overflowX === "scroll") &&
+                element.children.length > 1)
+            );
+          };
           const elements = [root].concat(Array.from(root.querySelectorAll("*")));
           const frozenRoot = cloneNodeWithInlineStyles(root);
-          const hasPseudoElements = elements.some(
-            (element) => hasPseudoElement(element, "::before") || hasPseudoElement(element, "::after")
-          );
-          const hasTransforms = elements.some((element) => {
-            const transform = window.getComputedStyle(element).transform;
-            return transform && transform !== "none";
+          let pseudoElementNodes = 0;
+          let transformedNodes = 0;
+          let overlayNodes = 0;
+          let complexZIndexNodes = 0;
+          let gradientNodes = 0;
+          let animatedNodes = 0;
+          let unsupportedCssNodes = 0;
+          let carouselNodes = 0;
+
+          elements.forEach((element) => {
+            const computed = window.getComputedStyle(element);
+            const before = hasPseudoElement(element, "::before");
+            const after = hasPseudoElement(element, "::after");
+            const transform = computed.transform;
+            const zIndex = Number.parseInt(computed.zIndex || "0", 10);
+
+            if (before || after) {
+              pseudoElementNodes += 1;
+            }
+
+            if (transform && transform !== "none") {
+              transformedNodes += 1;
+            }
+
+            if (
+              computed.position === "absolute" ||
+              computed.position === "fixed" ||
+              computed.position === "sticky" ||
+              zIndex > 1
+            ) {
+              overlayNodes += 1;
+            }
+
+            if (zIndex > 1 && (computed.position !== "static" || zIndex >= 10)) {
+              complexZIndexNodes += 1;
+            }
+
+            if (isComplexGradient(computed)) {
+              gradientNodes += 1;
+            }
+
+            if (
+              (computed.animationName && computed.animationName !== "none") ||
+              isTransitionAnimated(computed)
+            ) {
+              animatedNodes += 1;
+            }
+
+            if (usesUnsupportedCss(computed)) {
+              unsupportedCssNodes += 1;
+            }
+
+            if (isCarouselLike(element, computed)) {
+              carouselNodes += 1;
+            }
           });
           const linkOverlays = linkNodeIds
             .map((linkNodeId) => {
@@ -512,8 +756,16 @@ async function extractViewportSectionData(params: {
             originalHtml: root.outerHTML,
             frozenHtmlMarkup: frozenRoot ? frozenRoot.outerHTML : root.outerHTML,
             linkOverlays,
-            hasPseudoElements,
-            hasTransforms
+            pseudoElementNodes,
+            hasPseudoElements: pseudoElementNodes > 0,
+            transformedNodes,
+            hasTransforms: transformedNodes > 0,
+            overlayNodes,
+            complexZIndexNodes,
+            gradientNodes,
+            animatedNodes,
+            unsupportedCssNodes,
+            carouselNodes
           };
         `
       );
@@ -528,7 +780,16 @@ async function extractViewportSectionData(params: {
   );
 }
 
-function createSectionComplexity(sectionNode: LayoutNode, subtreeNodes: LayoutNode[]) {
+function createSectionComplexity(
+  sectionNode: LayoutNode,
+  subtreeNodes: LayoutNode[],
+  nodeById: Map<string, LayoutNode>
+): SectionComplexity {
+  const { nestedFlexGridContainers, maxFlexGridDepth } = computeLayoutDepthMetrics(
+    sectionNode.id,
+    nodeById
+  );
+
   return {
     nodeCount: subtreeNodes.length,
     absoluteNodes: subtreeNodes.filter((node) =>
@@ -537,6 +798,26 @@ function createSectionComplexity(sectionNode: LayoutNode, subtreeNodes: LayoutNo
     overlappingNodes: countSubtreeOverlaps(subtreeNodes),
     interactiveNodes: subtreeNodes.filter((node) => node.kind === "button").length,
     imageNodes: subtreeNodes.filter((node) => node.kind === "image").length,
+    overlayNodes: subtreeNodes.filter(
+      (node) =>
+        node.detection?.semanticRole === "overlay" ||
+        (node.visual?.effectiveZIndex ?? 0) > 1 ||
+        (node.visual?.overlapCount ?? 0) > 0
+    ).length,
+    complexZIndexNodes: subtreeNodes.filter((node) => (node.visual?.effectiveZIndex ?? 0) > 1)
+      .length,
+    transformedNodes: 0,
+    gradientNodes: 0,
+    animatedNodes: 0,
+    unsupportedCssNodes: 0,
+    carouselNodes: 0,
+    gridContainers: subtreeNodes.filter(
+      (node) => node.layout.display === "grid" || Boolean(node.layout.gridTemplateColumns)
+    ).length,
+    flexContainers: subtreeNodes.filter((node) => node.layout.display === "flex").length,
+    nestedFlexGridContainers,
+    maxFlexGridDepth,
+    pseudoElementNodes: 0,
     hasPseudoElements: false,
     hasTransforms: false,
     hasEmbeds: subtreeNodes.some((node) =>
@@ -600,7 +881,7 @@ export async function buildVisualSectionCaptures(params: {
       subtreeNodeIds,
       originalHtml: "",
       htmlCandidate: "",
-      complexity: createSectionComplexity(sectionNode, subtreeNodes),
+      complexity: createSectionComplexity(sectionNode, subtreeNodes, nodeById),
       linkNodeIds,
       viewports: {}
     });
@@ -658,8 +939,22 @@ export async function buildVisualSectionCaptures(params: {
               minHeight: extracted.box.height,
               frozenHtmlMarkup: extracted.frozenHtmlMarkup
             });
+            section.complexity.pseudoElementNodes = extracted.pseudoElementNodes;
             section.complexity.hasPseudoElements = extracted.hasPseudoElements;
+            section.complexity.transformedNodes = extracted.transformedNodes;
             section.complexity.hasTransforms = extracted.hasTransforms;
+            section.complexity.overlayNodes = Math.max(
+              section.complexity.overlayNodes,
+              extracted.overlayNodes
+            );
+            section.complexity.complexZIndexNodes = Math.max(
+              section.complexity.complexZIndexNodes,
+              extracted.complexZIndexNodes
+            );
+            section.complexity.gradientNodes = extracted.gradientNodes;
+            section.complexity.animatedNodes = extracted.animatedNodes;
+            section.complexity.unsupportedCssNodes = extracted.unsupportedCssNodes;
+            section.complexity.carouselNodes = extracted.carouselNodes;
           }
         }
       } finally {
@@ -670,5 +965,9 @@ export async function buildVisualSectionCaptures(params: {
     await browserFactory.close().catch(() => undefined);
   }
 
-  return sections.map(({ linkNodeIds, ...section }) => section);
+  return sections.map((section) => {
+    const { linkNodeIds, ...result } = section;
+    void linkNodeIds;
+    return result;
+  });
 }

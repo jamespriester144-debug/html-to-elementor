@@ -40,238 +40,118 @@ function createBaseDependencies(): ConvertRouteDependencies {
       notes: ["resolved from upload"]
     }),
     runExportPipelineV3: async () =>
-      ({
-        resolvedSource: {
-          id: "resolved-html",
-          sourceKind: "raw-html",
-          title: "Resolved HTML"
-        },
-        analysis: {
-          selectedMode: "editable"
-        },
-        emittedMode: "editable",
-        fallbackReason: undefined,
-        report: {
-          id: "report-id",
-          title: "Resolved HTML",
-          sourceKind: "raw-html",
-          renderer: "browser",
-          selectedMode: "editable",
-          emittedMode: "editable",
-          summary: {
-            totalNodes: 1,
-            visibleNodes: 1,
-            images: 0,
-            buttons: 0,
-            textBlocks: 1,
-            sections: 1
-          },
-          layout: {
-            rootNodeId: "root",
-            nodeCount: 1,
-            sectionCount: 1
-          },
-          analysis: {
-            selectedMode: "editable"
-          },
-          validation: {
-            passed: true,
-            mode: "editable",
-            issueCount: 0,
-            issues: [],
-            stats: {
-              expectedTexts: 1,
-              matchedTexts: 1,
-              expectedImages: 0,
-              matchedImages: 0,
-              expectedButtons: 0,
-              matchedButtons: 0,
-              expectedLinks: 0,
-              matchedLinks: 0,
-              expectedSections: 1,
-              matchedSections: 1,
-              expectedCards: 0,
-              matchedCards: 0,
-              expectedHeaders: 0,
-              matchedHeaders: 0,
-              expectedFooters: 0,
-              matchedFooters: 0,
-              expectedPositionedNodes: 1,
-              matchedPositionedNodes: 1
-            }
-          },
-          warnings: []
-        },
-        capture: {
-          renderedHtml: "<html><body>rendered v3</body></html>",
-          renderer: "browser",
-          artifacts: {
-            screenshots: {
-              desktop: "/tmp/desktop.png"
-            }
-          }
-        },
-        elementorDocument: {
-          version: "0.4",
-          title: "Resolved HTML",
-          type: "page",
-          content: []
-        },
-        validation: {
-          passed: true,
-          mode: "editable",
-          issueCount: 0,
-          issues: [],
-          stats: {
-            expectedTexts: 1,
-            matchedTexts: 1,
-            expectedImages: 0,
-            matchedImages: 0,
-            expectedButtons: 0,
-            matchedButtons: 0,
-            expectedLinks: 0,
-            matchedLinks: 0,
-            expectedSections: 1,
-            matchedSections: 1,
-            expectedCards: 0,
-            matchedCards: 0,
-            expectedHeaders: 0,
-            matchedHeaders: 0,
-            expectedFooters: 0,
-            matchedFooters: 0,
-            expectedPositionedNodes: 1,
-            matchedPositionedNodes: 1
-          }
-        },
-        artifacts: {
-          elementorTemplatePath: "/tmp/elementor-template.json",
-          reportPath: "/tmp/conversion-report.json"
-        }
-      }) as never
+      createExportResult({
+        emittedMode: "snapshot",
+        selectedMode: "snapshot",
+        renderer: "browser",
+        snapshotEnabled: true,
+        snapshotReason: "Snapshot validado com similaridade 99.50%.",
+        snapshotSimilarity: 0.995
+      })
   };
 }
 
-async function testConvertRouteUsesV3ForRawHtml() {
-  const calls = {
-    resolveHtml: 0,
-    runV3: 0,
-    runV2: 0
-  };
-  let persistedHtml = "";
-
-  const deps = createBaseDependencies();
-  deps.resolveSourceFromHtml = (html) => {
-    calls.resolveHtml += 1;
-    assert.equal(html, "<main><h1>Route HTML</h1></main>");
-    return {
-      id: "resolved-html",
-      sourceKind: "raw-html",
-      title: "Route HTML",
-      html,
-      assets: [],
-      entryFile: null,
-      routeFile: null,
-      archiveFileCount: 0,
-      notes: []
-    };
-  };
-  deps.runExportPipelineV3 = async (resolvedSource) => {
-    calls.runV3 += 1;
-    assert.equal(resolvedSource.id, "resolved-html");
-
-    return {
-      resolvedSource: {
-        id: resolvedSource.id,
-        sourceKind: resolvedSource.sourceKind,
-        title: resolvedSource.title
-      },
-      analysis: {
-        selectedMode: "editable"
-      },
-      emittedMode: "editable",
-      fallbackReason: undefined,
-      report: {
-        id: "report-id",
-        title: resolvedSource.title,
-        sourceKind: resolvedSource.sourceKind,
-        renderer: "browser",
-        selectedMode: "editable",
-        emittedMode: "editable",
-        summary: {
-          totalNodes: 2,
-          visibleNodes: 2,
-          images: 0,
-          buttons: 0,
-          textBlocks: 1,
-          sections: 1
-        },
-        layout: {
-          rootNodeId: "root",
-          nodeCount: 2,
-          sectionCount: 1
-        },
-        analysis: {
-          selectedMode: "editable"
-        },
-        validation: {
-          passed: true,
-          mode: "editable",
-          issueCount: 0,
-          issues: [],
-          stats: {
-            expectedTexts: 1,
-            matchedTexts: 1,
-            expectedImages: 0,
-            matchedImages: 0,
-            expectedButtons: 0,
-            matchedButtons: 0,
-            expectedLinks: 0,
-            matchedLinks: 0,
-            expectedSections: 1,
-            matchedSections: 1,
-            expectedCards: 0,
-            matchedCards: 0,
-            expectedHeaders: 0,
-            matchedHeaders: 0,
-            expectedFooters: 0,
-            matchedFooters: 0,
-            expectedPositionedNodes: 2,
-            matchedPositionedNodes: 2
-          }
-        },
-        warnings: []
-      },
-      capture: {
-        renderedHtml: "<html><body>rendered primary</body></html>",
-        renderer: "browser",
-        artifacts: {
-          outputDir: "/tmp/capture",
-          screenshots: {
-            desktop: "/tmp/capture/desktop.png",
-            mobile: "/tmp/capture/mobile.png"
+function createExportResult(params: {
+  emittedMode: "snapshot" | "pixel-perfect" | "hybrid" | "editable";
+  selectedMode: "snapshot" | "pixel-perfect" | "hybrid" | "editable";
+  renderer: "browser" | "server";
+  snapshotEnabled: boolean;
+  snapshotReason: string;
+  snapshotSimilarity?: number;
+  warnings?: string[];
+  fallbackReason?: string;
+} = {
+  emittedMode: "snapshot",
+  selectedMode: "snapshot",
+  renderer: "browser",
+  snapshotEnabled: true,
+  snapshotReason: "Snapshot validado com similaridade 99.50%.",
+  snapshotSimilarity: 0.995
+}) {
+  const warnings = params.warnings ?? [];
+  const snapshot =
+    params.emittedMode === "snapshot" || params.snapshotSimilarity
+      ? {
+          overallSimilarity: params.snapshotSimilarity ?? 0.995,
+          threshold: 0.99,
+          convertedScreenshotPath: "/tmp/export/snapshot-preview.png",
+          originalScreenshotPath: "/tmp/capture/desktop.png",
+          sectionReports: [],
+          totals: {
+            htmlSections: 1,
+            snapshotSections: 1,
+            preservedLinks: 1,
+            totalLinks: 1
           }
         }
+      : undefined;
+
+  return {
+    resolvedSource: {
+      id: "resolved-html",
+      sourceKind: "raw-html",
+      title: "Resolved HTML"
+    },
+    analysis: {
+      score: 1,
+      overlappingGroups: 0,
+      gridContainers: 0,
+      flexContainers: 1,
+      absoluteNodes: 0,
+      decorativeNodes: 0,
+      interactiveNodes: 1,
+      selectedMode: params.selectedMode,
+      reasons: ["test analysis"]
+    },
+    emittedMode: params.emittedMode,
+    fallbackReason: params.fallbackReason,
+    report: {
+      id: "report-id",
+      title: "Resolved HTML",
+      sourceKind: "raw-html",
+      renderer: params.renderer,
+      snapshotEnabled: params.snapshotEnabled,
+      snapshotReason: params.snapshotReason,
+      selectedMode: params.selectedMode,
+      emittedMode: params.emittedMode,
+      summary: {
+        totalNodes: 2,
+        visibleNodes: 2,
+        images: 1,
+        buttons: 1,
+        textBlocks: 1,
+        sections: 1
       },
-      elementorDocument: {
-        version: "0.4",
-        title: resolvedSource.title,
-        type: "page",
-        content: []
+      layout: {
+        rootNodeId: "root",
+        nodeCount: 2,
+        sectionCount: 1
+      },
+      analysis: {
+        score: 1,
+        overlappingGroups: 0,
+        gridContainers: 0,
+        flexContainers: 1,
+        absoluteNodes: 0,
+        decorativeNodes: 0,
+        interactiveNodes: 1,
+        selectedMode: params.selectedMode,
+        reasons: ["test analysis"]
       },
       validation: {
         passed: true,
-        mode: "editable",
+        mode: params.emittedMode,
         issueCount: 0,
         issues: [],
         stats: {
           expectedTexts: 1,
           matchedTexts: 1,
-          expectedImages: 0,
-          matchedImages: 0,
-          expectedButtons: 0,
-          matchedButtons: 0,
-          expectedLinks: 0,
-          matchedLinks: 0,
+          expectedImages: 1,
+          matchedImages: 1,
+          expectedButtons: 1,
+          matchedButtons: 1,
+          expectedLinks: 1,
+          matchedLinks: 1,
           expectedSections: 1,
           matchedSections: 1,
           expectedCards: 0,
@@ -284,11 +164,99 @@ async function testConvertRouteUsesV3ForRawHtml() {
           matchedPositionedNodes: 2
         }
       },
+      warnings,
+      snapshot
+    },
+    capture: {
+      renderedHtml: "<html><body>rendered primary</body></html>",
+      renderer: params.renderer,
       artifacts: {
-        elementorTemplatePath: "/tmp/export/elementor-template.json",
-        reportPath: "/tmp/export/conversion-report.json"
+        outputDir: "/tmp/capture",
+        screenshots: {
+          desktop: "/tmp/capture/desktop.png",
+          mobile: "/tmp/capture/mobile.png"
+        }
       }
-    } as never;
+    },
+    elementorDocument: {
+      version: "1.0",
+      title: "Resolved HTML",
+      type: "page",
+      content: []
+    },
+    validation: {
+      passed: true,
+      mode: params.emittedMode,
+      issueCount: 0,
+      issues: [],
+      stats: {
+        expectedTexts: 1,
+        matchedTexts: 1,
+        expectedImages: 1,
+        matchedImages: 1,
+        expectedButtons: 1,
+        matchedButtons: 1,
+        expectedLinks: 1,
+        matchedLinks: 1,
+        expectedSections: 1,
+        matchedSections: 1,
+        expectedCards: 0,
+        matchedCards: 0,
+        expectedHeaders: 0,
+        matchedHeaders: 0,
+        expectedFooters: 0,
+        matchedFooters: 0,
+        expectedPositionedNodes: 2,
+        matchedPositionedNodes: 2
+      }
+    },
+    snapshot,
+    artifacts: {
+      elementorTemplatePath: "/tmp/export/elementor-template.json",
+      reportPath: "/tmp/export/conversion-report.json",
+      previewHtmlPath: "/tmp/export/snapshot-preview.html",
+      convertedScreenshotPath: snapshot?.convertedScreenshotPath
+    }
+  } as never;
+}
+
+async function testConvertRouteUsesV3ForRawHtmlAndForcesBrowserCapture() {
+  const calls = {
+    resolveHtml: 0,
+    runV3: 0
+  };
+  let persistedHtml = "";
+
+  const deps = createBaseDependencies();
+  deps.resolveSourceFromHtml = (html) => {
+    calls.resolveHtml += 1;
+    assert.equal(html, "<main><h1>Route HTML</h1></main>");
+
+    return {
+      id: "resolved-html",
+      sourceKind: "raw-html",
+      title: "Route HTML",
+      html,
+      assets: [],
+      entryFile: null,
+      routeFile: null,
+      archiveFileCount: 0,
+      notes: []
+    };
+  };
+  deps.runExportPipelineV3 = async (resolvedSource, options) => {
+    calls.runV3 += 1;
+    assert.equal(resolvedSource.id, "resolved-html");
+    assert.deepEqual(options, { preferBrowser: true });
+
+    return createExportResult({
+      emittedMode: "snapshot",
+      selectedMode: "snapshot",
+      renderer: "browser",
+      snapshotEnabled: true,
+      snapshotReason: "Snapshot validado com similaridade 99.50%.",
+      snapshotSimilarity: 0.995
+    });
   };
   deps.persistEmbeddedConversionAssets = async (html, elementorJson, key) => {
     persistedHtml = html;
@@ -301,7 +269,7 @@ async function testConvertRouteUsesV3ForRawHtml() {
   };
   deps.createConversion = async (html, elementorJson) => {
     assert.equal(html, "<html><body>rendered primary</body></html>");
-    assert.equal(elementorJson.title, "Route HTML");
+    assert.equal(elementorJson.title, "Resolved HTML");
 
     return {
       id: "conversion-v3"
@@ -325,8 +293,10 @@ async function testConvertRouteUsesV3ForRawHtml() {
   assert.equal(response.status, 200);
   assert.equal(payload.id, "conversion-v3");
   assert.equal(payload.status, "success");
-  assert.equal(payload.selectedMode, "editable");
-  assert.equal(payload.emittedMode, "editable");
+  assert.equal(payload.selectedMode, "snapshot");
+  assert.equal(payload.emittedMode, "snapshot");
+  assert.equal(payload.snapshotEnabled, true);
+  assert.equal(payload.snapshotReason, "Snapshot validado com similaridade 99.50%.");
   assert.deepEqual(payload.screenshots, {
     desktop: "/tmp/capture/desktop.png",
     mobile: "/tmp/capture/mobile.png"
@@ -339,10 +309,9 @@ async function testConvertRouteUsesV3ForRawHtml() {
   assert.equal(persistedHtml, "<html><body>rendered primary</body></html>");
   assert.equal(calls.resolveHtml, 1);
   assert.equal(calls.runV3, 1);
-  assert.equal(calls.runV2, 0);
 }
 
-async function testConvertRouteUsesV3ResolverForUpload() {
+async function testConvertRouteUsesV3ResolverForUploadAndAllowsPixelPerfect() {
   let resolveUploadCalls = 0;
   let runV3Calls = 0;
 
@@ -363,119 +332,18 @@ async function testConvertRouteUsesV3ResolverForUpload() {
       notes: []
     };
   };
-  deps.runExportPipelineV3 = async (resolvedSource) => {
+  deps.runExportPipelineV3 = async (_resolvedSource, options) => {
     runV3Calls += 1;
-    assert.equal(resolvedSource.sourceKind, "static-html-archive");
+    assert.deepEqual(options, { preferBrowser: true });
 
-    return {
-      resolvedSource: {
-        id: resolvedSource.id,
-        sourceKind: resolvedSource.sourceKind,
-        title: resolvedSource.title
-      },
-      analysis: {
-        selectedMode: "hybrid"
-      },
-      emittedMode: "hybrid",
-      fallbackReason: undefined,
-      report: {
-        id: "report-upload",
-        title: resolvedSource.title,
-        sourceKind: resolvedSource.sourceKind,
-        renderer: "browser",
-        selectedMode: "hybrid",
-        emittedMode: "hybrid",
-        summary: {
-          totalNodes: 5,
-          visibleNodes: 5,
-          images: 1,
-          buttons: 1,
-          textBlocks: 2,
-          sections: 1
-        },
-        layout: {
-          rootNodeId: "root",
-          nodeCount: 5,
-          sectionCount: 1
-        },
-        analysis: {
-          selectedMode: "hybrid"
-        },
-        validation: {
-          passed: true,
-          mode: "hybrid",
-          issueCount: 0,
-          issues: [],
-          stats: {
-            expectedTexts: 2,
-            matchedTexts: 2,
-            expectedImages: 1,
-            matchedImages: 1,
-            expectedButtons: 1,
-            matchedButtons: 1,
-            expectedLinks: 1,
-            matchedLinks: 1,
-            expectedSections: 1,
-            matchedSections: 1,
-            expectedCards: 0,
-            matchedCards: 0,
-            expectedHeaders: 0,
-            matchedHeaders: 0,
-            expectedFooters: 0,
-            matchedFooters: 0,
-            expectedPositionedNodes: 5,
-            matchedPositionedNodes: 5
-          }
-        },
-        warnings: ["One node required HTML fallback."]
-      },
-      capture: {
-        renderedHtml: "<html><body>rendered upload</body></html>",
-        renderer: "browser",
-        artifacts: {
-          outputDir: "/tmp/upload-capture",
-          screenshots: {
-            desktop: "/tmp/upload-capture/desktop.png"
-          }
-        }
-      },
-      elementorDocument: {
-        version: "0.4",
-        title: "ZIP upload",
-        type: "page",
-        content: []
-      },
-      validation: {
-        passed: true,
-        mode: "hybrid",
-        issueCount: 0,
-        issues: [],
-        stats: {
-          expectedTexts: 2,
-          matchedTexts: 2,
-          expectedImages: 1,
-          matchedImages: 1,
-          expectedButtons: 1,
-          matchedButtons: 1,
-          expectedLinks: 1,
-          matchedLinks: 1,
-          expectedSections: 1,
-          matchedSections: 1,
-          expectedCards: 0,
-          matchedCards: 0,
-          expectedHeaders: 0,
-          matchedHeaders: 0,
-          expectedFooters: 0,
-          matchedFooters: 0,
-          expectedPositionedNodes: 5,
-          matchedPositionedNodes: 5
-        }
-      },
-      artifacts: {
-        elementorTemplatePath: "/tmp/upload-export/elementor-template.json",
-        reportPath: "/tmp/upload-export/conversion-report.json"
-      }
-    } as never;
+    return createExportResult({
+      emittedMode: "pixel-perfect",
+      selectedMode: "pixel-perfect",
+      renderer: "browser",
+      snapshotEnabled: false,
+      snapshotReason:
+        "Captura do navegador concluida, mas nenhuma secao elegivel para snapshot foi detectada."
+    });
   };
   deps.createConversion = async () =>
     ({
@@ -501,26 +369,100 @@ async function testConvertRouteUsesV3ResolverForUpload() {
 
   assert.equal(response.status, 200);
   assert.equal(payload.id, "conversion-upload");
-  assert.equal(payload.selectedMode, "hybrid");
-  assert.equal(payload.emittedMode, "hybrid");
-  assert.deepEqual(payload.warnings, ["One node required HTML fallback."]);
+  assert.equal(payload.selectedMode, "pixel-perfect");
+  assert.equal(payload.emittedMode, "pixel-perfect");
+  assert.equal(payload.snapshotEnabled, false);
+  assert.equal(
+    payload.snapshotReason,
+    "Captura do navegador concluida, mas nenhuma secao elegivel para snapshot foi detectada."
+  );
   assert.equal(resolveUploadCalls, 1);
   assert.equal(runV3Calls, 1);
 }
 
+async function testConvertRouteBlocksWhenBrowserCaptureFallsBackToServer() {
+  let createConversionCalls = 0;
+
+  const deps = createBaseDependencies();
+  deps.runExportPipelineV3 = async (_resolvedSource, options) => {
+    assert.deepEqual(options, { preferBrowser: true });
+
+    return createExportResult({
+      emittedMode: "pixel-perfect",
+      selectedMode: "pixel-perfect",
+      renderer: "server",
+      snapshotEnabled: false,
+      snapshotReason:
+        "Captura visual do navegador falhou. Snapshot não pôde ser gerado."
+    });
+  };
+  deps.createConversion = async () => {
+    createConversionCalls += 1;
+    return {
+      id: "should-not-happen"
+    } as never;
+  };
+
+  const handler = createConvertPostHandler(deps);
+  const response = await handler(
+    new Request("http://localhost/api/convert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        html: "<main>fallback me</main>"
+      })
+    })
+  );
+  const payload = (await response.json()) as Record<string, unknown>;
+
+  assert.equal(response.status, 422);
+  assert.equal(
+    payload.error,
+    "Captura visual do navegador falhou. Snapshot não pôde ser gerado."
+  );
+  assert.equal(payload.renderer, "server");
+  assert.equal(payload.snapshotEnabled, false);
+  assert.equal(
+    payload.snapshotReason,
+    "Captura visual do navegador falhou. Snapshot não pôde ser gerado."
+  );
+  assert.equal(createConversionCalls, 0);
+}
+
+async function testConvertRouteBlocksWhenSimilarityFallsBelowThreshold() {
+  const deps = createBaseDependencies();
+  deps.runExportPipelineV3 = async () =>
+    createExportResult({
+      emittedMode: "snapshot",
+      selectedMode: "snapshot",
+      renderer: "browser",
+      snapshotEnabled: true,
+      snapshotReason: "Snapshot validado com similaridade 98.40%.",
+      snapshotSimilarity: 0.984
+    });
+
+  const handler = createConvertPostHandler(deps);
+  const response = await handler(
+    new Request("http://localhost/api/convert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        html: "<main>low similarity</main>"
+      })
+    })
+  );
+  const payload = (await response.json()) as Record<string, unknown>;
+
+  assert.equal(response.status, 422);
+  assert.match(String(payload.error), /similaridade visual final ficou em 98\.40%/);
+}
+
 async function testConvertRouteReturns500WhenV3Fails() {
   const deps = createBaseDependencies();
-  deps.resolveSourceFromHtml = (html) => ({
-    id: "resolved-fallback",
-    sourceKind: "raw-html",
-    title: "Fallback route",
-    html,
-    assets: [],
-    entryFile: null,
-    routeFile: null,
-    archiveFileCount: 0,
-    notes: []
-  });
   deps.runExportPipelineV3 = async () => {
     throw new Error("Puppeteer capture crashed");
   };
@@ -606,8 +548,10 @@ async function testConvertRouteBlocksWhenValidationFails() {
 }
 
 async function main() {
-  await testConvertRouteUsesV3ForRawHtml();
-  await testConvertRouteUsesV3ResolverForUpload();
+  await testConvertRouteUsesV3ForRawHtmlAndForcesBrowserCapture();
+  await testConvertRouteUsesV3ResolverForUploadAndAllowsPixelPerfect();
+  await testConvertRouteBlocksWhenBrowserCaptureFallsBackToServer();
+  await testConvertRouteBlocksWhenSimilarityFallsBelowThreshold();
   await testConvertRouteReturns500WhenV3Fails();
   await testConvertRouteBlocksWhenValidationFails();
   console.log("convert route tests passed");

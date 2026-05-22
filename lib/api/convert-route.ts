@@ -12,6 +12,10 @@ import {
   resolveSourceFromUpload
 } from "@/lib/converter-v3/resolve/source-resolver";
 import { VisualValidationError } from "@/lib/converter-v3/visual-regression-validator";
+import {
+  InvalidElementorJsonError,
+  stringifyValidatedElementorJson
+} from "@/lib/elementor-json";
 import type { ElementorDocument } from "@/types/conversion";
 
 type ConvertRequest = Pick<Request, "headers" | "formData" | "json">;
@@ -57,6 +61,10 @@ const defaultDependencies: ConvertRouteDependencies = {
   runExportPipelineV3
 };
 
+const BROWSER_CAPTURE_FAILURE_MESSAGE =
+  "Captura visual do navegador falhou. Snapshot não pôde ser gerado.";
+const MIN_VISUAL_SIMILARITY = 0.99;
+
 function getEmptySourceError() {
   return "Envie um HTML valido ou um ZIP compativel para conversao.";
 }
@@ -78,35 +86,93 @@ function buildArtifactsFromV3(result: ExportPipelineResult) {
   };
 }
 
+function buildWarnings(result: ExportPipelineResult) {
+  return appendFallbackReason(result.report.warnings, result.fallbackReason);
+}
+
+function resolveVisualSimilarity(result: ExportPipelineResult) {
+  if (result.emittedMode === "pixel-perfect") {
+    return 1;
+  }
+
+  return result.snapshot?.overallSimilarity ?? 0;
+}
+
+function resolveDownloadEligibilityError(result: ExportPipelineResult) {
+  if (result.capture.renderer !== "browser") {
+    return BROWSER_CAPTURE_FAILURE_MESSAGE;
+  }
+
+  if (
+    result.emittedMode !== "snapshot" &&
+    result.emittedMode !== "pixel-perfect"
+  ) {
+    return `Conversao bloqueada: o modo final ${result.emittedMode} nao atende o requisito visual-perfect.`;
+  }
+
+  if (resolveVisualSimilarity(result) < MIN_VISUAL_SIMILARITY) {
+    return `Conversao bloqueada: similaridade visual final ficou em ${(
+      resolveVisualSimilarity(result) * 100
+    ).toFixed(2)}%.`;
+  }
+
+  return undefined;
+}
+
+function buildBlockedResponse(
+  result: ExportPipelineResult,
+  error: string
+): PreparedConversion {
+  const warnings = buildWarnings(result);
+
+  return {
+    kind: "response",
+    status: 422,
+    body: {
+      error,
+      status: "error",
+      renderer: result.capture.renderer,
+      selectedMode: result.analysis.selectedMode,
+      emittedMode: result.emittedMode,
+      validation: result.validation,
+      report: result.report,
+      snapshotEnabled: result.report.snapshotEnabled,
+      snapshotReason: result.report.snapshotReason,
+      snapshot: result.snapshot,
+      warnings,
+      artifacts: buildArtifactsFromV3(result)
+    }
+  };
+}
+
 function buildV3Success(result: ExportPipelineResult): PreparedConversion {
-  const warnings = appendFallbackReason(
-    result.report.warnings,
-    result.fallbackReason
-  );
+  const warnings = buildWarnings(result);
   const status = warnings.length > 0 ? "warning" : "success";
 
   return {
     kind: "success",
     previewHtml: result.capture.renderedHtml,
     elementorDocument: result.elementorDocument,
-      body: {
-        message:
-          status === "warning"
-            ? "Conversao concluida com avisos."
-            : "Conversao concluida com sucesso.",
+    body: {
+      message:
+        status === "warning"
+          ? "Conversao concluida com avisos."
+          : "Conversao concluida com sucesso.",
       status,
       sourceKind: result.resolvedSource.sourceKind,
       renderer: result.capture.renderer,
       report: result.report,
-        validation: result.validation,
-        selectedMode: result.analysis.selectedMode,
-        emittedMode: result.emittedMode,
-        fallbackReason: result.fallbackReason,
-        snapshot: result.snapshot,
-        screenshots: result.capture.artifacts.screenshots,
-        warnings,
-        artifacts: buildArtifactsFromV3(result)
-      }
+      validation: result.validation,
+      selectedMode: result.analysis.selectedMode,
+      emittedMode: result.emittedMode,
+      fallbackReason: result.fallbackReason,
+      snapshotEnabled: result.report.snapshotEnabled,
+      snapshotReason: result.report.snapshotReason,
+      snapshot: result.snapshot,
+      screenshots: result.capture.artifacts.screenshots,
+      warnings,
+      artifacts: buildArtifactsFromV3(result)
+    }
   };
 }
 
@@ -174,7 +240,15 @@ async function prepareConversion(
     };
   }
 
-  const result = await deps.runExportPipelineV3(resolvedSource);
+  const result = await deps.runExportPipelineV3(resolvedSource, {
+    preferBrowser: true
+  });
+  const eligibilityError = resolveDownloadEligibilityError(result);
+
+  if (eligibilityError) {
+    return buildBlockedResponse(result, eligibilityError);
+  }
+
   return buildV3Success(result);
 }
 
@@ -203,6 +277,7 @@ export function createConvertPostHandler(
         prepared.elementorDocument,
         deps.createConversionKey()
       );
+      stringifyValidatedElementorJson(persisted.elementorJson);
       const conversion = await deps.createConversion(
         persisted.html,
         persisted.elementorJson
@@ -222,6 +297,10 @@ export function createConvertPostHandler(
           },
           { status: 422 }
         );
+      }
+
+      if (error instanceof InvalidElementorJsonError) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
       }
 
       return NextResponse.json(

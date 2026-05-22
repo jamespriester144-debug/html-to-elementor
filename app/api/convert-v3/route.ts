@@ -8,6 +8,9 @@ import {
 
 export const runtime = "nodejs";
 
+const BROWSER_CAPTURE_FAILURE_MESSAGE =
+  "Captura visual do navegador falhou. Snapshot não pôde ser gerado.";
+
 export async function POST(request: NextRequest) {
   try {
     const contentType = request.headers.get("content-type") ?? "";
@@ -18,7 +21,19 @@ export async function POST(request: NextRequest) {
       const pastedHtml = formData.get("html");
 
       if (file instanceof File) {
-        const result = await runExportPipelineV3FromUpload(file);
+        const result = await runExportPipelineV3FromUpload(file, {
+          preferBrowser: true
+        });
+
+        if (result.capture.renderer !== "browser") {
+          return NextResponse.json(
+            {
+              error: BROWSER_CAPTURE_FAILURE_MESSAGE,
+              report: result.report
+            },
+            { status: 422 }
+          );
+        }
 
         return NextResponse.json({
           id: result.resolvedSource.id,
@@ -48,7 +63,19 @@ export async function POST(request: NextRequest) {
       }
 
       if (typeof pastedHtml === "string" && pastedHtml.trim()) {
-        const result = await runExportPipelineV3FromHtml(pastedHtml);
+        const result = await runExportPipelineV3FromHtml(pastedHtml, {
+          preferBrowser: true
+        });
+
+        if (result.capture.renderer !== "browser") {
+          return NextResponse.json(
+            {
+              error: BROWSER_CAPTURE_FAILURE_MESSAGE,
+              report: result.report
+            },
+            { status: 422 }
+          );
+        }
 
         return NextResponse.json({
           id: result.resolvedSource.id,
@@ -92,7 +119,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await runExportPipelineV3FromHtml(payload.html);
+    const result = await runExportPipelineV3FromHtml(payload.html, {
+      preferBrowser: true
+    });
+
+    if (result.capture.renderer !== "browser") {
+      return NextResponse.json(
+        {
+          error: BROWSER_CAPTURE_FAILURE_MESSAGE,
+          report: result.report
+        },
+        { status: 422 }
+      );
+    }
 
     return NextResponse.json({
       id: result.resolvedSource.id,

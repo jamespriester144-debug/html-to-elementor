@@ -4171,6 +4171,34 @@ function createSvgDataUrl(svg: string) {
   return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }
 
+function createSectionCaptureComplexity(
+  overrides: Partial<SectionCapture["complexity"]> = {}
+): SectionCapture["complexity"] {
+  return {
+    nodeCount: 1,
+    absoluteNodes: 0,
+    overlappingNodes: 0,
+    interactiveNodes: 0,
+    imageNodes: 0,
+    overlayNodes: 0,
+    complexZIndexNodes: 0,
+    transformedNodes: 0,
+    gradientNodes: 0,
+    animatedNodes: 0,
+    unsupportedCssNodes: 0,
+    carouselNodes: 0,
+    gridContainers: 0,
+    flexContainers: 0,
+    nestedFlexGridContainers: 0,
+    maxFlexGridDepth: 0,
+    pseudoElementNodes: 0,
+    hasPseudoElements: false,
+    hasTransforms: false,
+    hasEmbeds: false,
+    ...overrides
+  };
+}
+
 async function testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSection() {
   const topSectionHeight = 150;
   const bottomSectionHeight = 150;
@@ -4244,16 +4272,7 @@ async function testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSect
       subtreeNodeIds: ["hero-section"],
       originalHtml: `<section style="width:${width}px;height:${topSectionHeight}px;background:#f2545b;"></section>`,
       htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;}</style></head><body><section style="display:block;width:${width}px;height:${topSectionHeight}px;background:#f2545b;"></section></body></html>`,
-      complexity: {
-        nodeCount: 1,
-        absoluteNodes: 0,
-        overlappingNodes: 0,
-        interactiveNodes: 0,
-        imageNodes: 0,
-        hasPseudoElements: false,
-        hasTransforms: false,
-        hasEmbeds: false
-      },
+      complexity: createSectionCaptureComplexity(),
       viewports: {
         desktop: {
           viewport: "desktop",
@@ -4278,16 +4297,11 @@ async function testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSect
       subtreeNodeIds: ["feature-section"],
       originalHtml: `<section style="width:${width}px;height:${bottomSectionHeight}px;background:#2e86ab;"></section>`,
       htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /></head><body><section style="display:block;width:${width}px;height:${bottomSectionHeight}px;background:#2e86ab;"></section></body></html>`,
-      complexity: {
+      complexity: createSectionCaptureComplexity({
         nodeCount: 6,
-        absoluteNodes: 0,
-        overlappingNodes: 0,
-        interactiveNodes: 0,
-        imageNodes: 0,
-        hasPseudoElements: true,
-        hasTransforms: false,
-        hasEmbeds: false
-      },
+        pseudoElementNodes: 1,
+        hasPseudoElements: true
+      }),
       viewports: {
         desktop: {
           viewport: "desktop",
@@ -4347,6 +4361,272 @@ async function testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSect
   );
 }
 
+async function testV3SnapshotEmitterBlocksHtmlProfilesAfterHardFailure() {
+  const width = 100;
+  const sectionHeight = 100;
+  const pageHeight = sectionHeight * 2;
+  const firstReference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${sectionHeight}" viewBox="0 0 ${width} ${sectionHeight}"><rect width="${width}" height="${sectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const secondReference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${sectionHeight}" viewBox="0 0 ${width} ${sectionHeight}"><rect width="${width}" height="${sectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const fullPageReference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${pageHeight}" viewBox="0 0 ${width} ${pageHeight}"><rect width="${width}" height="${sectionHeight}" fill="#f2545b" /><rect y="${sectionHeight}" width="${width}" height="${sectionHeight}" fill="#2e86ab" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-learning",
+    sourceKind: "raw-html",
+    title: "Snapshot Learning",
+    sourceHtml: "<body></body>",
+    renderedHtml: "<html><body></body></html>",
+    renderer: "browser",
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height: pageHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 2,
+      visibleNodes: 2,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 2
+    },
+    artifacts: {
+      outputDir: path.join(os.tmpdir(), "snapshot-learning-tests"),
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: fullPageReference
+      }
+    }
+  } satisfies PageCapture;
+  const sections: SectionCapture[] = [
+    {
+      id: "section-a",
+      nodeId: "section-a",
+      name: "section-a",
+      type: "section",
+      box: {
+        x: 0,
+        y: 0,
+        width,
+        height: sectionHeight
+      },
+      subtreeNodeIds: ["section-a"],
+      originalHtml: `<section style="display:block;width:${width}px;height:${sectionHeight}px;background:#f2545b;"></section>`,
+      htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;}</style></head><body><section style="display:block;width:${width}px;height:${sectionHeight}px;background:#f2545b;"><div style="display:block;width:25px;height:10px;background:#101820;"></div></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height: sectionHeight,
+          snapshotDataUrl: firstReference,
+          linkOverlays: []
+        }
+      }
+    },
+    {
+      id: "section-b",
+      nodeId: "section-b",
+      name: "section-b",
+      type: "section",
+      box: {
+        x: 0,
+        y: sectionHeight,
+        width,
+        height: sectionHeight
+      },
+      subtreeNodeIds: ["section-b"],
+      originalHtml: `<section style="display:block;width:${width}px;height:${sectionHeight}px;background:#2e86ab;"></section>`,
+      htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;}</style></head><body><section style="display:block;width:${width}px;height:${sectionHeight}px;background:#2e86ab;"></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height: sectionHeight,
+          snapshotDataUrl: secondReference,
+          linkOverlays: []
+        }
+      }
+    }
+  ];
+  const layout: LayoutDocument = {
+    id: "snapshot-learning-layout",
+    title: "Snapshot Learning Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 3,
+    sectionIds: ["section-a", "section-b"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "section-a",
+        type: "section",
+        confidence: 0.9,
+        childIds: [],
+        anchors: [],
+        contains: ["section"]
+      },
+      {
+        id: "section-b",
+        type: "section",
+        confidence: 0.9,
+        childIds: [],
+        anchors: [],
+        contains: ["section"]
+      }
+    ],
+    nodes: []
+  };
+
+  const result = await createSnapshotElementorDocumentV3({
+    capture,
+    layout,
+    sections,
+    selectedMode: "snapshot"
+  });
+
+  assert.equal(result.snapshot.sectionReports[0]?.mode, "snapshot");
+  assert.equal(result.snapshot.sectionReports[0]?.htmlBlocked, true);
+  assert.equal(result.snapshot.sectionReports[1]?.mode, "snapshot");
+  assert.equal(result.snapshot.sectionReports[1]?.htmlBlocked, true);
+  assert.equal(result.snapshot.totals.htmlSections, 0);
+  assert.equal(result.snapshot.totals.snapshotSections, 2);
+  assert.equal(result.snapshot.requiresPixelPerfect, false);
+}
+
+async function testV3SnapshotEmitterRequiresPixelPerfectBelowNinetySeven() {
+  const width = 100;
+  const sectionHeight = 100;
+  const reference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${sectionHeight}" viewBox="0 0 ${width} ${sectionHeight}"><rect width="${width}" height="${sectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-pixel-perfect",
+    sourceKind: "raw-html",
+    title: "Snapshot Pixel Perfect",
+    sourceHtml: "<body></body>",
+    renderedHtml: "<html><body></body></html>",
+    renderer: "browser",
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height: sectionHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 1,
+      visibleNodes: 1,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir: path.join(os.tmpdir(), "snapshot-pixel-perfect-tests"),
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: reference
+      }
+    }
+  } satisfies PageCapture;
+  const sections: SectionCapture[] = [
+    {
+      id: "critical-section",
+      nodeId: "critical-section",
+      name: "critical-section",
+      type: "hero",
+      box: {
+        x: 0,
+        y: 0,
+        width,
+        height: sectionHeight
+      },
+      subtreeNodeIds: ["critical-section"],
+      originalHtml: `<section style="display:block;width:${width}px;height:${sectionHeight}px;background:#f2545b;"></section>`,
+      htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;}</style></head><body><section style="display:block;width:${width}px;height:${sectionHeight}px;background:#f2545b;"><div style="display:block;width:40px;height:10px;background:#101820;"></div></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height: sectionHeight,
+          snapshotDataUrl: reference,
+          linkOverlays: []
+        }
+      }
+    }
+  ];
+  const layout: LayoutDocument = {
+    id: "snapshot-pixel-perfect-layout",
+    title: "Snapshot Pixel Perfect Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 2,
+    sectionIds: ["critical-section"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "critical-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      }
+    ],
+    nodes: []
+  };
+
+  const result = await createSnapshotElementorDocumentV3({
+    capture,
+    layout,
+    sections,
+    selectedMode: "snapshot"
+  });
+
+  assert.equal(result.snapshot.sectionReports[0]?.mode, "snapshot");
+  assert.equal(result.snapshot.sectionReports[0]?.htmlBlocked, true);
+  assert.equal(result.snapshot.requiresPixelPerfect, true);
+  assert.match(String(result.snapshot.pixelPerfectReason), /pixel-perfect/i);
+  assert.equal(result.snapshot.totals.pixelPerfectRequiredSections, 1);
+}
+
 async function main() {
   await testV3HtmlCapturePipeline();
   await testV3ZipResolver();
@@ -4379,6 +4659,8 @@ async function main() {
   testResponsivePresetDetectionHelper();
   testSectionClassifierDetectsSemanticSections();
   await testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSection();
+  await testV3SnapshotEmitterBlocksHtmlProfilesAfterHardFailure();
+  await testV3SnapshotEmitterRequiresPixelPerfectBelowNinetySeven();
   console.log("converter-v3 tests passed");
 }
 

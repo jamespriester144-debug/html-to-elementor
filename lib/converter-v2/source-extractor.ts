@@ -6,7 +6,7 @@ import JSZip from "jszip";
 import { extractLovableProjectHtml } from "@/lib/lovable";
 import { uploadConversionAsset } from "@/lib/storage";
 
-import type { ConversionSourceKind, ExtractedSource } from "@/lib/converter-v2/types";
+import type { ExtractedSource } from "@/lib/converter-v2/types";
 
 function getMimeType(path: string) {
   const lowerPath = path.toLowerCase();

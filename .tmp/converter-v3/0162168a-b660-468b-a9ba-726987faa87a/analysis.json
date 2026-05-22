@@ -1,0 +1,14 @@
+{
+  "score": 6,
+  "overlappingGroups": 0,
+  "gridContainers": 0,
+  "flexContainers": 0,
+  "absoluteNodes": 0,
+  "decorativeNodes": 1,
+  "interactiveNodes": 0,
+  "selectedMode": "hybrid",
+  "reasons": [
+    "Detectados 1 elementos decorativos.",
+    "Detectados 2 elementos com overlay/z-index relevante."
+  ]
+}

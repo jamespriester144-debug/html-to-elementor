@@ -1,5 +1,20 @@
 import { uploadConversionAsset } from "@/lib/storage";
 
+const DATA_URL_PATTERN = /data:image\/[^"'()\s<>]+/gi;
+
+export type PersistEmbeddedConversionAssets = <T>(
+  html: string,
+  elementorJson: T,
+  conversionKey: string
+) => Promise<{
+  html: string;
+  elementorJson: T;
+}>;
+
+type PersistEmbeddedAssetDependencies = {
+  uploadConversionAsset: typeof uploadConversionAsset;
+};
+
 function getDataUrlExtension(contentType: string) {
   if (contentType.includes("png")) return "png";
   if (contentType.includes("jpeg") || contentType.includes("jpg")) return "jpg";
@@ -29,38 +44,105 @@ function decodeDataUrl(dataUrl: string) {
   };
 }
 
-export async function persistEmbeddedConversionAssets(
-  html: string,
-  elementorJson: unknown,
-  conversionKey: string
+async function replaceDataUrlsInString(
+  value: string,
+  replaceDataUrl: (dataUrl: string) => Promise<string>
 ) {
-  let nextHtml = html;
-  let jsonText = JSON.stringify(elementorJson);
-  const dataUrls = new Set([
-    ...(nextHtml.match(/data:[^"'()\s<>]+/g) ?? []),
-    ...(jsonText.match(/data:[^"'()\s<>]+/g) ?? [])
-  ]);
-  let index = 0;
+  const matches = [...value.matchAll(new RegExp(DATA_URL_PATTERN.source, "gi"))];
 
-  for (const dataUrl of dataUrls) {
-    const decoded = decodeDataUrl(dataUrl);
-
-    if (!decoded) continue;
-
-    index += 1;
-    const publicUrl = await uploadConversionAsset({
-      conversionKey,
-      sourcePath: `embedded-${index}.${getDataUrlExtension(decoded.contentType)}`,
-      contentType: decoded.contentType,
-      body: decoded.body
-    });
-
-    nextHtml = nextHtml.split(dataUrl).join(publicUrl);
-    jsonText = jsonText.split(dataUrl).join(publicUrl);
+  if (matches.length === 0) {
+    return value;
   }
 
-  return {
-    html: nextHtml,
-    elementorJson: JSON.parse(jsonText)
+  let nextValue = "";
+  let lastIndex = 0;
+
+  for (const match of matches) {
+    const dataUrl = match[0];
+    const start = match.index ?? 0;
+    const publicUrl = await replaceDataUrl(dataUrl);
+
+    nextValue += value.slice(lastIndex, start);
+    nextValue += publicUrl;
+    lastIndex = start + dataUrl.length;
+  }
+
+  nextValue += value.slice(lastIndex);
+  return nextValue;
+}
+
+async function persistAssetsInValue<T>(
+  value: T,
+  replaceDataUrl: (dataUrl: string) => Promise<string>
+): Promise<T> {
+  if (typeof value === "string") {
+    return (await replaceDataUrlsInString(value, replaceDataUrl)) as T;
+  }
+
+  if (Array.isArray(value)) {
+    return (await Promise.all(
+      value.map((item) => persistAssetsInValue(item, replaceDataUrl))
+    )) as T;
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const entries = await Promise.all(
+    Object.entries(value).map(async ([key, nestedValue]) => [
+      key,
+      await persistAssetsInValue(nestedValue, replaceDataUrl)
+    ])
+  );
+
+  return Object.fromEntries(entries) as T;
+}
+
+export function createEmbeddedConversionAssetPersister(
+  deps: PersistEmbeddedAssetDependencies = {
+    uploadConversionAsset
+  }
+): PersistEmbeddedConversionAssets {
+  return async function persistEmbeddedConversionAssets<T>(
+    html: string,
+    elementorJson: T,
+    conversionKey: string
+  ) {
+    const uploadedUrls = new Map<string, string>();
+    let index = 0;
+
+    const replaceDataUrl = async (dataUrl: string) => {
+      const cachedUrl = uploadedUrls.get(dataUrl);
+
+      if (cachedUrl) {
+        return cachedUrl;
+      }
+
+      const decoded = decodeDataUrl(dataUrl);
+
+      if (!decoded) {
+        return dataUrl;
+      }
+
+      index += 1;
+      const publicUrl = await deps.uploadConversionAsset({
+        conversionKey,
+        sourcePath: `embedded-${index}.${getDataUrlExtension(decoded.contentType)}`,
+        contentType: decoded.contentType,
+        body: decoded.body
+      });
+
+      uploadedUrls.set(dataUrl, publicUrl);
+      return publicUrl;
+    };
+
+    return {
+      html: await replaceDataUrlsInString(html, replaceDataUrl),
+      elementorJson: await persistAssetsInValue(elementorJson, replaceDataUrl)
+    };
   };
 }
+
+export const persistEmbeddedConversionAssets =
+  createEmbeddedConversionAssetPersister();
