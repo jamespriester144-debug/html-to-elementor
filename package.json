@@ -12,7 +12,8 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test:converter": "tsx tests/converter.test.ts",
-    "test:converter:v3": "tsx tests/converter-v3.test.ts"
+    "test:converter:v3": "tsx tests/converter-v3.test.ts",
+    "test:api:convert": "tsx tests/convert-route.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
