@@ -35,3 +35,7 @@ export function getBooleanEnv(name: string, defaultValue = false): boolean {
 export function isForceVisualSnapshotEnabled(): boolean {
   return getBooleanEnv("FORCE_VISUAL_SNAPSHOT", false);
 }
+
+export function isVisualDebugEnabled(): boolean {
+  return getBooleanEnv("VISUAL_DEBUG", false);
+}

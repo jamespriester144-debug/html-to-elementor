@@ -129,7 +129,73 @@ export type SectionCaptureViewport = {
     height: number;
   };
   invadingNodeIds?: string[];
+  captureStrategy?: "expanded-clip" | "coordinate-clip" | "viewport-clip";
   linkOverlays: SectionOverlayLink[];
+};
+
+export type SectionCaptureImageAsset = {
+  nodeId: string;
+  tag: string;
+  src: string;
+  alt?: string;
+  width: number;
+  height: number;
+};
+
+export type SectionCaptureBackgroundAsset = {
+  nodeId: string;
+  tag: string;
+  backgroundImage: string;
+};
+
+export type SectionCaptureFontAsset = {
+  family: string;
+  weight?: string;
+  style?: string;
+  status?: string;
+};
+
+export type SectionCaptureInteractiveAsset = {
+  nodeId: string;
+  tag: string;
+  role?: string;
+  href?: string;
+  text: string;
+  isButton: boolean;
+};
+
+export type SectionCapturePositionedAsset = {
+  nodeId: string;
+  tag: string;
+  position: string;
+  transform?: string;
+  zIndex?: string;
+  overlapsSection: boolean;
+  insideSection: boolean;
+};
+
+export type SectionCaptureDebugInfo = {
+  sectionBoundingBox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  captureBoundingBox?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  sectionWidth: number;
+  sectionHeight: number;
+  originalImages: SectionCaptureImageAsset[];
+  cssBackgrounds: SectionCaptureBackgroundAsset[];
+  loadedFonts: SectionCaptureFontAsset[];
+  interactiveElements: SectionCaptureInteractiveAsset[];
+  positionedElements: SectionCapturePositionedAsset[];
+  unsafeSectionBoundary?: boolean;
+  unsafeReasons?: string[];
 };
 
 export type SectionInstabilityReason =
@@ -186,6 +252,7 @@ export type SectionCapture = {
   htmlCandidate: string;
   complexity: SectionComplexity;
   viewports: Partial<Record<CaptureViewportName, SectionCaptureViewport>>;
+  debug?: SectionCaptureDebugInfo;
 };
 
 export type PageCapture = {

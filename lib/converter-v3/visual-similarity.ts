@@ -44,6 +44,40 @@ async function readImageInputAsDataUrl(source: string) {
   return toDataUrlFromBuffer(buffer);
 }
 
+export async function readImageDimensions(source: string) {
+  const browserFactory = await createBrowserFactory();
+
+  try {
+    const imageDataUrl = await readImageInputAsDataUrl(source);
+
+    return await browserFactory.withPage({ width: 16, height: 16 }, async (page) => {
+      await page.setContent(
+        "<!doctype html><html><head><meta charset='utf-8' /></head><body></body></html>",
+        {
+          waitUntil: "domcontentloaded",
+          timeout: 20000
+        }
+      );
+
+      return page.evaluate(async (imageSrc: string) => {
+        const image = (await new Promise((resolve, reject) => {
+          const nextImage = new Image();
+          nextImage.onload = () => resolve(nextImage);
+          nextImage.onerror = () => reject(new Error("Unable to load image for dimensions."));
+          nextImage.src = imageSrc;
+        })) as HTMLImageElement;
+
+        return {
+          width: Math.max(image.width, 1),
+          height: Math.max(image.height, 1)
+        };
+      }, imageDataUrl);
+    });
+  } finally {
+    await browserFactory.close().catch(() => undefined);
+  }
+}
+
 async function createPlaywrightFactory(): Promise<BrowserSessionFactory> {
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({

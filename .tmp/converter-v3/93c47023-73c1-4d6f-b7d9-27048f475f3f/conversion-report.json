@@ -1,0 +1,159 @@
+{
+  "id": "93c47023-73c1-4d6f-b7d9-27048f475f3f",
+  "title": "Radiant Skin",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "snapshotEnabled": true,
+  "snapshotReason": "Snapshot visual (secoes) validado com similaridade 100.00%.",
+  "selectedMode": "snapshot",
+  "emittedMode": "snapshot",
+  "summary": {
+    "totalNodes": 2,
+    "visibleNodes": 2,
+    "images": 0,
+    "buttons": 0,
+    "textBlocks": 0,
+    "sections": 1
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 2,
+    "sectionCount": 1
+  },
+  "analysis": {
+    "score": 6,
+    "overlappingGroups": 0,
+    "gridContainers": 0,
+    "flexContainers": 0,
+    "absoluteNodes": 0,
+    "decorativeNodes": 1,
+    "interactiveNodes": 0,
+    "selectedMode": "snapshot",
+    "reasons": [
+      "FORCE_VISUAL_SNAPSHOT ativo: snapshots visuais por secao/pagina inteira sao o modo principal.",
+      "Detectados 1 elementos decorativos.",
+      "Detectados 2 elementos com overlay/z-index relevante."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "snapshot",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 0,
+      "matchedTexts": 0,
+      "expectedImages": 0,
+      "matchedImages": 0,
+      "expectedButtons": 0,
+      "matchedButtons": 0,
+      "expectedLinks": 0,
+      "matchedLinks": 0,
+      "expectedSections": 1,
+      "matchedSections": 1,
+      "expectedCards": 0,
+      "matchedCards": 0,
+      "expectedHeaders": 0,
+      "matchedHeaders": 0,
+      "expectedFooters": 0,
+      "matchedFooters": 0,
+      "expectedPositionedNodes": 0,
+      "matchedPositionedNodes": 0
+    }
+  },
+  "warnings": [],
+  "snapshot": {
+    "renderStrategy": "section-snapshots",
+    "overallSimilarity": 1,
+    "threshold": 0.99,
+    "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\section-snapshot-desktop-converted.png",
+    "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\screenshot-desktop.png",
+    "viewportSimilarities": {
+      "desktop": 1,
+      "tablet": 1,
+      "mobile": 1
+    },
+    "sectionReports": [
+      {
+        "nodeId": "capture-node-2",
+        "name": "section-1",
+        "type": "section",
+        "mode": "snapshot",
+        "reason": "Secao exportada como snapshot visual principal.",
+        "similarity": 1,
+        "fidelityScore": 1,
+        "htmlBlocked": true,
+        "healingIssues": [],
+        "healingSteps": [],
+        "preservedLinks": 0,
+        "totalLinks": 0
+      }
+    ],
+    "requiresPixelPerfect": false,
+    "learningNotes": [],
+    "visualValidationReport": {
+      "status": "passed",
+      "modeUsed": "section-snapshot",
+      "viewportsTested": [
+        "desktop",
+        "tablet",
+        "mobile"
+      ],
+      "sectionsApproved": [
+        {
+          "nodeId": "capture-node-2",
+          "name": "section-1",
+          "type": "section",
+          "similarity": 1,
+          "viewportSimilarities": {
+            "desktop": 1,
+            "tablet": 1,
+            "mobile": 1
+          },
+          "preservedLinks": 0,
+          "totalLinks": 0
+        }
+      ],
+      "sectionsWithFallback": [],
+      "linksPreserved": 0,
+      "totalLinks": 0,
+      "similarityFinal": 1,
+      "viewportResults": [
+        {
+          "viewport": "desktop",
+          "passed": true,
+          "similarity": 1,
+          "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\screenshot-desktop.png",
+          "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\section-snapshot-desktop-converted.png",
+          "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\section-snapshot-desktop-diff.png"
+        },
+        {
+          "viewport": "tablet",
+          "passed": true,
+          "similarity": 1,
+          "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\screenshot-tablet.png",
+          "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\section-snapshot-tablet-converted.png",
+          "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\section-snapshot-tablet-diff.png"
+        },
+        {
+          "viewport": "mobile",
+          "passed": true,
+          "similarity": 1,
+          "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\screenshot-mobile.png",
+          "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\section-snapshot-mobile-converted.png",
+          "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\93c47023-73c1-4d6f-b7d9-27048f475f3f\\section-snapshot-mobile-diff.png"
+        }
+      ],
+      "issues": [],
+      "diagnosticSummary": [],
+      "debugArtifacts": []
+    },
+    "totals": {
+      "htmlSections": 0,
+      "snapshotSections": 1,
+      "pixelPerfectRequiredSections": 0,
+      "preservedLinks": 0,
+      "totalLinks": 0
+    }
+  }
+}

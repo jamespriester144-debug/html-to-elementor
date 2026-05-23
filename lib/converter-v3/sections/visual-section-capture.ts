@@ -11,8 +11,14 @@ import type {
 import type {
   CaptureViewportProfile,
   PageCapture,
+  SectionCaptureBackgroundAsset,
   SectionComplexity,
   SectionCapture,
+  SectionCaptureDebugInfo,
+  SectionCaptureFontAsset,
+  SectionCaptureImageAsset,
+  SectionCaptureInteractiveAsset,
+  SectionCapturePositionedAsset,
   SectionOverlayLink
 } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode } from "@/lib/converter-v3/contracts/layout";
@@ -58,6 +64,14 @@ type ExtractedSectionViewport = {
   animatedNodes: number;
   unsupportedCssNodes: number;
   carouselNodes: number;
+  captureStrategy: "expanded-clip" | "coordinate-clip" | "viewport-clip";
+  unsafeSectionBoundary: boolean;
+  unsafeReasons: string[];
+  originalImages: SectionCaptureImageAsset[];
+  cssBackgrounds: SectionCaptureBackgroundAsset[];
+  loadedFonts: SectionCaptureFontAsset[];
+  interactiveElements: SectionCaptureInteractiveAsset[];
+  positionedElements: SectionCapturePositionedAsset[];
 };
 
 const FROZEN_STYLE_PROPERTIES = [
@@ -662,6 +676,20 @@ async function extractViewportSectionData(params: {
             );
           }
 
+          function getNodeCaptureId(element) {
+            return element.getAttribute("data-capture-id") || "";
+          }
+
+          function getAbsoluteRectSummary(element) {
+            const rect = toAbsoluteRect(element.getBoundingClientRect());
+            return {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height
+            };
+          }
+
           const rootRect = root.getBoundingClientRect();
           const invadingElements = Array.from(document.body.querySelectorAll("*")).filter((element) => {
             if (element === root || root.contains(element)) {
@@ -722,15 +750,17 @@ async function extractViewportSectionData(params: {
           const captureBox = {
             x: Math.max(captureRect.left + window.scrollX - capturePadding, 0),
             y: Math.max(captureRect.top + window.scrollY - capturePadding, 0),
-            width: Math.min(
-              Math.max(captureRect.right - captureRect.left + capturePadding * 2, 1),
-              documentWidth
-            ),
-            height: Math.min(
-              Math.max(captureRect.bottom - captureRect.top + capturePadding * 2, 1),
-              documentHeight
-            )
+            width: 1,
+            height: 1
           };
+          captureBox.width = Math.min(
+            Math.max(captureRect.right - captureRect.left + capturePadding * 2, 1),
+            Math.max(documentWidth - captureBox.x, 1)
+          );
+          captureBox.height = Math.min(
+            Math.max(captureRect.bottom - captureRect.top + capturePadding * 2, 1),
+            Math.max(documentHeight - captureBox.y, 1)
+          );
           const uniqueElements = [...new Set([root, ...Array.from(root.querySelectorAll("*")), ...invadingElements])];
           const frozenRoot = cloneNodeWithInlineStyles(root);
           let pseudoElementNodes = 0;
@@ -741,6 +771,29 @@ async function extractViewportSectionData(params: {
           let animatedNodes = 0;
           let unsupportedCssNodes = 0;
           let carouselNodes = 0;
+          const ancestorRisks = [];
+
+          let ancestor = root.parentElement;
+          while (ancestor) {
+            const computed = window.getComputedStyle(ancestor);
+            const overflowRisk =
+              ["hidden", "clip", "scroll", "auto"].includes(computed.overflowX) ||
+              ["hidden", "clip", "scroll", "auto"].includes(computed.overflowY);
+            const transformRisk = computed.transform && computed.transform !== "none";
+            const positionRisk = ["absolute", "fixed", "sticky"].includes(computed.position);
+
+            if (overflowRisk || transformRisk || positionRisk) {
+              ancestorRisks.push({
+                nodeId: getNodeCaptureId(ancestor),
+                position: computed.position,
+                overflowX: computed.overflowX,
+                overflowY: computed.overflowY,
+                transform: computed.transform
+              });
+            }
+
+            ancestor = ancestor.parentElement;
+          }
 
           uniqueElements.forEach((element) => {
             const computed = window.getComputedStyle(element);
@@ -789,6 +842,136 @@ async function extractViewportSectionData(params: {
               carouselNodes += 1;
             }
           });
+
+          const originalImages = uniqueElements
+            .filter((element) => element instanceof HTMLImageElement)
+            .map((element) => ({
+              nodeId: getNodeCaptureId(element),
+              tag: element.tagName.toLowerCase(),
+              src: element.currentSrc || element.src || element.getAttribute("src") || "",
+              alt: element.getAttribute("alt") || undefined,
+              width: Math.max(element.naturalWidth || element.clientWidth || 0, 0),
+              height: Math.max(element.naturalHeight || element.clientHeight || 0, 0)
+            }))
+            .filter((image) => Boolean(image.src));
+
+          const cssBackgrounds = uniqueElements
+            .map((element) => {
+              const computed = window.getComputedStyle(element);
+              const backgroundImage = computed.backgroundImage || "";
+
+              if (!backgroundImage || backgroundImage === "none") {
+                return null;
+              }
+
+              return {
+                nodeId: getNodeCaptureId(element),
+                tag: element.tagName.toLowerCase(),
+                backgroundImage
+              };
+            })
+            .filter((item) => Boolean(item));
+
+          const interactiveElements = uniqueElements
+            .filter((element) => {
+              if (!isVisibleElement(element)) {
+                return false;
+              }
+
+              return (
+                (element instanceof HTMLAnchorElement && Boolean(element.href)) ||
+                element.tagName.toLowerCase() === "button" ||
+                element.getAttribute("role") === "button"
+              );
+            })
+            .map((element) => ({
+              nodeId: getNodeCaptureId(element),
+              tag: element.tagName.toLowerCase(),
+              role: element.getAttribute("role") || undefined,
+              href:
+                element instanceof HTMLAnchorElement
+                  ? element.href || undefined
+                  : element.getAttribute("href") || undefined,
+              text: (element.textContent || "").replace(/\\s+/g, " ").trim(),
+              isButton:
+                element.tagName.toLowerCase() === "button" ||
+                element.getAttribute("role") === "button"
+            }));
+
+          const positionedElements = uniqueElements
+            .map((element) => {
+              const computed = window.getComputedStyle(element);
+              const position = computed.position || "";
+              const transform = computed.transform || "";
+              const zIndex = computed.zIndex || "";
+              const overlapsSection = intersects(element.getBoundingClientRect(), rootRect);
+              const insideSection = root.contains(element) || element === root;
+
+              if (
+                !["absolute", "fixed", "sticky"].includes(position) &&
+                (!transform || transform === "none")
+              ) {
+                return null;
+              }
+
+              return {
+                nodeId: getNodeCaptureId(element),
+                tag: element.tagName.toLowerCase(),
+                position,
+                transform: transform && transform !== "none" ? transform : undefined,
+                zIndex: zIndex && zIndex !== "auto" ? zIndex : undefined,
+                overlapsSection,
+                insideSection
+              };
+            })
+            .filter((item) => Boolean(item));
+
+          const loadedFonts = Array.from(document.fonts || [])
+            .map((font) => ({
+              family: font.family || "",
+              weight: font.weight || undefined,
+              style: font.style || undefined,
+              status: font.status || undefined
+            }))
+            .filter((font) => Boolean(font.family));
+
+          const unsafeReasons = [];
+          const rootComputed = window.getComputedStyle(root);
+          const rootOverflowRisk =
+            ["hidden", "clip"].includes(rootComputed.overflowX) ||
+            ["hidden", "clip"].includes(rootComputed.overflowY);
+          const hasOverlayInvasion = invadingElements.length > 0;
+          const hasBoundaryTransform = transformedNodes > 0 || ancestorRisks.length > 0;
+          const hasPositionedOverlap = positionedElements.some(
+            (element) => element.overlapsSection && !element.insideSection
+          );
+
+          if (rootOverflowRisk) {
+            unsafeReasons.push("root-overflow-clips-section");
+          }
+
+          if (ancestorRisks.length > 0) {
+            unsafeReasons.push("ancestor-overflow-transform-or-absolute-context");
+          }
+
+          if (hasOverlayInvasion) {
+            unsafeReasons.push("invading-overlay-expands-boundary");
+          }
+
+          if (hasBoundaryTransform) {
+            unsafeReasons.push("transform-affects-section-boundary");
+          }
+
+          if (hasPositionedOverlap) {
+            unsafeReasons.push("positioned-element-overlaps-section");
+          }
+
+          const captureStrategy =
+            hasOverlayInvasion || hasPositionedOverlap
+              ? "coordinate-clip"
+              : ancestorRisks.length > 0 || transformedNodes > 0
+                ? "viewport-clip"
+                : "expanded-clip";
 
           const linkOverlays = Array.from(document.querySelectorAll("[href]"))
             .filter((element) => {
@@ -864,7 +1047,15 @@ async function extractViewportSectionData(params: {
             gradientNodes,
             animatedNodes,
             unsupportedCssNodes,
-            carouselNodes
+            carouselNodes,
+            captureStrategy,
+            unsafeSectionBoundary: unsafeReasons.length > 0,
+            unsafeReasons,
+            originalImages,
+            cssBackgrounds,
+            loadedFonts,
+            interactiveElements,
+            positionedElements
           };
         `
       );
@@ -985,7 +1176,22 @@ export async function buildVisualSectionCaptures(params: {
       originalHtml: "",
       htmlCandidate: "",
       complexity: createSectionComplexity(sectionNode, subtreeNodes, nodeById),
-      viewports: {}
+      viewports: {},
+      debug: {
+        sectionBoundingBox: {
+          x: sectionNode.box.x,
+          y: sectionNode.box.y,
+          width: Math.max(sectionNode.box.width, 1),
+          height: Math.max(sectionNode.box.height, 1)
+        },
+        sectionWidth: Math.max(sectionNode.box.width, 1),
+        sectionHeight: Math.max(sectionNode.box.height, 1),
+        originalImages: [],
+        cssBackgrounds: [],
+        loadedFonts: [],
+        interactiveElements: [],
+        positionedElements: []
+      }
     });
   });
 
@@ -1046,6 +1252,7 @@ export async function buildVisualSectionCaptures(params: {
             snapshotDataUrl: toPngDataUrl(pngBuffer),
             captureBox: extracted.captureBox,
             invadingNodeIds: extracted.invadingNodeIds,
+            captureStrategy: extracted.captureStrategy,
             linkOverlays: extracted.linkOverlays
           };
 
@@ -1074,6 +1281,19 @@ export async function buildVisualSectionCaptures(params: {
             section.complexity.animatedNodes = extracted.animatedNodes;
             section.complexity.unsupportedCssNodes = extracted.unsupportedCssNodes;
             section.complexity.carouselNodes = extracted.carouselNodes;
+            section.debug = {
+              sectionBoundingBox: extracted.box,
+              captureBoundingBox: extracted.captureBox,
+              sectionWidth: extracted.box.width,
+              sectionHeight: extracted.box.height,
+              originalImages: extracted.originalImages,
+              cssBackgrounds: extracted.cssBackgrounds,
+              loadedFonts: extracted.loadedFonts,
+              interactiveElements: extracted.interactiveElements,
+              positionedElements: extracted.positionedElements,
+              unsafeSectionBoundary: extracted.unsafeSectionBoundary,
+              unsafeReasons: extracted.unsafeReasons
+            } satisfies SectionCaptureDebugInfo;
           }
         }
       } finally {

@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { copyFile, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import * as cheerio from "cheerio";
 
@@ -33,10 +34,11 @@ import {
 } from "@/lib/converter-v3/section-fidelity-policy";
 import {
   compareImagesPixelByPixel,
+  readImageDimensions,
   renderHtmlToScreenshot
 } from "@/lib/converter-v3/visual-similarity";
 import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
-import { isForceVisualSnapshotEnabled } from "@/lib/env";
+import { isForceVisualSnapshotEnabled, isVisualDebugEnabled } from "@/lib/env";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
 type SnapshotDecision = SnapshotSectionReport & {
@@ -159,6 +161,43 @@ function escapeCssValue(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function shouldWriteVisualDebugArtifacts() {
+  return isVisualDebugEnabled();
+}
+
+function buildDebugArtifactPath(outputDir: string | undefined, fileName: string) {
+  if (!outputDir || !shouldWriteVisualDebugArtifacts()) {
+    return undefined;
+  }
+
+  return path.join(outputDir, fileName);
+}
+
+async function copyDebugArtifact(
+  sourcePath: string | undefined,
+  outputDir: string | undefined,
+  fileName: string
+) {
+  const targetPath = buildDebugArtifactPath(outputDir, fileName);
+
+  if (!sourcePath || !targetPath) {
+    return undefined;
+  }
+
+  if (sourcePath.startsWith("data:")) {
+    const base64Payload = sourcePath.replace(/^data:[^;]+;base64,/, "");
+    await writeFile(targetPath, Buffer.from(base64Payload, "base64")).catch(() => undefined);
+    return targetPath;
+  }
+
+  if (path.resolve(sourcePath) === path.resolve(targetPath)) {
+    return targetPath;
+  }
+
+  await copyFile(sourcePath, targetPath).catch(() => undefined);
+  return targetPath;
+}
+
 function getDesktopViewport(section: SectionCapture) {
   return section.viewports.desktop ?? Object.values(section.viewports)[0];
 }
@@ -247,38 +286,42 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
     "display:block",
     "width:100%",
     `max-width:${Math.round(desktop.width)}px`,
-    "margin:0 auto",
-    `aspect-ratio:${Math.max(Math.round(desktop.width), 1)} / ${Math.max(
-      Math.round(desktop.height),
-      1
-    )}`,
-    `background-image:url("${escapeCssValue(desktop.snapshotDataUrl)}")`,
-    "background-size:100% 100%",
-    "background-position:center top",
-    "background-repeat:no-repeat"
+    "margin:0 auto"
   ].join(";");
   const stageTabletStyles =
     tablet?.snapshotDataUrl
-      ? [
-          `max-width:${Math.round(tablet.width)}px`,
-          `aspect-ratio:${Math.max(Math.round(tablet.width), 1)} / ${Math.max(
-            Math.round(tablet.height),
-            1
-          )}`,
-          `background-image:url("${escapeCssValue(tablet.snapshotDataUrl)}")`
-        ].join(";")
+      ? [`max-width:${Math.round(tablet.width)}px`].join(";")
       : "";
   const stageMobileStyles =
     mobile?.snapshotDataUrl
-      ? [
-          `max-width:${Math.round(mobile.width)}px`,
-          `aspect-ratio:${Math.max(Math.round(mobile.width), 1)} / ${Math.max(
-            Math.round(mobile.height),
-            1
-          )}`,
-          `background-image:url("${escapeCssValue(mobile.snapshotDataUrl)}")`
-        ].join(";")
+      ? [`max-width:${Math.round(mobile.width)}px`].join(";")
       : "";
+  const imageMarkup = [
+    `<img class="converter-v3-snapshot-image converter-v3-snapshot-image-desktop" src="${escapeHtmlAttribute(
+      desktop.snapshotDataUrl
+    )}" alt="" width="${Math.max(Math.round(desktop.width), 1)}" height="${Math.max(
+      Math.round(desktop.height),
+      1
+    )}" />`,
+    tablet?.snapshotDataUrl
+      ? `<img class="converter-v3-snapshot-image converter-v3-snapshot-image-tablet" src="${escapeHtmlAttribute(
+          tablet.snapshotDataUrl
+        )}" alt="" width="${Math.max(Math.round(tablet.width), 1)}" height="${Math.max(
+          Math.round(tablet.height),
+          1
+        )}" />`
+      : "",
+    mobile?.snapshotDataUrl
+      ? `<img class="converter-v3-snapshot-image converter-v3-snapshot-image-mobile" src="${escapeHtmlAttribute(
+          mobile.snapshotDataUrl
+        )}" alt="" width="${Math.max(Math.round(mobile.width), 1)}" height="${Math.max(
+          Math.round(mobile.height),
+          1
+        )}" />`
+      : ""
+  ]
+    .filter(Boolean)
+    .join("");
   const linkStyles = [...mergedLinks.values()]
     .map((link, index) => {
       const desktopPosition =
@@ -340,6 +383,18 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
   <style>
     #${scopeId}{position:relative;width:100%;}
     #${scopeId} .converter-v3-snapshot-stage{${stageBaseStyles}}
+    #${scopeId} .converter-v3-snapshot-image{
+      display:block;
+      width:100%;
+      height:auto;
+      margin:0;
+      padding:0;
+      border:none;
+    }
+    #${scopeId} .converter-v3-snapshot-image-tablet,
+    #${scopeId} .converter-v3-snapshot-image-mobile{
+      display:none;
+    }
     #${scopeId} .converter-v3-snapshot-link{
       position:absolute;
       display:block;
@@ -360,17 +415,17 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
     }
     ${
       stageTabletStyles
-        ? `@media (max-width:${TABLET_BREAKPOINT}px){#${scopeId} .converter-v3-snapshot-stage{${stageTabletStyles}}}`
+        ? `@media (max-width:${TABLET_BREAKPOINT}px){#${scopeId} .converter-v3-snapshot-stage{${stageTabletStyles}}#${scopeId} .converter-v3-snapshot-image-desktop{display:none;}#${scopeId} .converter-v3-snapshot-image-tablet{display:block;}#${scopeId} .converter-v3-snapshot-image-mobile{display:none;}}`
         : ""
     }
     ${
       stageMobileStyles
-        ? `@media (max-width:${MOBILE_BREAKPOINT}px){#${scopeId} .converter-v3-snapshot-stage{${stageMobileStyles}}}`
+        ? `@media (max-width:${MOBILE_BREAKPOINT}px){#${scopeId} .converter-v3-snapshot-stage{${stageMobileStyles}}#${scopeId} .converter-v3-snapshot-image-desktop{display:none;}#${scopeId} .converter-v3-snapshot-image-tablet{display:none;}#${scopeId} .converter-v3-snapshot-image-mobile{display:block;}}`
         : ""
     }
     ${linkStyles}
   </style>
-  <div class="converter-v3-snapshot-stage">${linksHtml}</div>
+  <div class="converter-v3-snapshot-stage">${imageMarkup}${linksHtml}</div>
 </div>`;
 }
 
@@ -558,6 +613,13 @@ function assessSectionSeparation(params: {
       });
     }
 
+    if (section.debug?.unsafeSectionBoundary) {
+      issues.push({
+        ...info,
+        reason: `unsafe-section-boundary: ${(section.debug.unsafeReasons ?? []).join(", ")}`
+      });
+    }
+
     params.capture.viewports.forEach((viewport) => {
       if (!section.viewports[viewport.name]?.snapshotDataUrl) {
         issues.push({
@@ -641,7 +703,11 @@ function clampRatio(value: number) {
 
 function buildPageOverlayLinks(
   capture: PageCapture,
-  viewportName: "desktop" | "tablet" | "mobile"
+  viewportName: "desktop" | "tablet" | "mobile",
+  pageSize?: {
+    width: number;
+    height: number;
+  }
 ): SectionOverlayLink[] {
   const viewport = getViewportProfile(capture, viewportName);
 
@@ -649,7 +715,8 @@ function buildPageOverlayLinks(
     return [];
   }
 
-  const pageHeight = resolveViewportPageHeight(capture, viewportName);
+  const pageHeight = pageSize?.height ?? resolveViewportPageHeight(capture, viewportName);
+  const pageWidth = pageSize?.width ?? viewport.width;
   const seen = new Set<string>();
 
   return capture.nodes
@@ -693,9 +760,9 @@ function buildPageOverlayLinks(
             height: box.height
           },
           relativeBox: {
-            x: clampRatio(box.x / viewport.width),
+            x: clampRatio(box.x / pageWidth),
             y: clampRatio(box.y / pageHeight),
-            width: clampRatio(box.width / viewport.width),
+            width: clampRatio(box.width / pageWidth),
             height: clampRatio(box.height / pageHeight)
           }
         }
@@ -724,11 +791,13 @@ async function buildFullPageSnapshotSource(
       return undefined;
     }
 
+    const dimensions = await readImageDimensions(screenshotPath);
+
     return {
-      width: viewport.width,
-      height: resolveViewportPageHeight(capture, viewportName),
+      width: dimensions.width,
+      height: dimensions.height,
       snapshotDataUrl: await readSnapshotDataUrl(screenshotPath),
-      linkOverlays: buildPageOverlayLinks(capture, viewportName)
+      linkOverlays: buildPageOverlayLinks(capture, viewportName, dimensions)
     };
   };
 
@@ -1194,6 +1263,204 @@ function buildSnapshotValidationMessage(params: {
   )}.`;
 }
 
+function buildSectionDiagnosticSummary(
+  section: SectionCapture | null | undefined,
+  lossType: SnapshotValidationLossType,
+  dimensionsDiffer: boolean
+) {
+  const diagnostics: string[] = [];
+
+  if (dimensionsDiffer) {
+    diagnostics.push("altura/largura da captura diferem da referencia");
+    diagnostics.push("escala ou aspect-ratio do snapshot nao bate com a captura original");
+  }
+
+  if (lossType === "image") {
+    diagnostics.push("imagem ausente ou renderizada fora da escala esperada");
+  }
+
+  if (lossType === "background") {
+    diagnostics.push("background CSS presente na secao pode nao ter carregado ou foi recortado");
+  }
+
+  if (lossType === "button" || lossType === "link") {
+    diagnostics.push("links ou botoes podem estar deslocados em relacao ao snapshot");
+  }
+
+  if (lossType === "position") {
+    diagnostics.push("conteudo cortado, deslocado ou com bbox instavel");
+  }
+
+  if (!section && lossType === "position") {
+    diagnostics.push("pagina inteira pode conter scrollbar, borda extra ou elemento fixed/sticky divergente");
+  }
+
+  if (!section && (lossType === "button" || lossType === "link")) {
+    diagnostics.push("overlays de links podem estar fora da posicao sobre o snapshot full-page");
+  }
+
+  if (section?.debug?.unsafeSectionBoundary) {
+    diagnostics.push(
+      `secao marcada como unsafe-section-boundary: ${(section.debug.unsafeReasons ?? []).join(
+        ", "
+      )}`
+    );
+  }
+
+  if ((section?.debug?.positionedElements.length ?? 0) > 0) {
+    diagnostics.push("ha elementos absolute/fixed/sticky/transform dentro ou sobrepondo a secao");
+  }
+
+  if ((section?.debug?.cssBackgrounds.length ?? 0) > 0) {
+    diagnostics.push("a secao usa backgrounds CSS que precisam ser preservados na captura");
+  }
+
+  if ((section?.debug?.loadedFonts.length ?? 0) > 0) {
+    diagnostics.push("a secao depende de fontes carregadas em runtime");
+  }
+
+  return [...new Set(diagnostics)];
+}
+
+async function writeSectionVisualDebugReport(params: {
+  section: SectionCapture;
+  outputDir?: string;
+  stage: "section-snapshot" | "section-recapture" | "pure-snapshot";
+  viewportName: CaptureViewportName;
+  similarity: number;
+  lossType?: SnapshotValidationLossType;
+  originalScreenshotPath?: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+  dimensionsDiffer?: boolean;
+}) {
+  if (!shouldWriteVisualDebugArtifacts() || !params.outputDir || params.viewportName !== "desktop") {
+    return;
+  }
+
+  const debugJsonPath = buildDebugArtifactPath(
+    params.outputDir,
+    `${params.section.nodeId}-debug.json`
+  );
+
+  const copiedOriginalPath = await copyDebugArtifact(
+    params.originalScreenshotPath,
+    params.outputDir,
+    `${params.section.nodeId}-original.png`
+  );
+  const copiedConvertedPath = await copyDebugArtifact(
+    params.convertedScreenshotPath,
+    params.outputDir,
+    `${params.section.nodeId}-converted.png`
+  );
+  const copiedDiffPath = await copyDebugArtifact(
+    params.diffScreenshotPath,
+    params.outputDir,
+    `${params.section.nodeId}-diff.png`
+  );
+
+  if (!debugJsonPath) {
+    return;
+  }
+
+  const desktopViewport = params.section.viewports.desktop ?? Object.values(params.section.viewports)[0];
+  const debugPayload = {
+    nodeId: params.section.nodeId,
+    name: params.section.name,
+    type: params.section.type,
+    stage: params.stage,
+    similarity: params.similarity,
+    lossType: params.lossType,
+    originalHtml: params.section.originalHtml,
+    boundingBox: params.section.debug?.sectionBoundingBox ?? params.section.box,
+    captureBox: params.section.debug?.captureBoundingBox ?? desktopViewport?.captureBox,
+    sectionWidth: params.section.debug?.sectionWidth ?? params.section.box.width,
+    sectionHeight: params.section.debug?.sectionHeight ?? params.section.box.height,
+    screenshotOriginal: copiedOriginalPath ?? params.originalScreenshotPath,
+    screenshotConverted: copiedConvertedPath ?? params.convertedScreenshotPath,
+    screenshotDiff: copiedDiffPath ?? params.diffScreenshotPath,
+    images: params.section.debug?.originalImages ?? [],
+    backgrounds: params.section.debug?.cssBackgrounds ?? [],
+    loadedFonts: params.section.debug?.loadedFonts ?? [],
+    linksAndButtons: params.section.debug?.interactiveElements ?? [],
+    positionedElements: params.section.debug?.positionedElements ?? [],
+    unsafeSectionBoundary: params.section.debug?.unsafeSectionBoundary ?? false,
+    unsafeReasons: params.section.debug?.unsafeReasons ?? [],
+    captureStrategy: desktopViewport?.captureStrategy,
+    invadingNodeIds: desktopViewport?.invadingNodeIds ?? [],
+    diagnosticSummary: buildSectionDiagnosticSummary(
+      params.section,
+      params.lossType ?? "position",
+      Boolean(params.dimensionsDiffer)
+    )
+  };
+
+  await writeFile(debugJsonPath, JSON.stringify(debugPayload, null, 2), "utf8");
+}
+
+async function writeFullPageVisualDebugArtifacts(params: {
+  outputDir?: string;
+  originalScreenshotPath?: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+}) {
+  if (!shouldWriteVisualDebugArtifacts() || !params.outputDir) {
+    return;
+  }
+
+  await copyDebugArtifact(
+    params.originalScreenshotPath,
+    params.outputDir,
+    "original-full-page.png"
+  );
+  await copyDebugArtifact(
+    params.convertedScreenshotPath,
+    params.outputDir,
+    "converted-full-page.png"
+  );
+  await copyDebugArtifact(params.diffScreenshotPath, params.outputDir, "full-page-diff.png");
+}
+
+function summarizeVisualDiagnostics(
+  issues: SnapshotVisualValidationIssue[],
+  sections: SectionCapture[]
+) {
+  const sectionById = new Map(sections.map((section) => [section.nodeId, section]));
+  const diagnostics = issues.flatMap((issue) =>
+    buildSectionDiagnosticSummary(
+      issue.sectionId ? sectionById.get(issue.sectionId) : null,
+      issue.lossType,
+      issue.lossType === "size"
+    )
+  );
+
+  return [...new Set(diagnostics)];
+}
+
+function collectVisualDebugArtifacts(params: {
+  outputDir?: string;
+  sections: SectionCapture[];
+}): string[] {
+  if (!shouldWriteVisualDebugArtifacts() || !params.outputDir) {
+    return [];
+  }
+
+  const artifactPaths = [
+    buildDebugArtifactPath(params.outputDir, "original-full-page.png"),
+    buildDebugArtifactPath(params.outputDir, "converted-full-page.png"),
+    buildDebugArtifactPath(params.outputDir, "full-page-diff.png"),
+    buildDebugArtifactPath(params.outputDir, "visual-validation-report.json"),
+    ...params.sections.flatMap((section) => [
+      buildDebugArtifactPath(params.outputDir, `${section.nodeId}-original.png`),
+      buildDebugArtifactPath(params.outputDir, `${section.nodeId}-converted.png`),
+      buildDebugArtifactPath(params.outputDir, `${section.nodeId}-diff.png`),
+      buildDebugArtifactPath(params.outputDir, `${section.nodeId}-debug.json`)
+    ])
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  return [...new Set(artifactPaths)];
+}
+
 async function validateSnapshotSectionAcrossViewports(params: {
   section: SectionCapture;
   widgetHtml: string;
@@ -1215,10 +1482,14 @@ async function validateSnapshotSectionAcrossViewports(params: {
 
     const baseName = sanitizeFileSegment(`${params.section.nodeId}-${params.stage}-${viewportName}`);
     const convertedScreenshotPath = params.outputDir
-      ? `${params.outputDir}/${baseName}-converted.png`
+      ? shouldWriteVisualDebugArtifacts() && viewportName === "desktop"
+        ? path.join(params.outputDir, `${params.section.nodeId}-converted.png`)
+        : path.join(params.outputDir, `${baseName}-converted.png`)
       : undefined;
     const diffScreenshotPath = params.outputDir
-      ? `${params.outputDir}/${baseName}-diff.png`
+      ? shouldWriteVisualDebugArtifacts() && viewportName === "desktop"
+        ? path.join(params.outputDir, `${params.section.nodeId}-diff.png`)
+        : path.join(params.outputDir, `${baseName}-diff.png`)
       : undefined;
     const rendered = await renderHtmlToScreenshot({
       html: buildStandaloneSectionPreviewHtml({
@@ -1249,12 +1520,21 @@ async function validateSnapshotSectionAcrossViewports(params: {
     viewportSimilarities[viewportName] = comparison.similarity;
     minSimilarity = Math.min(minSimilarity, comparison.similarity);
 
+    await writeSectionVisualDebugReport({
+      section: params.section,
+      outputDir: params.outputDir,
+      stage: params.stage,
+      viewportName,
+      similarity: comparison.similarity,
+      lossType: inferSnapshotLossType(params.section, viewport, comparison.dimensionsDiffer),
+      originalScreenshotPath: viewport.snapshotPath,
+      convertedScreenshotPath,
+      diffScreenshotPath: comparison.diffOutputPath,
+      dimensionsDiffer: comparison.dimensionsDiffer
+    });
+
     if (!comparison.passed) {
-      const lossType = inferSnapshotLossType(
-        params.section,
-        viewport,
-        comparison.dimensionsDiffer
-      );
+      const lossType = inferSnapshotLossType(params.section, viewport, comparison.dimensionsDiffer);
       issues.push({
         viewport: viewportName,
         sectionId: params.section.nodeId,
@@ -1335,10 +1615,14 @@ async function validatePreviewAcrossViewports(params: {
 
     const baseName = sanitizeFileSegment(`${params.mode}-${viewport.name}`);
     const convertedScreenshotPath = params.outputDir
-      ? `${params.outputDir}/${baseName}-converted.png`
+      ? shouldWriteVisualDebugArtifacts() && viewport.name === "desktop"
+        ? path.join(params.outputDir, "converted-full-page.png")
+        : path.join(params.outputDir, `${baseName}-converted.png`)
       : undefined;
     const diffScreenshotPath = params.outputDir
-      ? `${params.outputDir}/${baseName}-diff.png`
+      ? shouldWriteVisualDebugArtifacts() && viewport.name === "desktop"
+        ? path.join(params.outputDir, "full-page-diff.png")
+        : path.join(params.outputDir, `${baseName}-diff.png`)
       : undefined;
     const rendered = await renderHtmlToScreenshot({
       html: params.previewHtml,
@@ -1364,6 +1648,15 @@ async function validatePreviewAcrossViewports(params: {
 
     viewportResults.push(result);
     minSimilarity = Math.min(minSimilarity, comparison.similarity);
+
+    if (viewport.name === "desktop") {
+      await writeFullPageVisualDebugArtifacts({
+        outputDir: params.outputDir,
+        originalScreenshotPath: referencePath,
+        convertedScreenshotPath,
+        diffScreenshotPath: comparison.diffOutputPath
+      });
+    }
 
     if (!comparison.passed) {
       const lossType: SnapshotValidationLossType = comparison.dimensionsDiffer
@@ -1531,8 +1824,47 @@ async function createForceVisualSnapshotDocumentV3(params: {
     const desktopViewport = params2.finalValidation.viewportResults.find(
       (result) => result.viewport === "desktop"
     );
-
-    return {
+    const issues = [
+      ...new Map(
+        encounteredIssues
+          .concat(params2.finalValidation.issues)
+          .map((issue) => [
+            `${issue.viewport}:${issue.sectionId ?? "page"}:${issue.fallbackStage}:${issue.message}`,
+            issue
+          ])
+      ).values()
+    ];
+    const diagnosticSummary = [
+      ...new Set(
+        [
+          ...sectionSeparation.issues.map(
+            (issue) => `${issue.name} (${issue.nodeId}): ${issue.reason}`
+          ),
+          ...summarizeVisualDiagnostics(issues, params2.contentSections),
+          params2.fullPageFallbackReason ? `fallback global: ${params2.fullPageFallbackReason}` : "",
+          blockingReason ? `motivo do bloqueio: ${blockingReason}` : ""
+        ].filter(Boolean)
+      )
+    ];
+    const visualValidationReport: SnapshotVisualValidationReport = {
+      status: params2.finalValidation.passed ? "passed" : "blocked",
+      modeUsed,
+      viewportsTested: params2.finalValidation.viewportResults.map((result) => result.viewport),
+      sectionsApproved,
+      sectionsWithFallback,
+      linksPreserved: preservedLinks,
+      totalLinks,
+      similarityFinal: params2.finalValidation.similarity,
+      viewportResults: params2.finalValidation.viewportResults,
+      issues,
+      diagnosticSummary,
+      debugArtifacts: collectVisualDebugArtifacts({
+        outputDir: params.outputDir,
+        sections: params2.contentSections
+      }),
+      blockingReason
+    };
+    const result: SnapshotEmitterResult = {
       document: {
         version: "1.0",
         title: params.capture.title,
@@ -1554,30 +1886,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
         learningNotes: sectionSeparation.issues.map(
           (issue) => `${issue.name} (${issue.nodeId}): ${issue.reason}`
         ),
-        visualValidationReport: {
-          status: params2.finalValidation.passed ? "passed" : "blocked",
-          modeUsed,
-          viewportsTested: params2.finalValidation.viewportResults.map(
-            (result) => result.viewport
-          ),
-          sectionsApproved,
-          sectionsWithFallback,
-          linksPreserved: preservedLinks,
-          totalLinks,
-          similarityFinal: params2.finalValidation.similarity,
-          viewportResults: params2.finalValidation.viewportResults,
-          issues: [
-            ...new Map(
-              encounteredIssues
-                .concat(params2.finalValidation.issues)
-                .map((issue) => [
-                  `${issue.viewport}:${issue.sectionId ?? "page"}:${issue.fallbackStage}:${issue.message}`,
-                  issue
-                ])
-            ).values()
-          ],
-          blockingReason
-        },
+        visualValidationReport,
         totals: {
           htmlSections: 0,
           snapshotSections: sectionReports.length,
@@ -1588,6 +1897,18 @@ async function createForceVisualSnapshotDocumentV3(params: {
       },
       warnings: [...new Set([...warnings, ...(blockingReason ? [blockingReason] : [])])]
     };
+
+    const debugReportPath = buildDebugArtifactPath(params.outputDir, "visual-validation-report.json");
+
+    if (debugReportPath) {
+      await writeFile(
+        debugReportPath,
+        JSON.stringify(result.snapshot.visualValidationReport, null, 2),
+        "utf8"
+      );
+    }
+
+    return result;
   };
 
   const buildSnapshotDecision = (

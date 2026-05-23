@@ -1,0 +1,32 @@
+[
+  {
+    "id": "capture-node-1",
+    "box": {
+      "x": 8,
+      "y": 8,
+      "top": 8,
+      "right": 1432,
+      "bottom": 1208,
+      "left": 8,
+      "width": 1424,
+      "height": 1200,
+      "centerX": 720,
+      "centerY": 608
+    }
+  },
+  {
+    "id": "capture-node-2",
+    "box": {
+      "x": 8,
+      "y": 8,
+      "top": 8,
+      "right": 1432,
+      "bottom": 1208,
+      "left": 8,
+      "width": 1424,
+      "height": 1200,
+      "centerX": 720,
+      "centerY": 608
+    }
+  }
+]

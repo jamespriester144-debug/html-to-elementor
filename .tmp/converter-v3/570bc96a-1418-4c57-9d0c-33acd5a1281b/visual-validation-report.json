@@ -1,0 +1,55 @@
+{
+  "status": "passed",
+  "modeUsed": "section-snapshot",
+  "viewportsTested": [
+    "desktop",
+    "tablet",
+    "mobile"
+  ],
+  "sectionsApproved": [
+    {
+      "nodeId": "capture-node-2",
+      "name": "section-1",
+      "type": "section",
+      "similarity": 1,
+      "viewportSimilarities": {
+        "desktop": 1,
+        "tablet": 1,
+        "mobile": 1
+      },
+      "preservedLinks": 0,
+      "totalLinks": 0
+    }
+  ],
+  "sectionsWithFallback": [],
+  "linksPreserved": 0,
+  "totalLinks": 0,
+  "similarityFinal": 1,
+  "viewportResults": [
+    {
+      "viewport": "desktop",
+      "passed": true,
+      "similarity": 1,
+      "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b\\screenshot-desktop.png",
+      "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b/section-snapshot-desktop-converted.png",
+      "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b/section-snapshot-desktop-diff.png"
+    },
+    {
+      "viewport": "tablet",
+      "passed": true,
+      "similarity": 1,
+      "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b\\screenshot-tablet.png",
+      "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b/section-snapshot-tablet-converted.png",
+      "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b/section-snapshot-tablet-diff.png"
+    },
+    {
+      "viewport": "mobile",
+      "passed": true,
+      "similarity": 1,
+      "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b\\screenshot-mobile.png",
+      "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b/section-snapshot-mobile-converted.png",
+      "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\570bc96a-1418-4c57-9d0c-33acd5a1281b/section-snapshot-mobile-diff.png"
+    }
+  ],
+  "issues": []
+}

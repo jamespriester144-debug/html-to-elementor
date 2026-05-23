@@ -151,6 +151,8 @@ export type SnapshotVisualValidationReport = {
   similarityFinal: number;
   viewportResults: SnapshotViewportValidation[];
   issues: SnapshotVisualValidationIssue[];
+  diagnosticSummary?: string[];
+  debugArtifacts?: string[];
   blockingReason?: string;
 };
 

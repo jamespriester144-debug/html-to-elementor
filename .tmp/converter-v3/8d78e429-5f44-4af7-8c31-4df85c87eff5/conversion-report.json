@@ -1,0 +1,172 @@
+{
+  "id": "8d78e429-5f44-4af7-8c31-4df85c87eff5",
+  "title": "Advanced Collagen Plus — 5 Collagen Types from 4 Premium Sources",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "snapshotEnabled": true,
+  "snapshotReason": "Snapshot visual (pagina inteira) validado com similaridade 100.00%.",
+  "selectedMode": "snapshot",
+  "emittedMode": "snapshot",
+  "summary": {
+    "totalNodes": 221,
+    "visibleNodes": 216,
+    "images": 9,
+    "buttons": 17,
+    "textBlocks": 72,
+    "sections": 11
+  },
+  "layout": {
+    "rootNodeId": "capture-node-1",
+    "nodeCount": 221,
+    "sectionCount": 0
+  },
+  "analysis": {
+    "score": 54,
+    "overlappingGroups": 5,
+    "gridContainers": 9,
+    "flexContainers": 40,
+    "absoluteNodes": 7,
+    "decorativeNodes": 11,
+    "interactiveNodes": 17,
+    "selectedMode": "snapshot",
+    "reasons": [
+      "FORCE_VISUAL_SNAPSHOT ativo: snapshots visuais por secao/pagina inteira sao o modo principal.",
+      "Detectados 9 containers em grid.",
+      "Detectados 7 elementos absolutos/fixos.",
+      "Detectados 11 elementos decorativos.",
+      "Detectados 11 cards reutilizaveis.",
+      "Detectados 216 elementos com overlay/z-index relevante.",
+      "Detectados 5 grupos com sobreposicao visual.",
+      "Documento com 221 nos visuais."
+    ]
+  },
+  "validation": {
+    "passed": true,
+    "mode": "snapshot",
+    "issueCount": 0,
+    "issues": [],
+    "stats": {
+      "expectedTexts": 84,
+      "matchedTexts": 84,
+      "expectedImages": 11,
+      "matchedImages": 11,
+      "expectedButtons": 17,
+      "matchedButtons": 17,
+      "expectedLinks": 7,
+      "matchedLinks": 7,
+      "expectedSections": 0,
+      "matchedSections": 0,
+      "expectedCards": 11,
+      "matchedCards": 11,
+      "expectedHeaders": 1,
+      "matchedHeaders": 1,
+      "expectedFooters": 0,
+      "matchedFooters": 0,
+      "expectedPositionedNodes": 209,
+      "matchedPositionedNodes": 209
+    }
+  },
+  "warnings": [
+    "Separacao por secao insegura em header-1 (capture-node-2): unsafe-section-boundary: transform-affects-section-boundary"
+  ],
+  "snapshot": {
+    "renderStrategy": "full-page-snapshot",
+    "fullPageFallbackReason": "Separacao por secoes desativada: header-1 (capture-node-2) - unsafe-section-boundary: transform-affects-section-boundary",
+    "overallSimilarity": 1,
+    "threshold": 0.99,
+    "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\full-page-snapshot-desktop-converted.png",
+    "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\screenshot-desktop.png",
+    "viewportSimilarities": {
+      "desktop": 1,
+      "tablet": 1,
+      "mobile": 1
+    },
+    "sectionReports": [
+      {
+        "nodeId": "capture-node-1",
+        "name": "page-snapshot",
+        "type": "page",
+        "mode": "snapshot",
+        "reason": "Separacao por secoes desativada: header-1 (capture-node-2) - unsafe-section-boundary: transform-affects-section-boundary Snapshot da pagina inteira aplicado com overlays transparentes.",
+        "similarity": 1,
+        "fidelityScore": 1,
+        "riskScore": 0,
+        "htmlBlocked": true,
+        "healingIssues": [],
+        "healingSteps": [
+          "Separacao por secoes desativada: header-1 (capture-node-2) - unsafe-section-boundary: transform-affects-section-boundary Snapshot da pagina inteira aplicado com overlays transparentes."
+        ],
+        "preservedLinks": 7,
+        "totalLinks": 7
+      }
+    ],
+    "requiresPixelPerfect": false,
+    "learningNotes": [
+      "header-1 (capture-node-2): unsafe-section-boundary: transform-affects-section-boundary"
+    ],
+    "visualValidationReport": {
+      "status": "passed",
+      "modeUsed": "full-page-snapshot",
+      "viewportsTested": [
+        "desktop",
+        "tablet",
+        "mobile"
+      ],
+      "sectionsApproved": [],
+      "sectionsWithFallback": [
+        {
+          "nodeId": "capture-node-1",
+          "name": "page-snapshot",
+          "type": "page",
+          "similarity": 1,
+          "viewportSimilarities": {},
+          "fallbackStage": "full-page-snapshot",
+          "preservedLinks": 7,
+          "totalLinks": 7
+        }
+      ],
+      "linksPreserved": 7,
+      "totalLinks": 7,
+      "similarityFinal": 1,
+      "viewportResults": [
+        {
+          "viewport": "desktop",
+          "passed": true,
+          "similarity": 1,
+          "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\screenshot-desktop.png",
+          "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\full-page-snapshot-desktop-converted.png",
+          "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\full-page-snapshot-desktop-diff.png"
+        },
+        {
+          "viewport": "tablet",
+          "passed": true,
+          "similarity": 1,
+          "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\screenshot-tablet.png",
+          "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\full-page-snapshot-tablet-converted.png",
+          "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\full-page-snapshot-tablet-diff.png"
+        },
+        {
+          "viewport": "mobile",
+          "passed": true,
+          "similarity": 1,
+          "originalScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\screenshot-mobile.png",
+          "convertedScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\full-page-snapshot-mobile-converted.png",
+          "diffScreenshotPath": "C:\\Users\\Priester\\Documents\\GitHub\\html-to-elementor\\.tmp\\converter-v3\\8d78e429-5f44-4af7-8c31-4df85c87eff5\\full-page-snapshot-mobile-diff.png"
+        }
+      ],
+      "issues": [],
+      "diagnosticSummary": [
+        "header-1 (capture-node-2): unsafe-section-boundary: transform-affects-section-boundary",
+        "fallback global: Separacao por secoes desativada: header-1 (capture-node-2) - unsafe-section-boundary: transform-affects-section-boundary"
+      ],
+      "debugArtifacts": []
+    },
+    "totals": {
+      "htmlSections": 0,
+      "snapshotSections": 1,
+      "pixelPerfectRequiredSections": 0,
+      "preservedLinks": 7,
+      "totalLinks": 7
+    }
+  }
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "id": "capture-node-1",
+    "tag": "body",
+    "text": "",
+    "attributes": {
+      "data-capture-id": "capture-node-1"
+    },
+    "parentId": null,
+    "childIds": [
+      "capture-node-2"
+    ],
+    "visualOrder": 1,
+    "isVisible": true
+  },
+  {
+    "id": "capture-node-2",
+    "tag": "main",
+    "text": "",
+    "attributes": {
+      "class": "min-h-screen bg-background text-foreground",
+      "style": "min-height:100vh;background:var(--background);color:var(--foreground)",
+      "data-capture-id": "capture-node-2"
+    },
+    "parentId": "capture-node-1",
+    "childIds": [],
+    "visualOrder": 2,
+    "isVisible": true
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "id": "93c47023-73c1-4d6f-b7d9-27048f475f3f",
+  "sourceKind": "lovable-react-source",
+  "title": "Radiant Skin",
+  "entryFile": null,
+  "routeFile": "shine-sell-boost-main/src/routes/index.tsx",
+  "archiveFileCount": 73,
+  "assets": [],
+  "notes": [
+    "ZIP detectado como projeto React com rotas/componentes."
+  ]
+}

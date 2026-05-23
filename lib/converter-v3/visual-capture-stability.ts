@@ -38,6 +38,10 @@ export async function preparePageForVisualCapture(
           const style = document.createElement("style");
           style.id = styleId;
           style.textContent = `
+            html {
+              cursor: default !important;
+            }
+
             *,
             *::before,
             *::after {
@@ -45,6 +49,19 @@ export async function preparePageForVisualCapture(
               transition: none !important;
               caret-color: transparent !important;
               scroll-behavior: auto !important;
+              cursor: default !important;
+            }
+
+            *:focus,
+            *:focus-visible,
+            *:active {
+              outline: none !important;
+              box-shadow: none !important;
+            }
+
+            *::selection {
+              background: transparent !important;
+              color: inherit !important;
             }
           `;
           document.head.appendChild(style);
@@ -89,6 +106,34 @@ export async function preparePageForVisualCapture(
           );
         };
 
+        const freezeInteractiveMedia = () => {
+          Array.from(document.querySelectorAll<HTMLVideoElement>("video")).forEach((video) => {
+            try {
+              video.pause();
+              video.autoplay = false;
+              video.loop = false;
+              video.currentTime = 0;
+              video.muted = true;
+              video.removeAttribute("autoplay");
+            } catch {}
+          });
+
+          Array.from(document.querySelectorAll<HTMLAudioElement>("audio")).forEach((audio) => {
+            try {
+              audio.pause();
+              audio.autoplay = false;
+              audio.loop = false;
+              audio.muted = true;
+              audio.removeAttribute("autoplay");
+            } catch {}
+          });
+
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement.blur()
+            : undefined;
+          window.getSelection?.()?.removeAllRanges?.();
+        };
+
         const waitForFonts = async () => {
           try {
             if (!document.fonts?.ready) {
@@ -100,6 +145,32 @@ export async function preparePageForVisualCapture(
               wait(Math.min(timeoutMs, 5000))
             ]);
           } catch {}
+        };
+
+        const waitForBackgroundImages = async () => {
+          const urls = Array.from(document.querySelectorAll<HTMLElement>("*"))
+            .flatMap((element) => {
+              const computed = window.getComputedStyle(element);
+              const backgroundImage = computed.backgroundImage || "";
+              return Array.from(backgroundImage.matchAll(/url\((['"]?)(.*?)\1\)/gi)).map(
+                (match) => match[2]
+              );
+            })
+            .filter((url) => Boolean(url) && !url.startsWith("data:"));
+
+          const uniqueUrls = [...new Set(urls)];
+
+          await Promise.allSettled(
+            uniqueUrls.map(
+              (url) =>
+                new Promise<void>((resolve) => {
+                  const image = new Image();
+                  image.onload = () => resolve();
+                  image.onerror = () => resolve();
+                  image.src = url;
+                })
+            )
+          );
         };
 
         const scrollThroughPage = async () => {
@@ -137,15 +208,20 @@ export async function preparePageForVisualCapture(
         };
 
         boostLazyAssets();
+        freezeInteractiveMedia();
         await waitForFonts();
+        await waitForBackgroundImages();
 
         if (scrollEntirePage) {
           await scrollThroughPage();
         }
 
         boostLazyAssets();
+        freezeInteractiveMedia();
         await waitForImages();
+        await waitForBackgroundImages();
         await waitForFonts();
+        await wait(120);
       },
       {
         timeoutMs,
