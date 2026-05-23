@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 420">
+  <defs>
+    <linearGradient id="heroGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f97316" />
+      <stop offset="100%" stop-color="#fb7185" />
+    </linearGradient>
+  </defs>
+  <rect width="640" height="420" rx="36" fill="url(#heroGradient)" />
+  <circle cx="470" cy="120" r="72" fill="rgba(255,255,255,0.28)" />
+  <circle cx="210" cy="300" r="120" fill="rgba(255,255,255,0.16)" />
+  <text x="58" y="180" fill="#ffffff" font-size="56" font-family="Arial, sans-serif" font-weight="700">
+    Universal
+  </text>
+  <text x="58" y="238" fill="#fff7ed" font-size="30" font-family="Arial, sans-serif">
+    Snapshot Ready
+  </text>
+</svg>

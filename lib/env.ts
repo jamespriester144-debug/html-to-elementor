@@ -36,6 +36,14 @@ export function isForceVisualSnapshotEnabled(): boolean {
   return getBooleanEnv("FORCE_VISUAL_SNAPSHOT", false);
 }
 
+export function isUniversalInputAnalysisEnabled(): boolean {
+  return getBooleanEnv("UNIVERSAL_INPUT_ANALYSIS", false);
+}
+
+export function isSafeFullPageFallbackEnabled(): boolean {
+  return getBooleanEnv("SAFE_FULL_PAGE_FALLBACK", false);
+}
+
 export function isVisualDebugEnabled(): boolean {
   return getBooleanEnv("VISUAL_DEBUG", false);
 }

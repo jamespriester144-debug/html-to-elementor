@@ -1,0 +1,30 @@
+{
+  "fileAnalyzed": "shine-sell-boost-main/src/routes/index.tsx",
+  "title": "Radiant Skin",
+  "sourceKind": "lovable-react-source",
+  "renderer": "browser",
+  "layoutTypesDetected": [
+    "static-html",
+    "lovable-export"
+  ],
+  "assetsFound": [],
+  "assetsLoaded": [],
+  "sectionsDetected": [
+    {
+      "id": "capture-node-2",
+      "type": "section",
+      "confidence": 0.72
+    }
+  ],
+  "modeUsed": "section-snapshot",
+  "linksPreserved": 0,
+  "finalSimilarity": 1,
+  "htmlRendered": true,
+  "cssLoaded": true,
+  "imagesLoaded": true,
+  "relativeAssetsResolved": true,
+  "viewportMatched": true,
+  "sectionCroppingRisk": false,
+  "fullPageSnapshotFailed": false,
+  "errors": []
+}

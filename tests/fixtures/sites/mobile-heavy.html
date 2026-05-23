@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mobile-heavy</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #0f172a; color: #fff; }
+      .shell { width: min(1100px, calc(100% - 40px)); margin: 0 auto; padding: 40px 0 72px; }
+      .mobile-hero { display: flex; gap: 24px; align-items: center; }
+      .mobile-hero img { width: 42%; border-radius: 28px; }
+      .cards { display: flex; gap: 16px; margin-top: 28px; }
+      .card { flex: 1; padding: 18px; border-radius: 20px; background: rgba(255,255,255,.08); }
+      @media (max-width: 760px) {
+        .mobile-hero { flex-direction: column-reverse; align-items: stretch; }
+        .mobile-hero img { width: 100%; }
+        .cards { flex-direction: column; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="mobile-hero">
+        <div>
+          <p>Responsive stress test</p>
+          <h1>Mobile-heavy layouts need viewport-aware capture.</h1>
+          <p>This fixture checks whether the pipeline captures mobile/tablet/desktop states consistently and preserves links after snapshotting.</p>
+          <a href="#mobile">Open mobile flow</a>
+        </div>
+        <img src="./assets/common/hero.svg" alt="Mobile visual" />
+      </section>
+      <section class="cards">
+        <article class="card"><h2>Stacking</h2><p>Content reflows hard on small viewports.</p></article>
+        <article class="card"><h2>Viewport snapshots</h2><p>All viewport images must still be emitted.</p></article>
+        <article class="card"><h2>Link overlays</h2><p>Interactive areas remain preserved after fallback.</p></article>
+      </section>
+    </main>
+  </body>
+</html>

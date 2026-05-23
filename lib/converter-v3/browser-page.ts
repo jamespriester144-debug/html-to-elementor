@@ -44,6 +44,10 @@ export type BrowserPage = {
       arg: Arg
     ): Promise<Result>;
   };
+  goto?: (
+    url: string,
+    options?: BrowserSetContentOptions
+  ) => Promise<unknown>;
   screenshot: (options?: BrowserScreenshotOptions) => Promise<Uint8Array>;
   setContent: (html: string, options?: BrowserSetContentOptions) => Promise<unknown>;
   setJavaScriptEnabled?: (enabled: boolean) => Promise<unknown>;

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { BrowserPage } from "@/lib/converter-v3/browser-page";
+import { installBrowserEvalShim } from "@/lib/converter-v3/browser-eval-shim";
 import { preparePageForVisualCapture } from "@/lib/converter-v3/visual-capture-stability";
 
 type BrowserSessionFactory = {
@@ -58,6 +59,7 @@ export async function readImageDimensions(source: string) {
           timeout: 20000
         }
       );
+      await installBrowserEvalShim(page);
 
       return page.evaluate(async (imageSrc: string) => {
         const image = (await new Promise((resolve, reject) => {
@@ -142,36 +144,42 @@ async function createBrowserFactory(): Promise<BrowserSessionFactory> {
   try {
     return await createPlaywrightFactory();
   } catch {
-    userDataDir = await mkdtemp(join(tmpdir(), "html-to-elementor-visual-"));
+    let lastError: unknown;
 
-    try {
-      const factory = await createPuppeteerFactory(userDataDir);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      userDataDir = await mkdtemp(join(tmpdir(), "html-to-elementor-visual-"));
 
-      return {
-        ...factory,
-        close: async () => {
-          await factory.close();
+      try {
+        const factory = await createPuppeteerFactory(userDataDir);
 
-          if (userDataDir) {
-            await rm(userDataDir, {
-              recursive: true,
-              force: true,
-              maxRetries: 2
-            }).catch(() => undefined);
+        return {
+          ...factory,
+          close: async () => {
+            await factory.close();
+
+            if (userDataDir) {
+              await rm(userDataDir, {
+                recursive: true,
+                force: true,
+                maxRetries: 2
+              }).catch(() => undefined);
+            }
           }
-        }
-      };
-    } catch (error) {
-      if (userDataDir) {
-        await rm(userDataDir, {
-          recursive: true,
-          force: true,
-          maxRetries: 2
-        }).catch(() => undefined);
-      }
+        };
+      } catch (error) {
+        lastError = error;
 
-      throw error;
+        if (userDataDir) {
+          await rm(userDataDir, {
+            recursive: true,
+            force: true,
+            maxRetries: 2
+          }).catch(() => undefined);
+        }
+      }
     }
+
+    throw lastError;
   }
 }
 
@@ -195,6 +203,7 @@ export async function renderHtmlToScreenshot(params: {
           waitUntil: "domcontentloaded",
           timeout: 20000
         });
+        await installBrowserEvalShim(page);
         await preparePageForVisualCapture(page, {
           timeoutMs: 15000,
           scrollEntirePage: true
@@ -241,6 +250,7 @@ export async function compareImagesPixelByPixel(params: {
           timeout: 20000
         }
       );
+      await installBrowserEvalShim(page);
 
       const comparison = (await page.evaluate(
         async ({

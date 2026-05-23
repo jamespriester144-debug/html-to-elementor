@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>absolute-layout</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #fff; color: #0f172a; }
+      .hero { position: relative; overflow: hidden; min-height: 640px; padding: 72px; background: linear-gradient(135deg, #0f172a, #1d4ed8); color: #fff; }
+      .hero h1 { max-width: 11ch; font-size: 72px; line-height: .95; margin: 0; position: relative; z-index: 3; }
+      .hero p { max-width: 40ch; position: relative; z-index: 3; }
+      .hero a { display: inline-block; padding: 14px 24px; border-radius: 999px; background: #fff; color: #0f172a; text-decoration: none; position: relative; z-index: 3; }
+      .orb { position: absolute; border-radius: 999px; filter: blur(8px); opacity: .88; }
+      .orb-a { width: 360px; height: 360px; top: -80px; right: -20px; background: rgba(244,114,182,.9); z-index: 1; }
+      .orb-b { width: 280px; height: 280px; bottom: -40px; left: -20px; background: rgba(34,197,94,.75); z-index: 2; transform: rotate(18deg); }
+      .frame { position: absolute; right: 72px; bottom: 58px; width: 360px; transform: rotate(-9deg); z-index: 4; }
+    </style>
+  </head>
+  <body>
+    <section class="hero">
+      <div class="orb orb-a"></div>
+      <div class="orb orb-b"></div>
+      <h1>Absolute layers everywhere</h1>
+      <p>This fixture should encourage the universal pipeline to prefer a visual snapshot instead of fragile editable reconstruction.</p>
+      <a href="#book">Book a demo</a>
+      <img class="frame" src="./assets/common/hero.svg" alt="Floating frame" />
+    </section>
+  </body>
+</html>

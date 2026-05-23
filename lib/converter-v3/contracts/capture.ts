@@ -1,4 +1,5 @@
 import type { SourceKind } from "@/lib/converter-v3/contracts/source";
+import type { InputPageAnalysis } from "@/lib/converter-v3/contracts/input-analysis";
 
 export type CaptureViewportName = "desktop" | "tablet" | "mobile";
 
@@ -262,6 +263,7 @@ export type PageCapture = {
   sourceHtml: string;
   renderedHtml: string;
   renderer: "browser" | "server";
+  inputAnalysis: InputPageAnalysis;
   viewports: CaptureViewportProfile[];
   domSnapshot: DomSnapshotNode[];
   styleSnapshot: StyleSnapshotNode[];

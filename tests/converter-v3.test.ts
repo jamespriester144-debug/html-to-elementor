@@ -6,6 +6,7 @@ import path from "node:path";
 import JSZip from "jszip";
 
 import type { PageCapture, SectionCapture } from "../lib/converter-v3/contracts/capture";
+import type { InputPageAnalysis } from "../lib/converter-v3/contracts/input-analysis";
 import type { LayoutDocument, LayoutNode } from "../lib/converter-v3/contracts/layout";
 import { createElementorNativeExport } from "../lib/converter-v3/elementor-native-exporter";
 import { createSnapshotElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/snapshot";
@@ -43,6 +44,83 @@ function logForceVisualSnapshotDebug() {
 
   console.log("FORCE_VISUAL_SNAPSHOT =", process.env.FORCE_VISUAL_SNAPSHOT);
   console.log("expectedPrimaryMode =", expectedPrimaryMode());
+}
+
+function createMockInputAnalysis(
+  overrides: Partial<InputPageAnalysis> = {}
+): InputPageAnalysis {
+  return {
+    fileName: overrides.fileName ?? "test-fixture.html",
+    sourceKind: overrides.sourceKind ?? "raw-html",
+    layoutTypes: overrides.layoutTypes ?? ["static-html"],
+    frameworkHints: overrides.frameworkHints ?? [],
+    structure: {
+      totalElements: 0,
+      realSectionCount: 1,
+      headers: 0,
+      navbars: 0,
+      heroSections: 0,
+      cards: 0,
+      grids: 0,
+      buttons: 0,
+      images: 0,
+      backgrounds: 0,
+      absoluteFixedSticky: 0,
+      zIndexNodes: 0,
+      iframes: 0,
+      scripts: 0,
+      lazyLoadElements: 0,
+      externalAssets: 0,
+      externalFonts: 0,
+      links: 0,
+      forms: 0,
+      carousels: 0,
+      transformedElements: 0,
+      overflowHiddenElements: 0,
+      outOfFlowElements: 0,
+      ...(overrides.structure ?? {})
+    },
+    sectionCandidates: overrides.sectionCandidates ?? [],
+    assets: {
+      found: [],
+      total: 0,
+      local: 0,
+      external: 0,
+      embedded: 0,
+      images: 0,
+      backgrounds: 0,
+      stylesheets: 0,
+      fonts: 0,
+      scripts: 0,
+      iframes: 0,
+      lazy: 0,
+      loaded: 0,
+      failed: 0,
+      ...(overrides.assets ?? {})
+    },
+    renderStrategy: {
+      requiresBrowserRender: true,
+      preferVisualSnapshot: false,
+      preferFullPageSnapshot: false,
+      safeSectionExtraction: true,
+      reasons: [],
+      ...(overrides.renderStrategy ?? {})
+    },
+    diagnostics: {
+      errors: [],
+      warnings: [],
+      rendererUsed: "browser",
+      htmlRendered: true,
+      cssLoaded: true,
+      imagesLoaded: true,
+      relativeAssetsResolved: true,
+      viewportMatched: true,
+      sectionCroppingRisk: false,
+      fullPageSnapshotFailed: false,
+      resources: [],
+      ...(overrides.diagnostics ?? {})
+    }
+  };
 }
 
 function assertSnapshotModeWhenForced(
@@ -4494,6 +4572,7 @@ async function testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSect
     sourceHtml: "<body></body>",
     renderedHtml: "<html><body></body></html>",
     renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
     viewports: [
       {
         name: "desktop",
@@ -4668,6 +4747,7 @@ async function testV3SnapshotEmitterBlocksHtmlProfilesAfterHardFailure() {
     sourceHtml: "<body></body>",
     renderedHtml: "<html><body></body></html>",
     renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
     viewports: [
       {
         name: "desktop",
@@ -4815,6 +4895,7 @@ async function testV3SnapshotEmitterKeepsSnapshotOutputWhenSectionAlreadyMatches
     sourceHtml: "<body></body>",
     renderedHtml: "<html><body></body></html>",
     renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
     viewports: [
       {
         name: "desktop",
@@ -4939,6 +5020,7 @@ async function testV3ForceVisualSnapshotDisablesEditableAndHybridFallbacks() {
     renderedHtml:
       '<!doctype html><html><body style="margin:0;"><section data-capture-id="hero-force" style="width:100%;height:100px;background:#f2545b;"></section></body></html>',
     renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
     viewports: [
       {
         name: "desktop",
@@ -5109,6 +5191,7 @@ async function testV3ForceVisualSnapshotUsesSectionFallbackBeforePassing() {
     renderedHtml:
       '<!doctype html><html><head><style>html,body{margin:0;padding:0;}</style></head><body><section data-capture-id="critical-section" style="width:100%;height:100px;background:#f2545b;"><a href="#buy" style="display:block;width:40px;height:20px;color:transparent;text-decoration:none;">.</a></section></body></html>',
     renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
     viewports: [
       {
         name: "desktop",
@@ -5329,6 +5412,7 @@ async function testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUn
     sourceHtml: "<body></body>",
     renderedHtml: "<html><body></body></html>",
     renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
     viewports: [
       {
         name: "desktop",
@@ -5579,6 +5663,7 @@ async function testV3ForceVisualSnapshotBlocksOnlyAfterFullPageFallbackFails() {
     sourceHtml: "<body></body>",
     renderedHtml: "<html><body></body></html>",
     renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
     viewports: [
       {
         name: "desktop",

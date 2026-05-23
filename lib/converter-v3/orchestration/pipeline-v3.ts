@@ -12,6 +12,7 @@ import {
   type BrowserRenderOptions,
   renderResolvedSourceForCapture
 } from "@/lib/converter-v3/render/browser-renderer";
+import { isUniversalInputAnalysisEnabled } from "@/lib/env";
 import { resolveSourceFromHtml, resolveSourceFromUpload } from "@/lib/converter-v3/resolve/source-resolver";
 
 export type CapturePipelineOptions = BrowserRenderOptions & {
@@ -37,7 +38,35 @@ export async function runCapturePipelineV3(
   const detectedLayout = detectLayoutDocument(capture);
   const visualHierarchy = buildVisualHierarchy(detectedLayout);
   const layout = classifySections(visualHierarchy);
-  const analysis = analyzeLayoutComplexity(layout);
+  const universalAnalysisEnabled = isUniversalInputAnalysisEnabled();
+  const realSectionCount = layout.detectedSections.length || layout.sectionIds.length;
+  capture.inputAnalysis = {
+    ...capture.inputAnalysis,
+    structure: {
+      ...capture.inputAnalysis.structure,
+      realSectionCount
+    }
+  };
+
+  let analysis = analyzeLayoutComplexity(layout);
+
+  if (universalAnalysisEnabled && capture.renderer === "browser") {
+    const preferVisualSnapshot = capture.inputAnalysis.renderStrategy.preferVisualSnapshot;
+    const preferFullPageSnapshot = capture.inputAnalysis.renderStrategy.preferFullPageSnapshot;
+
+    if (preferVisualSnapshot || preferFullPageSnapshot) {
+      analysis = {
+        ...analysis,
+        selectedMode: "snapshot",
+        reasons: [
+          preferFullPageSnapshot
+            ? "Analise universal indicou snapshot visual de pagina inteira como fallback mais seguro."
+            : "Analise universal indicou snapshot visual por seguranca estrutural.",
+          ...analysis.reasons
+        ]
+      };
+    }
+  }
 
   const resolvedSourcePath = path.join(outputDir, "resolved-source.json");
   const renderedHtmlPath = path.join(outputDir, "rendered.html");
@@ -47,6 +76,7 @@ export async function runCapturePipelineV3(
   const responsiveSnapshotPath = path.join(outputDir, "responsive-snapshot.json");
   const layoutPath = path.join(outputDir, "layout.json");
   const analysisPath = path.join(outputDir, "analysis.json");
+  const inputAnalysisPath = path.join(outputDir, "input-analysis.json");
   const pageCapturePath = path.join(outputDir, "page-capture.json");
 
   capture.artifacts = {
@@ -71,7 +101,10 @@ export async function runCapturePipelineV3(
     routeFile: resolvedSource.routeFile,
     archiveFileCount: resolvedSource.archiveFileCount,
     assets: resolvedSource.assets,
-    notes: resolvedSource.notes
+    notes: resolvedSource.notes,
+    sourcePath: resolvedSource.sourcePath,
+    renderContext: resolvedSource.renderContext,
+    inputAnalysis: resolvedSource.inputAnalysis
   });
   await writeFile(renderedHtmlPath, capture.renderedHtml, "utf8");
   await writeJson(domSnapshotPath, capture.domSnapshot);
@@ -80,6 +113,7 @@ export async function runCapturePipelineV3(
   await writeJson(responsiveSnapshotPath, capture.responsiveSnapshot);
   await writeJson(layoutPath, layout);
   await writeJson(analysisPath, analysis);
+  await writeJson(inputAnalysisPath, capture.inputAnalysis);
   await writeJson(pageCapturePath, capture);
 
   return {

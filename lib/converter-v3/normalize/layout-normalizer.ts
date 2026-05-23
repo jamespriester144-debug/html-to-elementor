@@ -211,6 +211,127 @@ function normalizeParentId(node: CapturedNode, nodeIds: Set<string>, rootNodeId:
   return nodeIds.has(node.parentId) ? node.parentId : rootNodeId;
 }
 
+function collectSubtreeNodes(nodeId: string, layoutById: Map<string, LayoutNode>) {
+  const nodes: LayoutNode[] = [];
+  const queue = [nodeId];
+
+  while (queue.length) {
+    const currentId = queue.shift();
+
+    if (!currentId) {
+      continue;
+    }
+
+    const node = layoutById.get(currentId);
+
+    if (!node) {
+      continue;
+    }
+
+    nodes.push(node);
+    queue.push(...node.children);
+  }
+
+  return nodes;
+}
+
+function containsHeading(node: LayoutNode, layoutById: Map<string, LayoutNode>) {
+  return collectSubtreeNodes(node.id, layoutById).some((candidate) =>
+    /^h[1-6]$/i.test(candidate.tag ?? "")
+  );
+}
+
+function containsMedia(node: LayoutNode, layoutById: Map<string, LayoutNode>) {
+  return collectSubtreeNodes(node.id, layoutById).some(
+    (candidate) =>
+      candidate.kind === "image" ||
+      ["video", "iframe", "canvas", "svg"].includes(candidate.tag ?? "")
+  );
+}
+
+function containsInteractive(node: LayoutNode, layoutById: Map<string, LayoutNode>) {
+  return collectSubtreeNodes(node.id, layoutById).some((candidate) => candidate.kind === "button");
+}
+
+function isLikelySectionNode(
+  node: LayoutNode,
+  layoutById: Map<string, LayoutNode>,
+  rootWidth: number
+) {
+  if (node.flags.hidden || node.flags.decorative) {
+    return false;
+  }
+
+  const landmarkTag = ["header", "nav", "main", "section", "article", "footer"].includes(
+    node.tag ?? ""
+  );
+  const hasBackground = Boolean(node.style.backgroundColor || node.style.backgroundImage);
+  const hasLayoutStructure =
+    node.layout.display === "flex" ||
+    node.layout.display === "grid" ||
+    Boolean(node.layout.gridTemplateColumns) ||
+    node.children.length >= 2;
+  const hasNarrativeContent =
+    containsHeading(node, layoutById) || containsMedia(node, layoutById) || containsInteractive(node, layoutById);
+  const significantHeight = node.box.height >= 180;
+  const significantWidth = rootWidth <= 0 ? node.box.width > 0 : node.box.width >= rootWidth * 0.55;
+
+  if (landmarkTag) {
+    return true;
+  }
+
+  if (significantHeight && significantWidth && (hasLayoutStructure || hasNarrativeContent)) {
+    return true;
+  }
+
+  if (hasBackground && significantWidth && node.children.length >= 1) {
+    return true;
+  }
+
+  return false;
+}
+
+function findPrimaryContentContainer(layoutNodes: LayoutNode[], rootNodeId: string) {
+  const topLevelNodes = layoutNodes.filter((node) => node.parentId === rootNodeId);
+  const mainNode = topLevelNodes.find((node) => node.tag === "main");
+
+  if (mainNode) {
+    return mainNode;
+  }
+
+  return topLevelNodes
+    .filter((node) => node.kind === "container" || node.kind === "section")
+    .sort((left, right) => right.box.height - left.box.height || left.visualOrder - right.visualOrder)
+    .find((node) => node.children.length >= 2 && node.box.height >= 320);
+}
+
+function detectSectionIds(layoutNodes: LayoutNode[], rootNodeId: string) {
+  const layoutById = new Map(layoutNodes.map((node) => [node.id, node]));
+  const rootNode = layoutById.get(rootNodeId);
+  const rootWidth = rootNode?.box.width ?? 0;
+  const primaryContainer = findPrimaryContentContainer(layoutNodes, rootNodeId);
+  const candidateParentIds = new Set<string>([rootNodeId]);
+
+  if (primaryContainer && primaryContainer.id !== rootNodeId) {
+    candidateParentIds.add(primaryContainer.id);
+  }
+
+  const detected = layoutNodes
+    .filter((node) => candidateParentIds.has(node.parentId ?? ""))
+    .filter((node) => isLikelySectionNode(node, layoutById, rootWidth))
+    .sort((left, right) => left.box.y - right.box.y || left.visualOrder - right.visualOrder);
+
+  if (detected.length > 0) {
+    return [...new Set(detected.map((node) => node.id))];
+  }
+
+  return layoutNodes
+    .filter((node) => node.parentId === rootNodeId)
+    .filter((node) => !node.flags.hidden && node.box.height >= 120)
+    .sort((left, right) => left.box.y - right.box.y || left.visualOrder - right.visualOrder)
+    .map((node) => node.id);
+}
+
 export function normalizeCaptureToLayoutDocument(capture: PageCapture): LayoutDocument {
   const retainedNodes = capture.nodes.filter(
     (node) =>
@@ -235,14 +356,7 @@ export function normalizeCaptureToLayoutDocument(capture: PageCapture): LayoutDo
       )
     )
     .sort((left, right) => left.visualOrder - right.visualOrder);
-
-  const sectionIds = layoutNodes
-    .filter(
-      (node) =>
-        node.kind === "section" &&
-        node.parentId === rootNodeId
-    )
-    .map((node) => node.id);
+  const sectionIds = detectSectionIds(layoutNodes, rootNodeId);
 
   return {
     id: capture.id,

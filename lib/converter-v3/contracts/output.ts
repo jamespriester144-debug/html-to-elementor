@@ -3,6 +3,11 @@ import type {
   CaptureViewportName,
   PageCapture
 } from "@/lib/converter-v3/contracts/capture";
+import type {
+  InputAssetLoadStatus,
+  InputAssetReference,
+  InputLayoutType
+} from "@/lib/converter-v3/contracts/input-analysis";
 import type { ComplexityAnalysis, LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/layout";
 import type { SourceKind } from "@/lib/converter-v3/contracts/source";
 import type { ElementorDocument } from "@/types/conversion";
@@ -15,6 +20,13 @@ export type ExportArtifactPaths = {
   snapshotSectionsPath?: string;
   visualValidationReportPath?: string;
 };
+
+export type UniversalVisualMode =
+  | "editable"
+  | "hybrid"
+  | "pixel-perfect"
+  | "section-snapshot"
+  | "full-page-snapshot";
 
 export type SnapshotSectionRenderMode = "html" | "snapshot";
 
@@ -203,6 +215,33 @@ export type ExportReport = {
   validation: VisualValidationReport;
   warnings: string[];
   snapshot?: SnapshotVisualSummary;
+};
+
+export type UniversalVisualValidationReport = {
+  fileAnalyzed: string;
+  title: string;
+  sourceKind: SourceKind;
+  renderer: PageCapture["renderer"];
+  layoutTypesDetected: InputLayoutType[];
+  assetsFound: InputAssetReference[];
+  assetsLoaded: InputAssetLoadStatus[];
+  sectionsDetected: Array<{
+    id: string;
+    type: string;
+    confidence?: number;
+  }>;
+  modeUsed: UniversalVisualMode;
+  fallbackReason?: string;
+  linksPreserved: number;
+  finalSimilarity: number;
+  htmlRendered: boolean;
+  cssLoaded: boolean;
+  imagesLoaded: boolean;
+  relativeAssetsResolved: boolean;
+  viewportMatched: boolean;
+  sectionCroppingRisk: boolean;
+  fullPageSnapshotFailed: boolean;
+  errors: string[];
 };
 
 export type ExportPipelineResult = {

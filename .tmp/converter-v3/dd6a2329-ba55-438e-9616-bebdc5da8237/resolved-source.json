@@ -1,0 +1,89 @@
+{
+  "id": "dd6a2329-ba55-438e-9616-bebdc5da8237",
+  "sourceKind": "lovable-react-source",
+  "title": "Radiant Skin",
+  "entryFile": null,
+  "routeFile": "shine-sell-boost-main/src/routes/index.tsx",
+  "archiveFileCount": 73,
+  "assets": [],
+  "notes": [
+    "ZIP detectado como projeto Lovable/React.",
+    "HTML final reconstruido antes da conversao para evitar dependencia de um site especifico."
+  ],
+  "sourcePath": "shine-sell-boost-main/src/routes/index.tsx",
+  "renderContext": {
+    "mode": "set-content",
+    "sourcePath": "shine-sell-boost-main/src/routes/index.tsx"
+  },
+  "inputAnalysis": {
+    "fileName": "shine-sell-boost-main/src/routes/index.tsx",
+    "sourceKind": "lovable-react-source",
+    "layoutTypes": [
+      "static-html",
+      "lovable-export"
+    ],
+    "frameworkHints": [],
+    "structure": {
+      "totalElements": 1,
+      "realSectionCount": 1,
+      "headers": 0,
+      "navbars": 0,
+      "heroSections": 0,
+      "cards": 0,
+      "grids": 0,
+      "buttons": 0,
+      "images": 0,
+      "backgrounds": 0,
+      "absoluteFixedSticky": 0,
+      "zIndexNodes": 0,
+      "iframes": 0,
+      "scripts": 0,
+      "lazyLoadElements": 0,
+      "externalAssets": 0,
+      "externalFonts": 0,
+      "links": 0,
+      "forms": 0,
+      "carousels": 0,
+      "transformedElements": 0,
+      "overflowHiddenElements": 0,
+      "outOfFlowElements": 0
+    },
+    "sectionCandidates": [
+      {
+        "key": "main:1",
+        "tag": "main",
+        "reason": "landmark:main",
+        "depth": 2,
+        "estimatedChildren": 0
+      }
+    ],
+    "assets": {
+      "found": [],
+      "total": 0,
+      "local": 0,
+      "external": 0,
+      "embedded": 0,
+      "images": 0,
+      "backgrounds": 0,
+      "stylesheets": 0,
+      "fonts": 0,
+      "scripts": 0,
+      "iframes": 0,
+      "lazy": 0,
+      "loaded": 0,
+      "failed": 0
+    },
+    "renderStrategy": {
+      "requiresBrowserRender": false,
+      "preferVisualSnapshot": false,
+      "preferFullPageSnapshot": false,
+      "safeSectionExtraction": true,
+      "reasons": []
+    },
+    "diagnostics": {
+      "errors": [],
+      "warnings": [],
+      "resources": []
+    }
+  }
+}

@@ -8,6 +8,7 @@ import type {
   BrowserScreenshotOptions,
   BrowserPageSessionWithLocator
 } from "@/lib/converter-v3/browser-page";
+import { installBrowserEvalShim } from "@/lib/converter-v3/browser-eval-shim";
 import type {
   CaptureViewportProfile,
   PageCapture,
@@ -30,6 +31,7 @@ type BrowserSessionFactory = {
 };
 
 type PageWithOptionalLocator = BrowserPage & {
+  goto?: BrowserPage["goto"];
   locator?: (selector: string) => unknown;
   $?: (selector: string) => Promise<{
     screenshot: (options?: BrowserScreenshotOptions) => Promise<Uint8Array>;
@@ -199,6 +201,7 @@ export function createBrowserPageWithLocator(
   return {
     close: () => page.close(),
     evaluate: page.evaluate.bind(page) as BrowserPageSessionWithLocator["page"]["evaluate"],
+    goto: page.goto ? page.goto.bind(page) : undefined,
     screenshot: (options) => page.screenshot(options),
     setContent: (html, options) => page.setContent(html, options),
     setJavaScriptEnabled: page.setJavaScriptEnabled
@@ -406,12 +409,11 @@ async function createPlaywrightFactory(): Promise<BrowserSessionFactory> {
   };
 }
 
-async function createPuppeteerFactory(userDataDir: string): Promise<BrowserSessionFactory> {
+async function createPuppeteerFactory(_userDataDir: string): Promise<BrowserSessionFactory> {
   const puppeteer = await import("puppeteer");
   const browser = await puppeteer.launch({
     headless: true,
     timeout: 10000,
-    userDataDir,
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
 
@@ -1116,6 +1118,26 @@ function createSectionComplexity(
   };
 }
 
+function appendUnsafeSectionReason(section: SectionCapture, reason: string) {
+  const existingDebug = section.debug ?? {
+    sectionBoundingBox: section.box,
+    sectionWidth: section.box.width,
+    sectionHeight: section.box.height,
+    originalImages: [],
+    cssBackgrounds: [],
+    loadedFonts: [],
+    interactiveElements: [],
+    positionedElements: []
+  };
+  const nextReasons = [...new Set([...(existingDebug.unsafeReasons ?? []), reason])];
+
+  section.debug = {
+    ...existingDebug,
+    unsafeSectionBoundary: true,
+    unsafeReasons: nextReasons
+  };
+}
+
 export async function buildVisualSectionCaptures(params: {
   capture: PageCapture;
   layout: LayoutDocument;
@@ -1206,6 +1228,7 @@ export async function buildVisualSectionCaptures(params: {
           waitUntil: "domcontentloaded",
           timeout: 20000
         });
+        await installBrowserEvalShim(session.page);
         await preparePageForVisualCapture(session.page, {
           timeoutMs: 15000,
           scrollEntirePage: true
@@ -1228,15 +1251,32 @@ export async function buildVisualSectionCaptures(params: {
             continue;
           }
 
-          const pngBuffer = await session.page.screenshot({
-            type: "png",
-            clip: {
-              x: extracted.captureBox.x,
-              y: extracted.captureBox.y,
-              width: extracted.captureBox.width,
-              height: extracted.captureBox.height
-            }
-          });
+          if (extracted.captureBox.width <= 0 || extracted.captureBox.height <= 0) {
+            appendUnsafeSectionReason(section, `capture-box-invalid-${viewport.name}`);
+            continue;
+          }
+
+          let pngBuffer: Uint8Array;
+
+          try {
+            pngBuffer = await session.page.screenshot({
+              type: "png",
+              clip: {
+                x: extracted.captureBox.x,
+                y: extracted.captureBox.y,
+                width: extracted.captureBox.width,
+                height: extracted.captureBox.height
+              }
+            });
+          } catch (error) {
+            appendUnsafeSectionReason(
+              section,
+              error instanceof Error
+                ? `capture-failed-${viewport.name}:${error.message}`
+                : `capture-failed-${viewport.name}`
+            );
+            continue;
+          }
           const suffix = params.fileSuffix ? `-${params.fileSuffix}` : "";
           const snapshotPath = join(
             sectionsDir,

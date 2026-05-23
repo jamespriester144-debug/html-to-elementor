@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>external-assets</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="stylesheet" href="https://cdn.example.com/site.css" />
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #fef2f2; color: #111827; }
+      .shell { width: min(1120px, calc(100% - 48px)); margin: 0 auto; padding: 56px 0; }
+      .hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 28px; align-items: center; }
+      .hero img { width: 100%; border-radius: 28px; }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p>External asset case</p>
+          <h1>Remote CSS and images must be reported, not silently ignored.</h1>
+          <p>The pipeline should still capture what the browser actually rendered and explain asset failures in the report.</p>
+          <a href="#audit">Audit report</a>
+        </div>
+        <img src="https://cdn.example.com/remote-hero.jpg" alt="Remote hero" />
+      </section>
+    </main>
+  </body>
+</html>

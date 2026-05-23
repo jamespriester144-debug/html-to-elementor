@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>simple-static</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #fffdf8; color: #1f2937; }
+      header, section { width: min(1120px, calc(100% - 48px)); margin: 0 auto; }
+      header { display: flex; align-items: center; justify-content: space-between; padding: 28px 0; }
+      .hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 28px; padding: 36px 0 64px; }
+      .hero-copy { align-self: center; }
+      .cta { display: inline-block; padding: 14px 24px; border-radius: 999px; background: #0f172a; color: #fff; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Universal Converter</strong>
+      <nav><a href="#pricing">Pricing</a></nav>
+    </header>
+    <section class="hero">
+      <div class="hero-copy">
+        <p>Static baseline</p>
+        <h1>Convert clean HTML without manual per-site rules.</h1>
+        <p>This simple fixture validates the editable path and asset resolution for local images.</p>
+        <a class="cta" href="#buy">Buy now</a>
+      </div>
+      <img src="./assets/common/hero.svg" alt="Hero visual" />
+    </section>
+  </body>
+</html>

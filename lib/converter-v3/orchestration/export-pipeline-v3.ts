@@ -7,12 +7,24 @@ import { createElementorNativeExport } from "@/lib/converter-v3/elementor-native
 import type { CapturePipelineOptions } from "@/lib/converter-v3/orchestration/pipeline-v3";
 import { runCapturePipelineV3 } from "@/lib/converter-v3/orchestration/pipeline-v3";
 import { buildExportReport } from "@/lib/converter-v3/reports/report-builder";
+import { buildUniversalVisualValidationReport } from "@/lib/converter-v3/reports/visual-validation-report";
 import { resolveSourceFromHtml, resolveSourceFromUpload } from "@/lib/converter-v3/resolve/source-resolver";
 import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
-import { isForceVisualSnapshotEnabled } from "@/lib/env";
+import {
+  isForceVisualSnapshotEnabled,
+  isSafeFullPageFallbackEnabled
+} from "@/lib/env";
 
 async function writeJson(filePath: string, value: unknown) {
   await writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
+}
+
+function sanitizeReportFileSegment(value: string) {
+  return value
+    .replace(/^.*[\\/]/, "")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "input-page";
 }
 
 const BROWSER_CAPTURE_FAILURE_MESSAGE =
@@ -44,14 +56,6 @@ function resolveSnapshotStatus(params: {
     };
   }
 
-  if (params.sectionCount === 0) {
-    return {
-      snapshotEnabled: false,
-      snapshotReason:
-        "Captura do navegador concluida, mas nenhuma secao elegivel para snapshot foi detectada."
-    };
-  }
-
   if (params.emittedMode === "snapshot" && params.snapshot) {
     if (params.snapshot.visualValidationReport?.status === "blocked") {
       return {
@@ -79,6 +83,14 @@ function resolveSnapshotStatus(params: {
     };
   }
 
+  if (params.sectionCount === 0) {
+    return {
+      snapshotEnabled: false,
+      snapshotReason:
+        "Captura do navegador concluida, mas nenhuma secao elegivel para snapshot foi detectada."
+    };
+  }
+
   if (params.emittedMode === "pixel-perfect") {
     return {
       snapshotEnabled: true,
@@ -98,6 +110,7 @@ export async function runExportPipelineV3(
   options: CapturePipelineOptions = {}
 ): Promise<ExportPipelineResult> {
   const forceVisualSnapshot = isForceVisualSnapshotEnabled();
+  const safeFullPageFallback = isSafeFullPageFallbackEnabled();
   const captureResult = await runCapturePipelineV3(resolvedSource, options);
   const outputDir = captureResult.capture.artifacts.outputDir;
   let selectedMode = captureResult.analysis.selectedMode;
@@ -113,6 +126,11 @@ export async function runExportPipelineV3(
     captureResult.capture.artifacts.sectionArtifactsPath = path.join(outputDir, "sections.json");
     await writeJson(captureResult.capture.artifacts.sectionArtifactsPath, sections);
 
+    const preferUniversalSnapshot =
+      captureResult.capture.inputAnalysis.renderStrategy.preferVisualSnapshot ||
+      captureResult.capture.inputAnalysis.renderStrategy.preferFullPageSnapshot ||
+      safeFullPageFallback;
+
     if (forceVisualSnapshot) {
       selectedMode = "snapshot";
       captureResult.analysis = {
@@ -122,6 +140,20 @@ export async function runExportPipelineV3(
           sections.length > 0
             ? "FORCE_VISUAL_SNAPSHOT ativo: snapshots visuais por secao/pagina inteira sao o modo principal."
             : "FORCE_VISUAL_SNAPSHOT ativo: secoes nao ficaram prontas, entao o snapshot responsivo da pagina inteira sera o modo principal.",
+          ...captureResult.analysis.reasons
+        ]
+      };
+    } else if (preferUniversalSnapshot) {
+      selectedMode = "snapshot";
+      captureResult.analysis = {
+        ...captureResult.analysis,
+        selectedMode,
+        reasons: [
+          captureResult.capture.inputAnalysis.renderStrategy.preferFullPageSnapshot
+            ? "Analise universal solicitou fallback seguro de pagina inteira quando a divisao por secoes for insegura."
+            : captureResult.capture.inputAnalysis.renderStrategy.preferVisualSnapshot
+              ? "Analise universal detectou sinais de risco estrutural e priorizou snapshot visual."
+              : "SAFE_FULL_PAGE_FALLBACK ativo: snapshot visual de pagina inteira permanece disponivel mesmo sem secoes seguras.",
           ...captureResult.analysis.reasons
         ]
       };
@@ -161,6 +193,20 @@ export async function runExportPipelineV3(
   const validation = exportResult.validation;
   const previewHtml = exportResult.previewHtml;
   const snapshot = exportResult.snapshot;
+  const sectionCroppingRisk = Boolean(
+    captureResult.capture.sections?.some((section) => section.debug?.unsafeSectionBoundary)
+  );
+  const fullPageSnapshotFailed =
+    snapshot?.renderStrategy === "full-page-snapshot" &&
+    snapshot.visualValidationReport?.status === "blocked";
+  captureResult.capture.inputAnalysis = {
+    ...captureResult.capture.inputAnalysis,
+    diagnostics: {
+      ...captureResult.capture.inputAnalysis.diagnostics,
+      sectionCroppingRisk,
+      fullPageSnapshotFailed
+    }
+  };
   const snapshotStatus = resolveSnapshotStatus({
     renderer: captureResult.capture.renderer,
     sectionCount: captureResult.capture.sections?.length ?? 0,
@@ -180,13 +226,26 @@ export async function runExportPipelineV3(
     warnings,
     snapshot
   });
+  const universalVisualValidationReport = buildUniversalVisualValidationReport({
+    ...captureResult,
+    emittedMode,
+    fallbackReason,
+    elementorDocument,
+    validation,
+    report,
+    snapshot,
+    artifacts: {
+      elementorTemplatePath: "",
+      reportPath: ""
+    }
+  });
   const elementorTemplatePath = path.join(outputDir, "elementor-template.json");
   const reportPath = path.join(outputDir, "conversion-report.json");
   const previewHtmlPath = previewHtml ? path.join(outputDir, "snapshot-preview.html") : undefined;
-  const visualValidationReportPath =
-    snapshot?.visualValidationReport
-      ? path.join(outputDir, "visual-validation-report.json")
-      : undefined;
+  const visualValidationReportFileName = `visual-validation-report-${sanitizeReportFileSegment(
+    captureResult.capture.inputAnalysis.fileName
+  )}.json`;
+  const visualValidationReportPath = path.join(outputDir, visualValidationReportFileName);
 
   await writeJson(elementorTemplatePath, elementorDocument);
   await writeJson(reportPath, report);
@@ -195,8 +254,10 @@ export async function runExportPipelineV3(
     await writeFile(previewHtmlPath, previewHtml, "utf8");
   }
 
-  if (visualValidationReportPath && snapshot?.visualValidationReport) {
-    await writeJson(visualValidationReportPath, snapshot.visualValidationReport);
+  await writeJson(visualValidationReportPath, universalVisualValidationReport);
+
+  if (snapshot?.visualValidationReport) {
+    await writeJson(path.join(outputDir, "visual-validation-report.json"), snapshot.visualValidationReport);
   }
 
   return {

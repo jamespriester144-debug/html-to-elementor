@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>grid-layout</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #fffaf5; color: #1f2937; }
+      main { width: min(1160px, calc(100% - 48px)); margin: 0 auto; padding: 64px 0; }
+      .intro { max-width: 760px; margin-bottom: 32px; }
+      .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; }
+      .card { background: #fff; border-radius: 28px; padding: 24px; box-shadow: 0 18px 40px rgba(15,23,42,.08); }
+      .card img { width: 100%; border-radius: 18px; margin-bottom: 16px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="intro">
+        <p>Grid baseline</p>
+        <h1>Repeated cards should be detected generically.</h1>
+      </section>
+      <section class="cards">
+        <article class="card"><img src="./assets/common/product.svg" alt="Card one" /><h2>Card One</h2><p>Structured content for pattern detection.</p><a href="#one">Inspect</a></article>
+        <article class="card"><img src="./assets/common/product.svg" alt="Card two" /><h2>Card Two</h2><p>Layout-first heuristics instead of hardcoded names.</p><a href="#two">Inspect</a></article>
+        <article class="card"><img src="./assets/common/product.svg" alt="Card three" /><h2>Card Three</h2><p>Reusable grid semantics that survive across exports.</p><a href="#three">Inspect</a></article>
+      </section>
+    </main>
+  </body>
+</html>

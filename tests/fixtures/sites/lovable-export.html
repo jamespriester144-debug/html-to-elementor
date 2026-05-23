@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="generator" content="Lovable" />
+    <title>lovable-export</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #fff7ed; color: #111827; }
+      .min-h-screen { min-height: 100vh; }
+      .grid { display: grid; }
+      .gap-8 { gap: 32px; }
+      .rounded-3xl { border-radius: 24px; }
+      .shadow-card { box-shadow: 0 22px 50px rgba(15, 23, 42, 0.12); }
+      .px-6 { padding-left: 24px; padding-right: 24px; }
+      .py-16 { padding-top: 64px; padding-bottom: 64px; }
+      .hero-shell { width: min(1160px, calc(100% - 48px)); margin: 0 auto; }
+      .md-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .card { padding: 24px; background: #fff; }
+    </style>
+  </head>
+  <body>
+    <main class="min-h-screen">
+      <section class="hero-shell grid md-grid-2 gap-8 px-6 py-16">
+        <div>
+          <span class="tracking-widest uppercase">Lovable export</span>
+          <h1>Utility-heavy HTML still needs generic analysis.</h1>
+          <p>This fixture simulates a Lovable export with utility classes, local assets and repeated cards.</p>
+          <a href="#order">Order now</a>
+        </div>
+        <img class="rounded-3xl shadow-card" src="./assets/common/product.svg" alt="Product visual" />
+      </section>
+      <section class="hero-shell grid card-grid gap-8 px-6">
+        <article class="card rounded-3xl shadow-card"><h2>Fast</h2><p>Heuristics should remain layout-driven.</p></article>
+        <article class="card rounded-3xl shadow-card"><h2>Safe</h2><p>Fallbacks should be explicit and inspectable.</p></article>
+        <article class="card rounded-3xl shadow-card"><h2>Portable</h2><p>No site-specific text or class assumptions.</p></article>
+      </section>
+    </main>
+  </body>
+</html>

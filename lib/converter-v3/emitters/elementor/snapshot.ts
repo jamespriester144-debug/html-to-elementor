@@ -568,6 +568,28 @@ function assessSectionSeparation(params: {
   layout: LayoutDocument;
   sections: SectionCapture[];
 }): SectionSeparationAssessment {
+  if (
+    params.capture.inputAnalysis.renderStrategy.preferFullPageSnapshot ||
+    !params.capture.inputAnalysis.renderStrategy.safeSectionExtraction
+  ) {
+    return {
+      safe: false,
+      issues: [
+        {
+          nodeId: params.layout.rootNodeId,
+          name: "page-snapshot",
+          type: "page",
+          reason:
+            params.capture.inputAnalysis.renderStrategy.reasons.join(" ") ||
+            "A analise universal marcou a divisao por secoes como insegura."
+        }
+      ],
+      fallbackReason:
+        params.capture.inputAnalysis.renderStrategy.reasons.join(" ") ||
+        "A analise universal marcou a divisao por secoes como insegura; fallback para pagina inteira."
+    };
+  }
+
   const expectedSections = getOrderedSectionInfo(params.layout, params.sections);
   const sectionById = new Map(params.sections.map((section) => [section.nodeId, section]));
   const issues: SectionSeparationIssue[] = [];

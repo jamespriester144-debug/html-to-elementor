@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>long-sales-page</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #fffdf8; color: #111827; }
+      header, section, footer { width: min(1160px, calc(100% - 48px)); margin: 0 auto; }
+      header { padding: 28px 0; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; background: rgba(255,253,248,.92); backdrop-filter: blur(8px); z-index: 8; }
+      .hero, .story, .proof, .pricing, .faq { padding: 56px 0; }
+      .hero { display: grid; grid-template-columns: 1.1fr 1fr; gap: 28px; align-items: center; }
+      .proof-grid, .pricing-grid { display: grid; gap: 24px; }
+      .proof-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .pricing-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .card { background: #fff; padding: 24px; border-radius: 24px; box-shadow: 0 14px 36px rgba(15,23,42,.08); }
+      footer { padding: 32px 0 56px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Sales Funnel</strong>
+      <nav><a href="#pricing">Pricing</a> <a href="#faq">FAQ</a></nav>
+    </header>
+    <section class="hero">
+      <div>
+        <p>Long-form conversion</p>
+        <h1>Snapshot or editable mode should survive a full sales page.</h1>
+        <p>This fixture mixes sticky UI, grids, multiple landmarks and a long vertical flow.</p>
+        <a href="#checkout">Start now</a>
+      </div>
+      <img src="./assets/common/hero.svg" alt="Hero" />
+    </section>
+    <section class="story">
+      <h2>Problem, agitation, solution</h2>
+      <p>Every new export should work without adding a dedicated patch for class names, image names or one-off CSS selectors from the old baseline file.</p>
+    </section>
+    <section class="proof">
+      <div class="proof-grid">
+        <article class="card"><img src="./assets/common/avatar.svg" alt="Customer A" /><p>"Our team could compare snapshots instead of guessing what broke."</p></article>
+        <article class="card"><img src="./assets/common/avatar.svg" alt="Customer B" /><p>"The report finally tells us if CSS, assets or viewport mismatches caused the failure."</p></article>
+      </div>
+    </section>
+    <section id="pricing" class="pricing">
+      <div class="pricing-grid">
+        <article class="card"><h3>Starter</h3><p>$29.00</p><p>Single page export</p><a href="#starter">Choose</a></article>
+        <article class="card"><h3>Growth</h3><p>$59.00</p><p>Multiple fixtures and reports</p><a href="#growth">Choose</a></article>
+        <article class="card"><h3>Scale</h3><p>$99.00</p><p>Runtime rendering support</p><a href="#scale">Choose</a></article>
+      </div>
+    </section>
+    <section id="faq" class="faq">
+      <details open><summary>Does this support exported sites?</summary><p>Yes. Relative assets, scripts, sections and fallbacks are analyzed before export.</p></details>
+      <details><summary>Does it explain failures?</summary><p>The report records renderer state, asset loading and fallback causes per file.</p></details>
+    </section>
+    <footer>
+      <a href="#checkout">Checkout</a>
+    </footer>
+  </body>
+</html>

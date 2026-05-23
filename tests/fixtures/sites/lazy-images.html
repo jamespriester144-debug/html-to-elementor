@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>lazy-images</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; background: #f8fafc; color: #0f172a; }
+      main { width: min(1120px, calc(100% - 48px)); margin: 0 auto; padding: 56px 0; }
+      .gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+      .panel { min-height: 260px; border-radius: 28px; padding: 24px; background-size: cover; background-position: center; }
+      .panel img { width: 100%; border-radius: 20px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="gallery">
+        <article class="panel" data-background="./assets/common/hero.svg" style="background-image:url('./assets/common/hero.svg');">
+          <h2>Lazy media</h2>
+          <img loading="lazy" data-src="./assets/common/product.svg" alt="Lazy product" />
+        </article>
+        <article class="panel">
+          <h2>Responsive sources</h2>
+          <img data-src="./assets/common/hero.svg" data-srcset="./assets/common/product.svg 1x, ./assets/common/hero.svg 2x" alt="Lazy hero" />
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

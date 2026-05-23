@@ -7,6 +7,7 @@ import type {
   ResponsiveSnapshotNode,
   StyleSnapshotNode
 } from "@/lib/converter-v3/contracts/capture";
+import { enrichInputPageAnalysis } from "@/lib/converter-v3/analyze/input-page-analyzer";
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
 import type { BrowserRenderArtifact } from "@/lib/converter-v3/render/browser-renderer";
 
@@ -81,6 +82,82 @@ export function buildPageCapture(
     sourceHtml: resolvedSource.html,
     renderedHtml: rendered.renderedHtml,
     renderer: rendered.renderer,
+    inputAnalysis: enrichInputPageAnalysis(
+      resolvedSource.inputAnalysis ??
+        {
+          fileName: resolvedSource.sourcePath ?? resolvedSource.entryFile ?? resolvedSource.title,
+          sourceKind: resolvedSource.sourceKind,
+          layoutTypes: ["static-html"],
+          frameworkHints: [],
+          structure: {
+            totalElements: rendered.nodes.length,
+            realSectionCount: 0,
+            headers: 0,
+            navbars: 0,
+            heroSections: 0,
+            cards: 0,
+            grids: 0,
+            buttons: 0,
+            images: 0,
+            backgrounds: 0,
+            absoluteFixedSticky: 0,
+            zIndexNodes: 0,
+            iframes: 0,
+            scripts: 0,
+            lazyLoadElements: 0,
+            externalAssets: 0,
+            externalFonts: 0,
+            links: 0,
+            forms: 0,
+            carousels: 0,
+            transformedElements: 0,
+            overflowHiddenElements: 0,
+            outOfFlowElements: 0
+          },
+          sectionCandidates: [],
+          assets: {
+            found: [],
+            total: 0,
+            local: 0,
+            external: 0,
+            embedded: 0,
+            images: 0,
+            backgrounds: 0,
+            stylesheets: 0,
+            fonts: 0,
+            scripts: 0,
+            iframes: 0,
+            lazy: 0,
+            loaded: 0,
+            failed: 0
+          },
+          renderStrategy: {
+            requiresBrowserRender: rendered.renderer === "browser",
+            preferVisualSnapshot: false,
+            preferFullPageSnapshot: false,
+            safeSectionExtraction: true,
+            reasons: []
+          },
+          diagnostics: {
+            errors: [],
+            warnings: [],
+            resources: []
+          }
+        },
+      {
+        renderer: rendered.renderer,
+        htmlRendered: rendered.diagnostics.htmlRendered,
+        cssLoaded: rendered.diagnostics.cssLoaded,
+        imagesLoaded: rendered.diagnostics.imagesLoaded,
+        relativeAssetsResolved: rendered.diagnostics.relativeAssetsResolved,
+        viewportMatched: rendered.diagnostics.viewportMatched,
+        sectionCroppingRisk: false,
+        fullPageSnapshotFailed: false,
+        resources: rendered.diagnostics.resources,
+        warnings: rendered.diagnostics.warnings,
+        errors: rendered.diagnostics.errors
+      }
+    ),
     viewports: rendered.viewports,
     domSnapshot,
     styleSnapshot,
