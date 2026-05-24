@@ -6,3 +6,5 @@ dist
 build
 coverage
 .DS_Store
+.tmp/
+debug/conversions/

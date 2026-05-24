@@ -1,6 +1,7 @@
 import { createSupabaseAdmin } from "@/lib/supabase";
 
 const DEFAULT_ASSET_BUCKET = "conversion-assets";
+type UploadBody = ArrayBuffer | Uint8Array | Buffer;
 
 function getAssetBucketName() {
   return process.env.SUPABASE_STORAGE_BUCKET || DEFAULT_ASSET_BUCKET;
@@ -12,6 +13,18 @@ function normalizeStoragePath(path: string) {
     .replace(/^\/+/, "")
     .replace(/[^a-zA-Z0-9._/-]/g, "-")
     .replace(/\/+/g, "/");
+}
+
+function normalizeUploadBody(body: UploadBody) {
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+
+  if (body instanceof Uint8Array) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  }
+
+  return Buffer.from(body);
 }
 
 export async function ensureConversionAssetBucket() {
@@ -48,22 +61,25 @@ export async function uploadConversionAsset({
   conversionKey: string;
   sourcePath: string;
   contentType: string;
-  body: ArrayBuffer;
+  body: UploadBody;
 }) {
   const supabase = createSupabaseAdmin();
   const bucketName = await ensureConversionAssetBucket();
   const storagePath = normalizeStoragePath(
     `${conversionKey}/${Date.now()}-${sourcePath}`
   );
+  const uploadBody = normalizeUploadBody(body);
   const { error } = await supabase.storage
     .from(bucketName)
-    .upload(storagePath, body, {
+    .upload(storagePath, uploadBody, {
       contentType,
       upsert: true
     });
 
   if (error) {
-    throw new Error(`Nao foi possivel enviar imagem para o Supabase Storage: ${error.message}`);
+    throw new Error(
+      `Nao foi possivel enviar imagem para o Supabase Storage: ${error.message} (bucket=${bucketName}, path=${storagePath}, contentType=${contentType}, bytes=${uploadBody.byteLength})`
+    );
   }
 
   const { data } = supabase.storage.from(bucketName).getPublicUrl(storagePath);

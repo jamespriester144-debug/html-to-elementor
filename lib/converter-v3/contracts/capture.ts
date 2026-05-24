@@ -32,6 +32,7 @@ export type CapturedNodeAsset = {
   href?: string;
   src?: string;
   alt?: string;
+  poster?: string;
   backgroundImage?: string;
 };
 
@@ -73,9 +74,12 @@ export type ResponsiveSnapshotNode = {
 export type CaptureSummary = {
   totalNodes: number;
   visibleNodes: number;
+  links?: number;
   images: number;
   buttons: number;
   textBlocks: number;
+  visualContainers?: number;
+  geometryGroups?: number;
   sections: number;
 };
 
@@ -89,7 +93,10 @@ export type CaptureArtifacts = {
   responsiveSnapshotPath: string;
   layoutPath: string;
   analysisPath: string;
+  inputAnalysisPath?: string;
   pageCapturePath: string;
+  visibleElementsPath?: string;
+  geometryGroupsPath?: string;
   sectionArtifactsPath: string;
   screenshots: Partial<Record<CaptureViewportName, string>>;
 };

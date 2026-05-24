@@ -68,6 +68,14 @@ export function buildUniversalVisualValidationReport(
       result.report.fallbackReason,
     linksPreserved: resolveLinksPreserved(result),
     finalSimilarity: resolveFinalSimilarity(result),
+    viewportSimilarities:
+      result.snapshot?.viewportSimilarities ??
+      result.snapshot?.visualValidationReport?.viewportResults.reduce<
+        Partial<Record<"desktop" | "tablet" | "mobile", number>>
+      >((acc, viewportResult) => {
+        acc[viewportResult.viewport] = viewportResult.similarity;
+        return acc;
+      }, {}),
     htmlRendered: result.capture.inputAnalysis.diagnostics.htmlRendered ?? false,
     cssLoaded: result.capture.inputAnalysis.diagnostics.cssLoaded ?? false,
     imagesLoaded: result.capture.inputAnalysis.diagnostics.imagesLoaded ?? false,
@@ -78,6 +86,9 @@ export function buildUniversalVisualValidationReport(
       result.capture.inputAnalysis.diagnostics.sectionCroppingRisk ?? false,
     fullPageSnapshotFailed:
       result.capture.inputAnalysis.diagnostics.fullPageSnapshotFailed ?? false,
+    visualIssues: result.report.visualIssues,
+    learningNotes: result.report.learningNotes,
+    logs: result.report.visualLogs,
     errors: [
       ...result.capture.inputAnalysis.diagnostics.errors,
       ...result.capture.inputAnalysis.diagnostics.warnings,

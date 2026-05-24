@@ -1,4 +1,7 @@
+import path from "node:path";
+
 import { createEditableElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/editable";
+import { createGeometryElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/geometry";
 import { createHybridElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/hybrid";
 import { createPixelPerfectElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/pixel-perfect";
 import { createSnapshotElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/snapshot";
@@ -8,16 +11,22 @@ import type {
   SnapshotVisualSummary,
   VisualValidationReport
 } from "@/lib/converter-v3/contracts/output";
+import { buildConvertedPreviewHtml } from "@/lib/converter-v3/debug/conversion-debug";
 import {
   VisualValidationError,
   validateElementorExport
 } from "@/lib/converter-v3/visual-regression-validator";
+import {
+  compareImagesPixelByPixel,
+  renderHtmlToScreenshot
+} from "@/lib/converter-v3/visual-similarity";
 import { isForceVisualSnapshotEnabled } from "@/lib/env";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
 export type NativeExporterResult = {
   document: ElementorDocument;
   emittedMode: OutputMode;
+  exportStage: string;
   fallbackReason?: string;
   warnings: string[];
   validation: VisualValidationReport;
@@ -28,11 +37,23 @@ export type NativeExporterResult = {
 type EmittedCandidate = {
   document: ElementorDocument;
   emittedMode: OutputMode;
+  exportStage: string;
   warnings: string[];
   fallbackReason?: string;
   previewHtml?: string;
   snapshot?: SnapshotVisualSummary;
 };
+
+type InternalCandidateMode = OutputMode | "geometry";
+type StructuralVisualAssessment = {
+  passed: boolean;
+  similarity: number;
+  previewHtml: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+};
+
+const STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD = 0.99;
 
 function parseBackgroundUrl(value?: string): string | undefined {
   if (!value || value === "none") {
@@ -135,6 +156,7 @@ function buildEditableCandidate(params: {
   return {
     document: editableResult.document,
     emittedMode,
+    exportStage: emittedMode === "hybrid" ? "editable-emitter:html-fallback" : "editable-emitter",
     warnings: editableResult.warnings,
     fallbackReason
   };
@@ -150,7 +172,26 @@ function buildHybridCandidate(params: {
   return {
     document: hybridResult.document,
     emittedMode: "hybrid",
+    exportStage: "hybrid-emitter",
     warnings: hybridResult.warnings
+  };
+}
+
+function buildGeometryCandidate(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+}): EmittedCandidate {
+  const geometryResult = createGeometryElementorDocumentV3(params);
+
+  return {
+    document: geometryResult.document,
+    emittedMode: "hybrid",
+    exportStage: "geometry-emitter",
+    warnings: geometryResult.warnings,
+    fallbackReason:
+      geometryResult.groups.length > 0
+        ? "Fallback generico por geometria visual preservou grupos do DOM renderizado em HTML estruturado."
+        : "Fallback generico por geometria visual nao encontrou grupos suficientes."
   };
 }
 
@@ -172,6 +213,10 @@ async function buildSnapshotCandidate(params: {
   return {
     document: snapshotResult.document,
     emittedMode: "snapshot",
+    exportStage:
+      snapshotResult.snapshot?.renderStrategy === "full-page-snapshot"
+        ? "full-page-snapshot"
+        : "section-snapshot",
     warnings: snapshotResult.warnings,
     previewHtml: snapshotResult.previewHtml,
     snapshot: snapshotResult.snapshot
@@ -190,33 +235,106 @@ function buildPixelPerfectCandidate(params: {
       fallbackReason: params.fallbackReason
     }),
     emittedMode: "pixel-perfect",
+    exportStage: "pixel-perfect-emitter",
     warnings: params.fallbackReason ? [params.fallbackReason] : [],
     fallbackReason: params.fallbackReason
   };
 }
 
-function getCandidateModes(selectedMode: OutputMode, forceVisualSnapshot: boolean): OutputMode[] {
-  if (forceVisualSnapshot) {
-    return ["snapshot"];
-  }
+function getCandidateModes(params: {
+  selectedMode: OutputMode;
+  forceVisualSnapshot: boolean;
+  renderer: PageCapture["renderer"];
+}): InternalCandidateMode[] {
+  const { selectedMode, forceVisualSnapshot, renderer } = params;
 
-  if (selectedMode === "snapshot") {
+  if (forceVisualSnapshot) {
     return ["snapshot", "pixel-perfect"];
   }
 
-  if (selectedMode === "pixel-perfect") {
-    return ["pixel-perfect"];
+  if (selectedMode === "snapshot") {
+    return ["snapshot"];
+  }
+
+  if (renderer !== "browser") {
+    if (selectedMode === "editable") {
+      return ["editable", "hybrid", "geometry", "pixel-perfect"];
+    }
+
+    if (selectedMode === "hybrid") {
+      return ["hybrid", "geometry", "pixel-perfect"];
+    }
+
+    return ["geometry", "pixel-perfect"];
   }
 
   if (selectedMode === "editable") {
-    return ["editable", "hybrid", "pixel-perfect"];
+    return ["editable", "hybrid", "geometry", "snapshot", "pixel-perfect"];
   }
 
   if (selectedMode === "hybrid") {
-    return ["hybrid", "pixel-perfect"];
+    return ["hybrid", "geometry", "snapshot", "pixel-perfect"];
   }
 
-  return ["hybrid", "pixel-perfect"];
+  if (selectedMode === "pixel-perfect") {
+    return ["hybrid", "geometry", "snapshot", "pixel-perfect"];
+  }
+
+  return ["hybrid", "geometry", "snapshot", "pixel-perfect"];
+}
+
+async function assessStructuralVisualFidelity(params: {
+  capture: PageCapture;
+  document: ElementorDocument;
+  emittedMode: OutputMode;
+  outputDir?: string;
+}): Promise<StructuralVisualAssessment | null> {
+  const originalScreenshotPath = params.capture.artifacts.screenshots.desktop;
+  const desktopViewport =
+    params.capture.viewports.find((viewport) => viewport.name === "desktop") ??
+    params.capture.viewports[0];
+
+  if (!originalScreenshotPath || !desktopViewport) {
+    return null;
+  }
+
+  const previewHtml = buildConvertedPreviewHtml({
+    capture: params.capture,
+    document: params.document
+  });
+  const outputBasePath = params.outputDir
+    ? path.join(params.outputDir, `structural-visual-${params.emittedMode}`)
+    : undefined;
+
+  try {
+    const rendered = await renderHtmlToScreenshot({
+      html: previewHtml,
+      viewportWidth: desktopViewport.width,
+      viewportHeight: desktopViewport.height,
+      outputPath: outputBasePath ? `${outputBasePath}.png` : undefined,
+      fullPage: true
+    });
+    const comparison = await compareImagesPixelByPixel({
+      reference: originalScreenshotPath,
+      candidate: rendered.outputPath ?? rendered.dataUrl,
+      similarityThreshold: STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD,
+      diffOutputPath: outputBasePath ? `${outputBasePath}-diff.png` : undefined
+    });
+
+    return {
+      passed: comparison.passed,
+      similarity: comparison.similarity,
+      previewHtml,
+      convertedScreenshotPath: rendered.outputPath,
+      diffScreenshotPath: comparison.diffOutputPath
+    };
+  } catch {
+    return {
+      passed: true,
+      similarity: 1,
+      previewHtml
+    };
+  }
 }
 
 function buildSnapshotValidationFailure(
@@ -269,11 +387,17 @@ export async function createElementorNativeExport(params: {
   outputDir?: string;
 }): Promise<NativeExporterResult> {
   const forceVisualSnapshot = isForceVisualSnapshotEnabled();
-  const attemptedModes = getCandidateModes(params.selectedMode, forceVisualSnapshot);
+  const attemptedModes = getCandidateModes({
+    selectedMode: params.selectedMode,
+    forceVisualSnapshot,
+    renderer: params.capture.renderer
+  });
   const warnings: string[] = [];
   let lastValidation: VisualValidationReport | null = null;
+  let lastAttempt: NativeExporterResult | null = null;
 
-  for (const mode of attemptedModes) {
+  for (const [index, mode] of attemptedModes.entries()) {
+    const hasMoreModes = index < attemptedModes.length - 1;
     const candidate =
       mode === "snapshot"
         ? await buildSnapshotCandidate({
@@ -282,8 +406,10 @@ export async function createElementorNativeExport(params: {
           })
         : mode === "editable"
           ? buildEditableCandidate(params)
-          : mode === "hybrid"
-            ? buildHybridCandidate(params)
+        : mode === "hybrid"
+          ? buildHybridCandidate(params)
+          : mode === "geometry"
+            ? buildGeometryCandidate(params)
             : buildPixelPerfectCandidate({
                 capture: params.capture,
                 selectedMode: params.selectedMode,
@@ -303,18 +429,47 @@ export async function createElementorNativeExport(params: {
 
     warnings.push(...candidate.warnings);
     lastValidation = validation;
+    lastAttempt = {
+      document: enrichedDocument,
+      emittedMode: candidate.emittedMode,
+      exportStage: candidate.exportStage,
+      fallbackReason: candidate.fallbackReason,
+      warnings: [...warnings],
+      validation,
+      previewHtml: candidate.previewHtml,
+      snapshot: candidate.snapshot
+    };
+
+    const structuralVisualAssessment =
+      params.capture.renderer === "browser" &&
+      candidate.emittedMode !== "snapshot" &&
+      candidate.emittedMode !== "pixel-perfect"
+        ? await assessStructuralVisualFidelity({
+            capture: params.capture,
+            document: enrichedDocument,
+            emittedMode: candidate.emittedMode,
+            outputDir: params.outputDir
+          })
+        : null;
+
+    if (structuralVisualAssessment?.previewHtml) {
+      candidate.previewHtml = structuralVisualAssessment.previewHtml;
+      lastAttempt.previewHtml = structuralVisualAssessment.previewHtml;
+    }
 
     if (
       candidate.emittedMode === "snapshot" &&
       candidate.snapshot &&
-      candidate.snapshot.requiresPixelPerfect &&
-      !forceVisualSnapshot
+      candidate.snapshot.requiresPixelPerfect
     ) {
       warnings.push(
         candidate.snapshot.pixelPerfectReason ??
           "Uma ou mais secoes exigiram pixel-perfect por perda critica de fidelidade visual."
       );
-      continue;
+
+      if (hasMoreModes) {
+        continue;
+      }
     }
 
     if (
@@ -335,10 +490,11 @@ export async function createElementorNativeExport(params: {
         )}%); escalando para fallback mais seguro.`
       );
 
-      if (forceVisualSnapshot) {
+      if (forceVisualSnapshot && !hasMoreModes) {
         return {
           document: enrichedDocument,
           emittedMode: candidate.emittedMode,
+          exportStage: candidate.exportStage,
           fallbackReason: candidate.fallbackReason,
           warnings,
           validation: lastValidation,
@@ -347,6 +503,19 @@ export async function createElementorNativeExport(params: {
         };
       }
 
+      if (hasMoreModes) {
+        continue;
+      }
+    }
+
+    if (structuralVisualAssessment && !structuralVisualAssessment.passed) {
+      warnings.push(
+        `Modo ${candidate.emittedMode} ficou em ${(
+          structuralVisualAssessment.similarity * 100
+        ).toFixed(2)}% de similaridade visual, abaixo do minimo de ${(
+          STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD * 100
+        ).toFixed(2)}%; escalando para fallback mais fiel.`
+      );
       continue;
     }
 
@@ -360,6 +529,7 @@ export async function createElementorNativeExport(params: {
       return {
         document: enrichedDocument,
         emittedMode: candidate.emittedMode,
+        exportStage: candidate.exportStage,
         fallbackReason,
         warnings,
         validation,
@@ -372,10 +542,11 @@ export async function createElementorNativeExport(params: {
       `Modo ${candidate.emittedMode} reprovado na validacao visual (${validation.issueCount} perda(s)); escalando para fallback mais seguro.`
     );
 
-    if (forceVisualSnapshot && candidate.emittedMode === "snapshot") {
+    if (forceVisualSnapshot && candidate.emittedMode === "snapshot" && !hasMoreModes) {
       return {
         document: enrichedDocument,
         emittedMode: candidate.emittedMode,
+        exportStage: candidate.exportStage,
         fallbackReason: candidate.fallbackReason,
         warnings,
         validation,
@@ -383,6 +554,10 @@ export async function createElementorNativeExport(params: {
         snapshot: candidate.snapshot
       };
     }
+  }
+
+  if (lastAttempt) {
+    return lastAttempt;
   }
 
   throw new VisualValidationError(

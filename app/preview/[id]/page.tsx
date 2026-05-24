@@ -13,7 +13,7 @@ export default async function PreviewPage({ params }: PreviewPageProps) {
   const iframeId = `conversion-preview-frame-${conversion.id}`;
 
   return (
-    <main className="mx-auto max-w-6xl px-5 py-10">
+    <main className="w-full px-4 py-8 sm:px-6 xl:px-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="text-sm font-semibold uppercase tracking-wide text-coral">
@@ -22,24 +22,34 @@ export default async function PreviewPage({ params }: PreviewPageProps) {
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink">
             {conversion.elementor_json.title}
           </h1>
+          <p className="mt-2 max-w-3xl text-sm text-ink/70">
+            O preview abaixo usa scroll proprio e mantem a largura desktop do site para evitar
+            cortes ou compressao excessiva do layout.
+          </p>
         </div>
         <StatusBadge status={conversion.status} />
       </div>
 
-      <iframe
-        className="min-h-[620px] w-full rounded-lg border border-ink/15 bg-white shadow-soft"
-        id={iframeId}
-        scrolling="no"
-        sandbox="allow-same-origin"
-        srcDoc={conversion.html}
-        title="Previa do site convertido"
-      />
+      <section className="rounded-2xl border border-ink/15 bg-white/70 shadow-soft">
+        <div className="border-b border-ink/10 px-4 py-3 text-xs font-medium uppercase tracking-[0.18em] text-ink/55">
+          Preview completo com scroll
+        </div>
+        <div className="h-[calc(100vh-18rem)] min-h-[720px] overflow-auto overscroll-contain">
+          <iframe
+            className="block min-h-full w-[max(100%,1440px)] border-0 bg-white"
+            id={iframeId}
+            scrolling="auto"
+            sandbox="allow-same-origin"
+            srcDoc={conversion.html}
+            title="Previa do site convertido"
+          />
+        </div>
+      </section>
       <script
         dangerouslySetInnerHTML={{
           __html: `(function(){
   var frame = document.getElementById(${JSON.stringify(iframeId)});
   if (!frame) return;
-  frame.style.overflow = "hidden";
   function applyHeight(nextHeight) {
     if (!nextHeight || !Number.isFinite(nextHeight)) return;
     var targetHeight = Math.ceil(nextHeight);

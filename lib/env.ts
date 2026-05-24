@@ -33,7 +33,7 @@ export function getBooleanEnv(name: string, defaultValue = false): boolean {
 }
 
 export function isForceVisualSnapshotEnabled(): boolean {
-  return getBooleanEnv("FORCE_VISUAL_SNAPSHOT", false);
+  return getBooleanEnv("FORCE_VISUAL_SNAPSHOT", true);
 }
 
 export function isUniversalInputAnalysisEnabled(): boolean {
@@ -46,4 +46,8 @@ export function isSafeFullPageFallbackEnabled(): boolean {
 
 export function isVisualDebugEnabled(): boolean {
   return getBooleanEnv("VISUAL_DEBUG", false);
+}
+
+export function isDebugConversionEnabled(): boolean {
+  return getBooleanEnv("DEBUG_CONVERSION", false);
 }

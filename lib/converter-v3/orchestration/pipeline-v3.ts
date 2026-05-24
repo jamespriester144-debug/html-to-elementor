@@ -7,6 +7,11 @@ import { analyzeLayoutComplexity } from "@/lib/converter-v3/analyze/complexity-a
 import { buildPageCapture } from "@/lib/converter-v3/capture/page-capture";
 import { detectLayoutDocument } from "@/lib/converter-v3/layout-detector";
 import { classifySections } from "@/lib/converter-v3/section-classifier";
+import {
+  extractVisibleContentElements,
+  groupVisibleContentByGeometry,
+  summarizeVisibleContent
+} from "@/lib/converter-v3/universal-content";
 import { buildVisualHierarchy } from "@/lib/converter-v3/visual-hierarchy";
 import {
   type BrowserRenderOptions,
@@ -35,6 +40,9 @@ export async function runCapturePipelineV3(
     preferBrowser: options.preferBrowser
   });
   const capture = buildPageCapture(resolvedSource, rendered, outputDir);
+  const visibleElements = extractVisibleContentElements(capture);
+  const geometryGroups = groupVisibleContentByGeometry(visibleElements, capture);
+  const contentMetrics = summarizeVisibleContent(visibleElements);
   const detectedLayout = detectLayoutDocument(capture);
   const visualHierarchy = buildVisualHierarchy(detectedLayout);
   const layout = classifySections(visualHierarchy);
@@ -47,6 +55,15 @@ export async function runCapturePipelineV3(
       realSectionCount
     }
   };
+  capture.summary = {
+    ...capture.summary,
+    links: Math.max(capture.summary.links ?? 0, contentMetrics.links),
+    images: Math.max(capture.summary.images, contentMetrics.images),
+    buttons: Math.max(capture.summary.buttons, contentMetrics.buttons),
+    textBlocks: Math.max(capture.summary.textBlocks, contentMetrics.texts),
+    visualContainers: Math.max(capture.summary.visualContainers ?? 0, contentMetrics.visualContainers),
+    geometryGroups: geometryGroups.length
+  };
 
   let analysis = analyzeLayoutComplexity(layout);
 
@@ -57,11 +74,11 @@ export async function runCapturePipelineV3(
     if (preferVisualSnapshot || preferFullPageSnapshot) {
       analysis = {
         ...analysis,
-        selectedMode: "snapshot",
+        selectedMode: analysis.selectedMode === "editable" ? "editable" : "hybrid",
         reasons: [
           preferFullPageSnapshot
-            ? "Analise universal indicou snapshot visual de pagina inteira como fallback mais seguro."
-            : "Analise universal indicou snapshot visual por seguranca estrutural.",
+            ? "Analise universal detectou risco estrutural; snapshot visual permanece como fallback de pagina inteira, nao como modo primario."
+            : "Analise universal detectou risco estrutural; snapshot visual permanece como fallback por secao, nao como modo primario.",
           ...analysis.reasons
         ]
       };
@@ -78,6 +95,8 @@ export async function runCapturePipelineV3(
   const analysisPath = path.join(outputDir, "analysis.json");
   const inputAnalysisPath = path.join(outputDir, "input-analysis.json");
   const pageCapturePath = path.join(outputDir, "page-capture.json");
+  const visibleElementsPath = path.join(outputDir, "visible-elements.json");
+  const geometryGroupsPath = path.join(outputDir, "geometry-groups.json");
 
   capture.artifacts = {
     ...capture.artifacts,
@@ -90,7 +109,10 @@ export async function runCapturePipelineV3(
     responsiveSnapshotPath,
     layoutPath,
     analysisPath,
-    pageCapturePath
+    inputAnalysisPath,
+    pageCapturePath,
+    visibleElementsPath,
+    geometryGroupsPath
   };
 
   await writeJson(resolvedSourcePath, {
@@ -115,6 +137,8 @@ export async function runCapturePipelineV3(
   await writeJson(analysisPath, analysis);
   await writeJson(inputAnalysisPath, capture.inputAnalysis);
   await writeJson(pageCapturePath, capture);
+  await writeJson(visibleElementsPath, visibleElements);
+  await writeJson(geometryGroupsPath, geometryGroups);
 
   return {
     resolvedSource: {

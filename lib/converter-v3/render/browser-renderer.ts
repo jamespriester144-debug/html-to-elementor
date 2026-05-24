@@ -145,6 +145,7 @@ function createFallbackAsset(
     href: attributes.href,
     src: attributes.src,
     alt: attributes.alt,
+    poster: attributes.poster,
     backgroundImage:
       backgroundImage && backgroundImage !== "none" ? backgroundImage : undefined
   };
@@ -454,10 +455,44 @@ async function collectBrowserResourceDiagnostics(
     const imagesLoaded = allImages.every(
       (image) => image.complete && (image.naturalWidth > 0 || !image.currentSrc)
     );
-    const htmlRendered =
-      document.body.children.length > 0 ||
-      (document.body.textContent || "").trim().length > 0 ||
-      document.images.length > 0;
+    const meaningfulVisibleElements = Array.from(
+      document.body.querySelectorAll<HTMLElement>("*")
+    ).filter((element) => {
+      if (["script", "style", "noscript"].includes(element.tagName.toLowerCase())) {
+        return false;
+      }
+
+      const computed = window.getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+      const backgroundImage = computed.backgroundImage || "";
+      const isPlaceholderRoot =
+        /^(root|app|__next)$/i.test(element.id) &&
+        element.children.length === 0 &&
+        text.length === 0;
+
+      if (isPlaceholderRoot) {
+        return false;
+      }
+
+      return (
+        computed.display !== "none" &&
+        computed.visibility !== "hidden" &&
+        computed.opacity !== "0" &&
+        (rect.width > 0 || rect.height > 0) &&
+        (text.length > 0 ||
+          element.tagName === "IMG" ||
+          element.tagName === "SVG" ||
+          element.tagName === "PICTURE" ||
+          element.tagName === "CANVAS" ||
+          element.tagName === "VIDEO" ||
+          element.tagName === "IFRAME" ||
+          element.tagName === "BUTTON" ||
+          (element.tagName === "A" && Boolean(element.getAttribute("href"))) ||
+          backgroundImage !== "none")
+      );
+    });
+    const htmlRendered = meaningfulVisibleElements.length > 0;
     const pageOrigin = window.location.origin;
     const localResources = resources.filter(
       (resource) =>

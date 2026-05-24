@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content="Lovable" />
+    <title>lovable-alt-layout</title>
+    <style>
+      :root { color-scheme: light; }
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #f5f1e8;
+        color: #201a16;
+      }
+      .root-shell {
+        display: flex;
+        flex-direction: column;
+        gap: 28px;
+        padding: 32px;
+      }
+      .band {
+        border-radius: 28px;
+        overflow: hidden;
+        box-shadow: 0 18px 60px rgba(32, 26, 22, 0.12);
+      }
+      .hero-band {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+        gap: 28px;
+        padding: 40px;
+        background: linear-gradient(135deg, #fff5df, #f9d88f);
+      }
+      .hero-copy {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .hero-art {
+        min-height: 320px;
+        border-radius: 24px;
+        background-image: url("./assets/common/hero.svg");
+        background-size: cover;
+        background-position: center center;
+      }
+      .row-band {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 18px;
+      }
+      .cell {
+        min-height: 180px;
+        padding: 24px;
+        border-radius: 24px;
+        background: #ffffff;
+      }
+      .cta-band {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 32px 36px;
+        background: #201a16;
+        color: #fff9ef;
+      }
+      .link-row {
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+      .primary,
+      .secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 48px;
+        padding: 0 22px;
+        border-radius: 999px;
+        text-decoration: none;
+        font-weight: 700;
+      }
+      .primary { background: #201a16; color: #fff9ef; }
+      .secondary { background: rgba(255,255,255,0.14); color: #fff9ef; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-lovable-app="true">
+      <div class="root-shell">
+        <div class="band hero-band">
+          <div class="hero-copy">
+            <div>Portable converter</div>
+            <h1>Render-first extraction should work on unknown Lovable layouts.</h1>
+            <p>
+              This fixture uses generic divs, nested wrappers and visual bands so the
+              pipeline cannot depend on old class names or fixed DOM landmarks.
+            </p>
+            <div class="link-row">
+              <a class="primary" href="#launch">Launch preview</a>
+              <a class="secondary" href="#details">See details</a>
+            </div>
+          </div>
+          <div class="hero-art" aria-label="Decorative hero panel"></div>
+        </div>
+
+        <div class="row-band" id="details">
+          <div class="cell">
+            <h2>Visual groups</h2>
+            <p>Sections are inferred by geometry, not by matching a single test site.</p>
+          </div>
+          <div class="cell">
+            <h2>Real assets</h2>
+            <p>Backgrounds, cards, buttons and links stay visible after browser rendering.</p>
+          </div>
+          <div class="cell">
+            <h2>Fallbacks</h2>
+            <p>When structure is unsafe, the converter escalates to geometry and snapshots.</p>
+          </div>
+        </div>
+
+        <div class="band cta-band" id="launch">
+          <div>
+            <h2>Universal output</h2>
+            <p>No hardcoded text, id or class should be required for content to survive.</p>
+          </div>
+          <a class="primary" href="https://example.com/export">Export now</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

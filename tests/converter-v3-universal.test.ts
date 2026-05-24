@@ -3,106 +3,78 @@ import { access, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import type { UniversalVisualValidationReport } from "../lib/converter-v3/contracts/output";
+import type {
+  ContentIntegrityReport,
+  UniversalVisualValidationReport
+} from "../lib/converter-v3/contracts/output";
 import {
   runCapturePipelineV3
 } from "../lib/converter-v3/orchestration/pipeline-v3";
 import {
   runExportPipelineV3
 } from "../lib/converter-v3/orchestration/export-pipeline-v3";
-import { resolveSourceFromLocalFile } from "../lib/converter-v3/resolve/source-resolver";
+import { resolveSourceFromLocalPath } from "../lib/converter-v3/resolve/source-resolver";
+import {
+  assertConverterV3FixtureCoverage,
+  CONVERTER_V3_UNIVERSAL_FIXTURES
+} from "./support/converter-v3-fixture-matrix";
 
 const FIXTURE_DIR = path.join(process.cwd(), "tests", "fixtures", "sites");
 
 function isForceVisualSnapshotEnabled() {
   const value = String(process.env.FORCE_VISUAL_SNAPSHOT || "").trim().toLowerCase();
-  return value === "true" || value === "1" || value === "yes" || value === "on";
+
+  if (!value) {
+    return true;
+  }
+
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+
+  return true;
 }
 
-const FIXTURES = [
-  {
-    name: "simple-static.html",
-    verifyExport: true,
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.sectionsDetected.length >= 1, true);
-    }
-  },
-  {
-    name: "lovable-export.html",
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.layoutTypesDetected.includes("lovable-export"), true);
-      assert.equal(report.layoutTypesDetected.includes("tailwind"), true);
-    }
-  },
-  {
-    name: "vite-react-export.html",
-    verifyExport: true,
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.layoutTypesDetected.includes("vite-react-export"), true);
-      assert.equal(report.htmlRendered, true);
-    }
-  },
-  {
-    name: "absolute-layout.html",
-    verifyExport: true,
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(
-        report.modeUsed === "full-page-snapshot" || report.modeUsed === "section-snapshot",
-        true
-      );
-    }
-  },
-  {
-    name: "grid-layout.html",
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.sectionsDetected.length >= 1, true);
-    }
-  },
-  {
-    name: "lazy-images.html",
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.assetsFound.some((asset) => asset.lazy), true);
-    }
-  },
-  {
-    name: "external-assets.html",
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.assetsFound.some((asset) => asset.external), true);
-    }
-  },
-  {
-    name: "long-sales-page.html",
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.sectionsDetected.length >= 4, true);
-    }
-  },
-  {
-    name: "mobile-heavy.html",
-    verifyExport: true,
-    assertResult: (report: UniversalVisualValidationReport) => {
-      assert.equal(report.viewportMatched, true);
-    }
-  }
-] as const;
+const FIXTURES = CONVERTER_V3_UNIVERSAL_FIXTURES;
 
 async function testUniversalFixtures() {
   const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-universal-tests");
+  assertConverterV3FixtureCoverage(FIXTURES);
 
   for (const fixture of FIXTURES) {
     const filePath = path.join(FIXTURE_DIR, fixture.name);
     console.log(`testing universal fixture: ${fixture.name}`);
-    const resolvedSource = await resolveSourceFromLocalFile(filePath);
+    const resolvedSource = await resolveSourceFromLocalPath(filePath);
+    const preferBrowser =
+      ("preferBrowser" in fixture && typeof fixture.preferBrowser === "boolean"
+        ? fixture.preferBrowser
+        : false) || ("verifyExport" in fixture && fixture.verifyExport);
     const captureResult = await runCapturePipelineV3(resolvedSource, {
-      preferBrowser: true,
+      preferBrowser,
       outputRoot
     });
 
-    assert.equal(captureResult.capture.renderer, "browser");
+    if (preferBrowser) {
+      assert.equal(captureResult.capture.renderer, "browser");
+    }
+    assert.ok(captureResult.capture.artifacts.visibleElementsPath);
+    await access(captureResult.capture.artifacts.visibleElementsPath as string);
+    assert.ok(captureResult.capture.artifacts.geometryGroupsPath);
+    await access(captureResult.capture.artifacts.geometryGroupsPath as string);
     assert.equal(captureResult.capture.inputAnalysis.layoutTypes.length > 0, true);
     assert.equal(captureResult.layout.sectionIds.length >= 1, true);
     assert.equal(captureResult.capture.inputAnalysis.diagnostics.htmlRendered, true);
 
-    if (!fixture.verifyExport) {
+    if (!("verifyExport" in fixture) || !fixture.verifyExport) {
+      if (fixture.name === "mobile-heavy.html") {
+        assert.ok(captureResult.capture.artifacts.screenshots.mobile);
+        await access(captureResult.capture.artifacts.screenshots.mobile as string);
+      }
+
       fixture.assertResult({
         fileAnalyzed: captureResult.capture.inputAnalysis.fileName,
         title: captureResult.capture.title,
@@ -126,6 +98,7 @@ async function testUniversalFixtures() {
         fallbackReason: undefined,
         linksPreserved: 0,
         finalSimilarity: 0,
+        viewportSimilarities: undefined,
         htmlRendered: captureResult.capture.inputAnalysis.diagnostics.htmlRendered ?? false,
         cssLoaded: captureResult.capture.inputAnalysis.diagnostics.cssLoaded ?? false,
         imagesLoaded: captureResult.capture.inputAnalysis.diagnostics.imagesLoaded ?? false,
@@ -137,6 +110,9 @@ async function testUniversalFixtures() {
           captureResult.capture.inputAnalysis.diagnostics.sectionCroppingRisk ?? false,
         fullPageSnapshotFailed:
           captureResult.capture.inputAnalysis.diagnostics.fullPageSnapshotFailed ?? false,
+        visualIssues: [],
+        learningNotes: [],
+        logs: [],
         errors: captureResult.capture.inputAnalysis.diagnostics.errors
       });
       continue;
@@ -149,10 +125,15 @@ async function testUniversalFixtures() {
 
     assert.ok(result.artifacts.visualValidationReportPath);
     await access(result.artifacts.visualValidationReportPath);
+    assert.ok(result.artifacts.contentIntegrityReportPath);
+    await access(result.artifacts.contentIntegrityReportPath as string);
 
     const report = JSON.parse(
       await readFile(result.artifacts.visualValidationReportPath, "utf8")
     ) as UniversalVisualValidationReport;
+    const contentIntegrity = JSON.parse(
+      await readFile(result.artifacts.contentIntegrityReportPath as string, "utf8")
+    ) as ContentIntegrityReport;
 
     assert.equal(report.fileAnalyzed.includes(path.basename(fixture.name)), true);
     assert.equal(report.layoutTypesDetected.length > 0, true);
@@ -173,16 +154,38 @@ async function testUniversalFixtures() {
 
     if (isForceVisualSnapshotEnabled()) {
       assert.equal(
-        report.modeUsed === "section-snapshot" || report.modeUsed === "full-page-snapshot",
+        report.modeUsed === "section-snapshot" ||
+          report.modeUsed === "full-page-snapshot" ||
+          report.modeUsed === "pixel-perfect",
+        true
+      );
+    }
+
+    assert.equal(contentIntegrity.status, "passed");
+    assert.equal(contentIntegrity.convertedBodyEmpty, false);
+    assert.equal(contentIntegrity.hasRealWidgets, true);
+    assert.equal(contentIntegrity.outputSectionCount >= 1, true);
+    assert.ok(contentIntegrity.debugArtifacts?.visibleElementsPath);
+    await access(contentIntegrity.debugArtifacts?.visibleElementsPath as string);
+    assert.ok(contentIntegrity.debugArtifacts?.geometryGroupsPath);
+    await access(contentIntegrity.debugArtifacts?.geometryGroupsPath as string);
+    assert.equal(result.elementorDocument.content.length >= 1, true);
+
+    if (isForceVisualSnapshotEnabled()) {
+      assert.equal(
+        contentIntegrity.snapshotGenerated || report.modeUsed === "pixel-perfect",
         true
       );
     }
 
     fixture.assertResult(report);
 
-    if (fixture.name === "mobile-heavy.html") {
-      assert.ok(result.capture.artifacts.screenshots.mobile);
-      await access(result.capture.artifacts.screenshots.mobile as string);
+    if (
+      fixture.name === "vite-react-export.html" &&
+      isForceVisualSnapshotEnabled() &&
+      report.modeUsed !== "pixel-perfect"
+    ) {
+      assert.equal(contentIntegrity.modeUsed, "full-page-snapshot");
     }
   }
 }

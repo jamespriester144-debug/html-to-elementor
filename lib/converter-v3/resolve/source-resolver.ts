@@ -71,6 +71,87 @@ function pickHtmlEntry(snapshot: ZipProjectSnapshot) {
   return normalizedEntries[0] ?? null;
 }
 
+function normalizeProjectPath(value: string) {
+  return value.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\?.*$/, "").replace(/#.*$/, "");
+}
+
+function rankReactEntryCandidate(value: string) {
+  if (/src\/main\.(?:tsx|jsx|ts|js)$/i.test(value)) {
+    return 0;
+  }
+
+  if (/src\/index\.(?:tsx|jsx|ts|js)$/i.test(value)) {
+    return 1;
+  }
+
+  if (/src\/App\.(?:tsx|jsx|ts|js)$/i.test(value)) {
+    return 2;
+  }
+
+  if (/src\/(?:Root|root|entry(?:-client|-server)?)\.(?:tsx|jsx|ts|js)$/i.test(value)) {
+    return 3;
+  }
+
+  if (/src\/(?:routes|pages)\/index\.(?:tsx|jsx|ts|js)$/i.test(value)) {
+    return 4;
+  }
+
+  if (/src\/(?:routes|pages)\//i.test(value)) {
+    return 5;
+  }
+
+  if (/\.(?:tsx|jsx)$/i.test(value)) {
+    return 6;
+  }
+
+  return 7;
+}
+
+async function pickLovableEntry(snapshot: ZipProjectSnapshot) {
+  const knownFileNames = new Set(snapshot.fileNames.map((name) => normalizeProjectPath(name)));
+  const sortedHtmlEntries = [...snapshot.htmlEntries].sort((left, right) => {
+    const leftPriority = /(^|\/)index\.html$/i.test(left) ? 0 : 1;
+    const rightPriority = /(^|\/)index\.html$/i.test(right) ? 0 : 1;
+
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+
+    return left.length - right.length || left.localeCompare(right);
+  });
+
+  for (const htmlEntry of sortedHtmlEntries) {
+    const source = await snapshot.zip.file(htmlEntry)?.async("text");
+
+    if (!source) {
+      continue;
+    }
+
+    for (const match of source.matchAll(
+      /<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/gi
+    )) {
+      const scriptPath = normalizeProjectPath(match[1]);
+
+      if (knownFileNames.has(scriptPath)) {
+        return scriptPath;
+      }
+    }
+  }
+
+  const candidates = [...new Set(snapshot.reactEntryCandidates)].sort((left, right) => {
+    const leftRank = rankReactEntryCandidate(left);
+    const rightRank = rankReactEntryCandidate(right);
+
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+
+    return left.length - right.length || left.localeCompare(right);
+  });
+
+  return candidates[0] ?? snapshot.sourceEntries[0] ?? null;
+}
+
 function extractGoogleFontLinks(sourceText: string) {
   return [...sourceText.matchAll(/href:\s*"([^"]+)"/g)]
     .map((match) => match[1])
@@ -185,6 +266,28 @@ export async function resolveSourceFromLocalFile(filePath: string): Promise<Reso
   });
 }
 
+export async function resolveSourceFromLocalPath(filePath: string): Promise<ResolvedSource> {
+  const absolutePath = path.resolve(filePath);
+
+  if (!absolutePath.toLowerCase().endsWith(".zip")) {
+    return resolveSourceFromLocalFile(absolutePath);
+  }
+
+  const buffer = await readFile(absolutePath);
+  const resolved = await resolveSourceFromZipBuffer(
+    buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+  );
+
+  return {
+    ...resolved,
+    sourcePath: absolutePath,
+    notes: [
+      ...resolved.notes,
+      "Entrada ZIP resolvida a partir de um arquivo local para benchmark universal."
+    ]
+  };
+}
+
 async function resolveStaticHtmlArchive(
   snapshot: ZipProjectSnapshot,
   sourceRoot: string
@@ -222,25 +325,31 @@ async function resolveStaticHtmlArchive(
 }
 
 async function resolveLovableArchive(snapshot: ZipProjectSnapshot): Promise<ResolvedSource> {
-  const routeFile = snapshot.routeEntries[0] ?? null;
-  const renderedHtml = await extractLovableProjectHtml(snapshot.zip);
+  const entryFile = await pickLovableEntry(snapshot);
+  const routeFile =
+    entryFile && /(^|\/)src\/(?:routes|pages)\//i.test(entryFile) ? entryFile : null;
+  const renderedHtml = await extractLovableProjectHtml(snapshot.zip, {
+    entryFile
+  });
 
   if (!renderedHtml) {
     throw new Error("Nao foi possivel renderizar o projeto Lovable/React a partir do ZIP enviado.");
   }
 
-  const routeSource = routeFile
-    ? await snapshot.zip.file(routeFile)?.async("text")
+  const routeSource = entryFile
+    ? await snapshot.zip.file(entryFile)?.async("text")
     : "";
 
   return buildResolvedSource({
     sourceKind: "lovable-react-source",
     html: injectLovableHeadLinks(renderedHtml, routeSource ?? ""),
+    entryFile,
     routeFile,
     archiveFileCount: snapshot.fileNames.length,
-    sourcePath: routeFile,
+    sourcePath: entryFile,
     notes: [
       "ZIP detectado como projeto Lovable/React.",
+      "Entrada React/Lovable identificada de forma universal a partir da estrutura do projeto.",
       "HTML final reconstruido antes da conversao para evitar dependencia de um site especifico."
     ]
   });

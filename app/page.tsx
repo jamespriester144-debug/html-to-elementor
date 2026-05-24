@@ -11,7 +11,7 @@ export default function HomePage() {
           Converta sites Lovable baixados do GitHub em templates Elementor.
         </h1>
         <p className="mt-6 max-w-2xl text-lg leading-8 text-ink/70">
-          Envie o HTML exportado ou um ZIP com o build do seu projeto Lovable,
+          Envie um arquivo HTML exportado ou um ZIP com o build do seu projeto Lovable,
           revise a previa, pague com Stripe e baixe o JSON para importar no Elementor.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
@@ -38,7 +38,7 @@ export default function HomePage() {
           {[
             "Baixe o projeto no GitHub",
             "Gere o build HTML do Lovable",
-            "Envie HTML ou ZIP com index.html",
+            "Envie arquivo HTML ou ZIP com index.html",
             "Revise a previa",
             "Pague com Stripe",
             "Baixe o template Elementor"

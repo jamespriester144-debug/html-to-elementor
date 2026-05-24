@@ -36,6 +36,10 @@ import {
   sortElementsForSectionComposition
 } from "@/lib/converter-v3/emitters/elementor/section-layout";
 import { buildSectionStrategyElements } from "@/lib/converter-v3/emitters/elementor/section-strategy";
+import {
+  getVisualOrderChildIds,
+  shouldUseUniversalNeutralLayoutMode
+} from "@/lib/converter-v3/emitters/elementor/universal-layout-mode";
 import { applyPresetWidgetDefaults } from "@/lib/converter-v3/emitters/elementor/widget-defaults";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
@@ -83,6 +87,86 @@ function buildNodeMaps(capture: PageCapture, layout: LayoutDocument): NodeMaps {
   };
 }
 
+function getSubtreeNodeIds(rootId: string, layoutById: NodeMaps["layoutById"]) {
+  const ids: string[] = [];
+  const queue = [rootId];
+
+  while (queue.length) {
+    const currentId = queue.shift();
+
+    if (!currentId) {
+      continue;
+    }
+
+    ids.push(currentId);
+    const node = layoutById.get(currentId);
+
+    if (node) {
+      queue.push(...node.children);
+    }
+  }
+
+  return ids;
+}
+
+function countSubtreeOverlaps(rootId: string, layoutById: NodeMaps["layoutById"]) {
+  const nodes = getSubtreeNodeIds(rootId, layoutById)
+    .map((id) => layoutById.get(id))
+    .filter((node): node is LayoutNode => Boolean(node))
+    .filter((node) => !node.flags.hidden);
+  let overlaps = 0;
+
+  for (let index = 0; index < nodes.length; index += 1) {
+    for (let nextIndex = index + 1; nextIndex < nodes.length; nextIndex += 1) {
+      const left = nodes[index];
+      const right = nodes[nextIndex];
+
+      if (
+        left.parentId === right.parentId &&
+        left.box.width > 0 &&
+        left.box.height > 0 &&
+        right.box.width > 0 &&
+        right.box.height > 0 &&
+        !(
+          left.box.x + left.box.width <= right.box.x ||
+          right.box.x + right.box.width <= left.box.x ||
+          left.box.y + left.box.height <= right.box.y ||
+          right.box.y + right.box.height <= left.box.y
+        )
+      ) {
+        overlaps += 1;
+      }
+    }
+  }
+
+  return overlaps;
+}
+
+function isNodeSimpleEnoughForUniversalNeutralMode(rootId: string, maps: NodeMaps) {
+  const subtreeNodes = getSubtreeNodeIds(rootId, maps.layoutById)
+    .map((id) => maps.layoutById.get(id))
+    .filter((node): node is LayoutNode => Boolean(node))
+    .filter((node) => !node.flags.hidden);
+  const absoluteCount = subtreeNodes.filter((node) =>
+    ["absolute", "fixed", "sticky"].includes(node.layout.position ?? "")
+  ).length;
+  const decorativeCount = subtreeNodes.filter((node) => node.flags.decorative).length;
+  const responsiveVariants = subtreeNodes.filter((node) => node.flags.responsiveVariant).length;
+  const nestedSections = subtreeNodes.filter(
+    (node) => node.kind === "section" && node.id !== rootId
+  ).length;
+  const overlaps = countSubtreeOverlaps(rootId, maps.layoutById);
+
+  return (
+    subtreeNodes.length <= 18 &&
+    absoluteCount === 0 &&
+    decorativeCount === 0 &&
+    responsiveVariants === 0 &&
+    nestedSections <= 4 &&
+    overlaps === 0
+  );
+}
+
 function getTopLevelNodeIds(layout: LayoutDocument) {
   if (layout.sectionIds.length) {
     return layout.sectionIds;
@@ -97,8 +181,38 @@ function applyDerivedChildSettings(
   children: ElementorElement[],
   node: LayoutNode,
   maps: NodeMaps,
-  derivedLayout: DerivedContainerLayout
+  derivedLayout: DerivedContainerLayout,
+  neutralLayoutMode = false
 ) {
+  if (neutralLayoutMode) {
+    return children.map((child) => {
+      const sourceNodeId =
+        typeof child.settings.converter_v3_source_node_id === "string"
+          ? child.settings.converter_v3_source_node_id
+          : undefined;
+
+      if (!sourceNodeId) {
+        return child;
+      }
+
+      const childSettings = derivedLayout.childSettingsById.get(sourceNodeId);
+
+      if (!childSettings) {
+        return child;
+      }
+
+      return {
+        ...child,
+        settings: {
+          ...child.settings,
+          ...childSettings,
+          ...createResponsiveChildSettings(node, sourceNodeId, maps.layoutById),
+          converter_v3_universal_neutral_mode: true
+        }
+      };
+    });
+  }
+
   const patternChildren = describePatternChildren(node, maps.layoutById, "desktop");
   const presetChildren = describePresetChildren(node, maps.layoutById, "desktop");
 
@@ -234,6 +348,46 @@ function buildHtmlWidgetFromNode(
       converter_v3_source_node_id: nodeId
     },
     elements: []
+  };
+}
+
+function buildHtmlFallbackElementFromNode(params: {
+  node: LayoutNode;
+  maps: NodeMaps;
+  $: cheerio.CheerioAPI;
+  counter: { value: number };
+  htmlFallbacks: Set<string>;
+  neutralLayoutMode: boolean;
+}): ElementorElement | null {
+  params.htmlFallbacks.add(params.node.id);
+  params.counter.value += 1;
+  const htmlWidget = buildHtmlWidgetFromNode(params.node.id, params.$, params.counter.value);
+
+  if (!htmlWidget) {
+    return null;
+  }
+
+  if (params.node.kind !== "section" && params.node.kind !== "container") {
+    return htmlWidget;
+  }
+
+  params.counter.value += 1;
+  const container = buildContainerFromNode(
+    params.node,
+    params.maps,
+    [htmlWidget],
+    params.counter.value,
+    {
+      neutralLayoutMode: params.neutralLayoutMode
+    }
+  );
+
+  return {
+    ...container,
+    settings: {
+      converter_v3_html_fallback_container: true,
+      ...container.settings
+    }
   };
 }
 
@@ -541,51 +695,61 @@ function buildContainerFromNode(
   node: LayoutNode,
   maps: NodeMaps,
   children: ElementorElement[],
-  index: number
+  index: number,
+  options: {
+    neutralLayoutMode?: boolean;
+  } = {}
 ): ElementorElement {
+  const neutralLayoutMode = options.neutralLayoutMode === true;
   const derivedLayout = deriveResponsiveContainerLayout(node, maps.layoutById, "desktop");
   const desktopPattern = detectContainerPattern(node, maps.layoutById, "desktop");
-  const desktopPreset = detectContainerPreset(node, maps.layoutById, "desktop");
-  const presetContext = getPresetContext(node, maps);
+  const desktopPreset = neutralLayoutMode
+    ? "generic"
+    : detectContainerPreset(node, maps.layoutById, "desktop");
+  const presetContext = neutralLayoutMode ? undefined : getPresetContext(node, maps);
   const presetLayoutDefaults = getPresetContainerLayoutDefaults({
     preset: desktopPreset,
     role: presetContext?.role
   });
   const sectionComposition = node.kind === "section"
-    ? detectSectionComposition(children)
+    ? neutralLayoutMode
+      ? "generic"
+      : detectSectionComposition(children)
     : "generic";
   const sectionLayoutDefaults = getSectionCompositionDefaults(sectionComposition);
-  const laidOutChildren = (node.kind === "section"
-    ? sortElementsForSectionComposition
-    : sortElementsForPresetLayout)(
-    applyDerivedChildSettings(children, node, maps, derivedLayout)
-  );
+  const laidOutChildren = neutralLayoutMode
+    ? applyDerivedChildSettings(children, node, maps, derivedLayout, true)
+    : (node.kind === "section"
+        ? sortElementsForSectionComposition
+        : sortElementsForPresetLayout)(
+        applyDerivedChildSettings(children, node, maps, derivedLayout)
+      );
   const sectionStructure =
-    node.kind === "section"
+    node.kind === "section" && !neutralLayoutMode
       ? getSectionStructureSummary(laidOutChildren, sectionComposition)
       : undefined;
   const sectionBlueprint =
-    node.kind === "section"
+    node.kind === "section" && !neutralLayoutMode
       ? getSectionBlueprintSummary(laidOutChildren, sectionComposition)
       : undefined;
   const sectionStrategy =
-    node.kind === "section"
+    node.kind === "section" && !neutralLayoutMode
       ? getSectionEmitterStrategy(sectionBlueprint)
       : undefined;
   const sectionStrategyProfile =
-    node.kind === "section"
+    node.kind === "section" && !neutralLayoutMode
       ? getSectionStrategyProfile(sectionStrategy)
       : undefined;
   const sectionSlots =
-    node.kind === "section"
+    node.kind === "section" && !neutralLayoutMode
       ? getSectionSlotSummary(laidOutChildren, sectionComposition)
       : undefined;
   const sectionStructureDefaults =
-    node.kind === "section"
+    node.kind === "section" && !neutralLayoutMode
       ? getSectionStructureContainerDefaults(sectionStructure)
       : {};
   const sectionStrategyElements =
-    node.kind === "section"
+    node.kind === "section" && !neutralLayoutMode
       ? buildSectionStrategyElements({
           children: laidOutChildren,
           strategy: sectionStrategy,
@@ -631,6 +795,7 @@ function buildContainerFromNode(
     settings: {
       content_width: "full",
       converter_v3_source_node_id: node.id,
+      converter_v3_universal_neutral_mode: neutralLayoutMode || undefined,
       width: node.box.width ? `${Math.round(node.box.width)}px` : undefined,
       max_width: sectionStructureDefaults.max_width,
       min_height: node.box.height ? `${Math.round(node.box.height)}px` : undefined,
@@ -673,6 +838,7 @@ function buildContainerFromNode(
         position: node.layout.position,
         pattern: desktopPattern,
         preset: desktopPreset,
+        universalNeutralMode: neutralLayoutMode,
         sectionComposition,
         sectionPreset: sectionStructure?.preset,
         sectionSignature: sectionStructure?.signature,
@@ -715,6 +881,7 @@ function buildElementFromNode(params: {
   $: cheerio.CheerioAPI;
   counter: { value: number };
   htmlFallbacks: Set<string>;
+  neutralLayoutMode: boolean;
 }): ElementorElement | null {
   const node = params.maps.layoutById.get(params.nodeId);
 
@@ -724,13 +891,15 @@ function buildElementFromNode(params: {
 
   const captureNode = params.maps.captureById.get(node.id);
   const tag = captureNode?.tag ?? "";
-  const presetContext = getPresetContext(node, params.maps);
-  const widgetSemanticHint = getPresetSemanticHint(
-    node,
-    params.maps,
-    captureNode,
-    presetContext
-  );
+  const presetContext = params.neutralLayoutMode ? undefined : getPresetContext(node, params.maps);
+  const widgetSemanticHint = params.neutralLayoutMode
+    ? undefined
+    : getPresetSemanticHint(
+        node,
+        params.maps,
+        captureNode,
+        presetContext
+      );
 
   if (node.kind === "image") {
     params.counter.value += 1;
@@ -783,7 +952,23 @@ function buildElementFromNode(params: {
     return buildHtmlWidgetFromNode(node.id, params.$, params.counter.value);
   }
 
-  const orderedChildIds = getOrderedChildIdsForPattern(node, params.maps.layoutById, "desktop");
+  if (
+    params.neutralLayoutMode &&
+    !isNodeSimpleEnoughForUniversalNeutralMode(node.id, params.maps)
+  ) {
+    return buildHtmlFallbackElementFromNode({
+      node,
+      maps: params.maps,
+      $: params.$,
+      counter: params.counter,
+      htmlFallbacks: params.htmlFallbacks,
+      neutralLayoutMode: true
+    });
+  }
+
+  const orderedChildIds = params.neutralLayoutMode
+    ? getVisualOrderChildIds(node, params.maps.layoutById)
+    : getOrderedChildIdsForPattern(node, params.maps.layoutById, "desktop");
   const children = orderedChildIds
     .map((childId) =>
       buildElementFromNode({
@@ -794,7 +979,9 @@ function buildElementFromNode(params: {
     .filter((element): element is ElementorElement => Boolean(element));
 
   params.counter.value += 1;
-  return buildContainerFromNode(node, params.maps, children, params.counter.value);
+  return buildContainerFromNode(node, params.maps, children, params.counter.value, {
+    neutralLayoutMode: params.neutralLayoutMode
+  });
 }
 
 export function createEditableElementorDocumentV3(params: {
@@ -802,6 +989,10 @@ export function createEditableElementorDocumentV3(params: {
   layout: LayoutDocument;
   selectedMode: OutputMode;
 }): EditableEmitterResult {
+  const neutralLayoutMode = shouldUseUniversalNeutralLayoutMode(
+    params.capture,
+    params.layout
+  );
   const maps = buildNodeMaps(params.capture, params.layout);
   const $ = cheerio.load(params.capture.renderedHtml);
   const counter = { value: 0 };
@@ -814,7 +1005,8 @@ export function createEditableElementorDocumentV3(params: {
         maps,
         $,
         counter,
-        htmlFallbacks
+        htmlFallbacks,
+        neutralLayoutMode
       })
     )
     .filter((element): element is ElementorElement => Boolean(element));

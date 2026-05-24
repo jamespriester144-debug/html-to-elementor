@@ -10,20 +10,59 @@ import type {
 import { enrichInputPageAnalysis } from "@/lib/converter-v3/analyze/input-page-analyzer";
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
 import type { BrowserRenderArtifact } from "@/lib/converter-v3/render/browser-renderer";
+import {
+  extractVisibleContentElements,
+  summarizeVisibleContent
+} from "@/lib/converter-v3/universal-content";
 
 function createSummary(rendered: BrowserRenderArtifact): CaptureSummary {
+  const visibleElements = extractVisibleContentElements({
+    nodes: rendered.nodes
+  } as PageCapture);
+  const metrics = summarizeVisibleContent(visibleElements);
+  const fallbackVisibleNodes = rendered.nodes.filter((node) => node.isVisible);
+  const fallbackImages = fallbackVisibleNodes.filter(
+    (node) =>
+      ["img", "picture", "svg", "video", "iframe", "canvas"].includes(node.tag) ||
+      Boolean(node.asset.src) ||
+      Boolean(node.asset.poster) ||
+      Boolean(node.asset.backgroundImage)
+  ).length;
+  const fallbackButtons = fallbackVisibleNodes.filter((node) =>
+    node.tag === "button" ||
+    (node.tag === "a" && Boolean(node.attributes.href)) ||
+    node.attributes.role === "button" ||
+    (node.tag === "input" &&
+      ["button", "submit", "reset", "image"].includes(
+        (node.attributes.type ?? "").toLowerCase()
+      ))
+  ).length;
+  const fallbackLinks = fallbackVisibleNodes.filter(
+    (node) => node.tag === "a" && Boolean(node.attributes.href)
+  ).length;
+  const fallbackTexts = fallbackVisibleNodes.filter((node) => Boolean(node.text)).length;
+  const htmlImageFallback =
+    (rendered.renderedHtml.match(/<(img|picture|svg|video|iframe|canvas)\b/gi) ?? []).length +
+    (rendered.renderedHtml.match(/background-image\s*:/gi) ?? []).length;
+  const htmlButtonFallback =
+    (rendered.renderedHtml.match(/<button\b/gi) ?? []).length +
+    (rendered.renderedHtml.match(/<a\b[^>]*href=/gi) ?? []).length +
+    (rendered.renderedHtml.match(/<input\b[^>]*type=["']?(button|submit|reset|image)/gi) ?? [])
+      .length;
+  const htmlLinkFallback = (rendered.renderedHtml.match(/<a\b[^>]*href=/gi) ?? []).length;
+  const htmlTextFallback =
+    (rendered.renderedHtml.match(/<(h[1-6]|p|span|li|blockquote|strong|em|small|label)\b/gi) ?? [])
+      .length;
+
   return {
     totalNodes: rendered.nodes.length,
     visibleNodes: rendered.nodes.filter((node) => node.isVisible).length,
-    images: rendered.nodes.filter((node) => node.tag === "img").length,
-    buttons: rendered.nodes.filter((node) =>
-      node.tag === "button" ||
-      (node.tag === "a" && Boolean(node.attributes.href)) ||
-      node.attributes.role === "button"
-    ).length,
-    textBlocks: rendered.nodes.filter((node) =>
-      ["p", "span", "li", "blockquote"].includes(node.tag) && Boolean(node.text)
-    ).length,
+    links: Math.max(metrics.links, fallbackLinks, htmlLinkFallback),
+    images: Math.max(metrics.images, fallbackImages, htmlImageFallback),
+    buttons: Math.max(metrics.buttons, fallbackButtons, htmlButtonFallback),
+    textBlocks: Math.max(metrics.texts, fallbackTexts, htmlTextFallback),
+    visualContainers: metrics.visualContainers,
+    geometryGroups: 0,
     sections: rendered.nodes.filter((node) =>
       ["section", "header", "footer", "main", "article"].includes(node.tag)
     ).length
@@ -41,7 +80,10 @@ export function createEmptyArtifacts(outputDir: string): CaptureArtifacts {
     responsiveSnapshotPath: "",
     layoutPath: "",
     analysisPath: "",
+    inputAnalysisPath: "",
     pageCapturePath: "",
+    visibleElementsPath: "",
+    geometryGroupsPath: "",
     sectionArtifactsPath: "",
     screenshots: {}
   };

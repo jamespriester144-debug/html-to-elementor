@@ -31,16 +31,13 @@ function decodeDataUrl(dataUrl: string) {
   if (!match) return null;
 
   const contentType = match[1] || "application/octet-stream";
-  const bodyBuffer = match[2]
+  const body = match[2]
     ? Buffer.from(match[3], "base64")
     : Buffer.from(decodeURIComponent(match[3]));
 
   return {
     contentType,
-    body: bodyBuffer.buffer.slice(
-      bodyBuffer.byteOffset,
-      bodyBuffer.byteOffset + bodyBuffer.byteLength
-    )
+    body
   };
 }
 
@@ -126,15 +123,27 @@ export function createEmbeddedConversionAssetPersister(
       }
 
       index += 1;
-      const publicUrl = await deps.uploadConversionAsset({
-        conversionKey,
-        sourcePath: `embedded-${index}.${getDataUrlExtension(decoded.contentType)}`,
-        contentType: decoded.contentType,
-        body: decoded.body
-      });
 
-      uploadedUrls.set(dataUrl, publicUrl);
-      return publicUrl;
+      try {
+        const publicUrl = await deps.uploadConversionAsset({
+          conversionKey,
+          sourcePath: `embedded-${index}.${getDataUrlExtension(decoded.contentType)}`,
+          contentType: decoded.contentType,
+          body: decoded.body
+        });
+
+        uploadedUrls.set(dataUrl, publicUrl);
+        return publicUrl;
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro desconhecido";
+
+        console.warn(
+          `[ASSET] Falha ao enviar asset embutido para o Supabase Storage. Mantendo data URL original. conversionKey=${conversionKey} index=${index} contentType=${decoded.contentType} bytes=${decoded.body.byteLength} motivo=${message}`
+        );
+        uploadedUrls.set(dataUrl, dataUrl);
+        return dataUrl;
+      }
     };
 
     return {

@@ -103,6 +103,12 @@ type InitialDecisionResult = {
   pixelPerfectReason?: string;
 };
 
+type FullPageSnapshotPreference = {
+  prefer: boolean;
+  riskScore: number;
+  reasons: string[];
+};
+
 const PAGE_SIMILARITY_THRESHOLD = 0.99;
 const TABLET_BREAKPOINT = 1024;
 const MOBILE_BREAKPOINT = 767;
@@ -790,6 +796,139 @@ function buildPageOverlayLinks(
         }
       ];
     });
+}
+
+function assessFullPageSnapshotPreference(params: {
+  capture: PageCapture;
+  sections: SectionCapture[];
+}): FullPageSnapshotPreference {
+  const reasons: string[] = [];
+  let riskScore = 0;
+  const structure = params.capture.inputAnalysis.structure;
+  const layoutTypes = new Set(params.capture.inputAnalysis.layoutTypes);
+  const frameworkHints = new Set(params.capture.inputAnalysis.frameworkHints);
+
+  const addReason = (score: number, reason: string) => {
+    riskScore += score;
+    reasons.push(reason);
+  };
+
+  if ((structure.absoluteFixedSticky ?? 0) >= 3) {
+    addReason(
+      2,
+      `${structure.absoluteFixedSticky} elementos absolute/fixed/sticky detectados na pagina.`
+    );
+  }
+
+  if ((structure.zIndexNodes ?? 0) >= 4 || (structure.outOfFlowElements ?? 0) >= 4) {
+    addReason(
+      2,
+      "Camadas fora do fluxo e sobreposicoes com z-index alto aumentam o risco de desalinhamento."
+    );
+  }
+
+  if ((structure.transformedElements ?? 0) >= 2) {
+    addReason(
+      2,
+      `${structure.transformedElements} elementos transformados detectados na pagina renderizada.`
+    );
+  }
+
+  if ((structure.externalFonts ?? 0) > 0) {
+    addReason(
+      2,
+      `${structure.externalFonts} fontes externas carregadas no browser podem alterar icones e pontuacao quando a pagina e reinterpretada.`
+    );
+  }
+
+  if (layoutTypes.has("scripted") || layoutTypes.has("react-runtime") || layoutTypes.has("vite-react-export")) {
+    addReason(
+      1,
+      "A pagina depende de runtime/script para estabilizar o layout final."
+    );
+  }
+
+  if (frameworkHints.has("lovable") || frameworkHints.has("tailwind")) {
+    addReason(
+      1,
+      "O layout foi montado por framework utilitario/runtime e tende a perder fidelidade quando reestruturado."
+    );
+  }
+
+  const pseudoSections = params.sections.filter(
+    (section) => section.complexity.hasPseudoElements || section.complexity.pseudoElementNodes > 0
+  ).length;
+  if (pseudoSections > 0) {
+    addReason(
+      2,
+      `${pseudoSections} secao(oes) usam pseudo-elements que costumam carregar bullets, icones e ornamentos.`
+    );
+  }
+
+  const overlaySections = params.sections.filter(
+    (section) =>
+      section.complexity.overlayNodes > 0 ||
+      section.complexity.complexZIndexNodes > 0 ||
+      section.complexity.absoluteNodes > 0
+  ).length;
+  if (overlaySections > 0) {
+    addReason(
+      2,
+      `${overlaySections} secao(oes) usam overlays/absolute/z-index complexo.`
+    );
+  }
+
+  const transformSections = params.sections.filter(
+    (section) =>
+      section.complexity.hasTransforms ||
+      section.complexity.transformedNodes > 0 ||
+      section.debug?.positionedElements.some(
+        (element) => Boolean(element.transform) || ["absolute", "fixed", "sticky"].includes(element.position)
+      )
+  ).length;
+  if (transformSections > 0) {
+    addReason(
+      2,
+      `${transformSections} secao(oes) possuem transforms ou posicionamento fora do fluxo.`
+    );
+  }
+
+  const typographySections = params.sections.filter(
+    (section) =>
+      (section.debug?.loadedFonts.length ?? 0) > 0 ||
+      section.complexity.gradientNodes > 0 ||
+      section.complexity.unsupportedCssNodes > 0
+  ).length;
+  if (typographySections > 0) {
+    addReason(
+      1,
+      `${typographySections} secao(oes) dependem de fontes, gradientes ou CSS avancado carregado no browser.`
+    );
+  }
+
+  const unsafeSections = params.sections.filter((section) => section.debug?.unsafeSectionBoundary).length;
+  if (unsafeSections > 0) {
+    addReason(
+      4,
+      `${unsafeSections} secao(oes) foram marcadas com boundary inseguro durante o recorte visual.`
+    );
+  }
+
+  const pageHasManySections = params.sections.length >= 6;
+  const pageHasManyLinks = (params.capture.summary.links ?? 0) >= 8;
+
+  if (pageHasManySections && pageHasManyLinks) {
+    addReason(
+      1,
+      "A pagina combina muitas secoes e muitos pontos clicaveis; snapshot global preserva melhor a continuidade visual."
+    );
+  }
+
+  return {
+    prefer: riskScore >= 4,
+    riskScore,
+    reasons: [...new Set(reasons)]
+  };
 }
 
 async function buildFullPageSnapshotSource(
@@ -1758,11 +1897,20 @@ async function createForceVisualSnapshotDocumentV3(params: {
     layout: params.layout,
     sections: orderedSections
   });
+  const fullPagePreference = assessFullPageSnapshotPreference({
+    capture: params.capture,
+    sections: orderedSections
+  });
   const encounteredIssues: SnapshotVisualValidationIssue[] = [];
   const warnings = sectionSeparation.issues.map(
     (issue) =>
       `Separacao por secao insegura em ${issue.name} (${issue.nodeId}): ${issue.reason}`
   );
+  if (fullPagePreference.prefer) {
+    warnings.push(
+      `Snapshot global priorizado por risco visual ${fullPagePreference.riskScore}: ${fullPagePreference.reasons.join(" ")}`
+    );
+  }
   const mergeIssues = (issues: SnapshotVisualValidationIssue[]) => {
     encounteredIssues.push(...issues);
     warnings.push(...buildSnapshotWarnings(issues));
@@ -2021,6 +2169,12 @@ async function createForceVisualSnapshotDocumentV3(params: {
     return buildFullPageResult(
       sectionSeparation.fallbackReason ??
         "Separacao por secoes falhou; usando snapshot da pagina inteira."
+    );
+  }
+
+  if (fullPagePreference.prefer) {
+    return buildFullPageResult(
+      `Complexidade visual alta detectada (${fullPagePreference.riskScore}). ${fullPagePreference.reasons.join(" ")}`
     );
   }
 

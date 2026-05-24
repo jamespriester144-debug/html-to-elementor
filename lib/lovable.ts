@@ -1,8 +1,43 @@
+import path from "node:path";
+
 import JSZip from "jszip";
 import ts from "typescript";
 
 type LovableAssetMap = Map<string, string>;
 type RenderScope = Map<string, unknown>;
+type LocalComponentImport = {
+  filePath: string;
+  exportName: string;
+};
+type ProjectModule = {
+  filePath: string;
+  sourceFile: ts.SourceFile;
+  constants: Map<string, unknown>;
+  assets: LovableAssetMap;
+  localComponentImports: Map<string, LocalComponentImport>;
+};
+type ProjectRenderContext = {
+  entryFile: string;
+  modules: Map<string, ProjectModule>;
+};
+type RenderableComponentDeclaration = {
+  parameters: ts.NodeArray<ts.ParameterDeclaration>;
+  body: ts.ConciseBody;
+};
+type RootRenderTarget =
+  | {
+      kind: "expression";
+      expression: ts.Expression;
+    }
+  | {
+      kind: "component-reference";
+      componentName: string;
+    };
+type ProjectRenderCandidate = {
+  module: ProjectModule;
+  target: RootRenderTarget;
+  priority: number;
+};
 
 type ExtractedNode = {
   tag: string;
@@ -31,6 +66,118 @@ const semanticTagMap: Record<string, string> = {
   ol: "ol",
   blockquote: "blockquote"
 };
+
+const ASSET_FILE_PATTERN = /\.(?:png|jpe?g|webp|svg|gif|avif|ico)$/i;
+const RENDERABLE_SOURCE_PATTERN = /\.(?:tsx|jsx|ts|js)$/i;
+const EXCLUDED_SOURCE_PATTERN = /\.d\.ts$|\.(?:test|spec|stories)\.(?:tsx|jsx|ts|js)$/i;
+const NON_RENDERABLE_COMPONENTS = new Set([
+  "Check",
+  "Sparkles",
+  "Heart",
+  "Shield",
+  "Truck",
+  "Star",
+  "Plus",
+  "Minus"
+]);
+
+function normalizeProjectPath(value: string): string {
+  const normalized = value.replace(/\\/g, "/").replace(/\?.*$/, "").replace(/#.*$/, "");
+  return normalized.replace(/^\/+/, "");
+}
+
+function isRenderableSourceFile(filePath: string) {
+  const normalized = normalizeProjectPath(filePath);
+  return RENDERABLE_SOURCE_PATTERN.test(normalized) && !EXCLUDED_SOURCE_PATTERN.test(normalized);
+}
+
+function isAssetFile(filePath: string) {
+  return ASSET_FILE_PATTERN.test(normalizeProjectPath(filePath));
+}
+
+function resolveProjectSpecifier(currentFilePath: string, specifier: string) {
+  const normalizedSpecifier = specifier.trim();
+
+  if (!normalizedSpecifier) {
+    return null;
+  }
+
+  if (normalizedSpecifier.startsWith("@/")) {
+    return normalizeProjectPath(normalizedSpecifier.replace(/^@\//, "src/"));
+  }
+
+  if (normalizedSpecifier.startsWith("/")) {
+    return normalizeProjectPath(normalizedSpecifier);
+  }
+
+  if (normalizedSpecifier.startsWith(".")) {
+    return normalizeProjectPath(
+      path.posix.join(path.posix.dirname(normalizeProjectPath(currentFilePath)), normalizedSpecifier)
+    );
+  }
+
+  return null;
+}
+
+function resolveZipModulePath(zip: JSZip, currentFilePath: string, specifier: string) {
+  const basePath = resolveProjectSpecifier(currentFilePath, specifier);
+
+  if (!basePath) {
+    return null;
+  }
+
+  const candidates = [
+    basePath,
+    ...[".tsx", ".jsx", ".ts", ".js"].map((extension) => `${basePath}${extension}`),
+    ...[".tsx", ".jsx", ".ts", ".js"].map((extension) => `${basePath}/index${extension}`)
+  ].map((candidate) => normalizeProjectPath(candidate));
+  const normalizedFileNames = Object.keys(zip.files)
+    .filter((entryName) => !zip.files[entryName]?.dir)
+    .map((entryName) => normalizeProjectPath(entryName));
+
+  for (const candidate of candidates) {
+    if (zip.file(candidate)) {
+      return candidate;
+    }
+
+    const currentNormalizedPath = normalizeProjectPath(currentFilePath);
+    const currentSrcIndex = currentNormalizedPath.indexOf("/src/");
+    const currentRootPrefix =
+      currentSrcIndex >= 0 ? currentNormalizedPath.slice(0, currentSrcIndex) : "";
+    const prefixedCandidate =
+      currentRootPrefix && candidate.startsWith("src/")
+        ? normalizeProjectPath(`${currentRootPrefix}/${candidate}`)
+        : null;
+
+    if (prefixedCandidate && zip.file(prefixedCandidate)) {
+      return prefixedCandidate;
+    }
+
+    const suffixMatches = normalizedFileNames
+      .filter((entryName) => entryName === candidate || entryName.endsWith(`/${candidate}`))
+      .sort((left, right) => left.length - right.length || left.localeCompare(right));
+
+    if (suffixMatches[0]) {
+      return suffixMatches[0];
+    }
+  }
+
+  return null;
+}
+
+function createSourceFile(filePath: string, source: string) {
+  return ts.createSourceFile(
+    normalizeProjectPath(filePath),
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  );
+}
+
+async function readZipSourceFile(zip: JSZip, filePath: string) {
+  return zip.file(normalizeProjectPath(filePath))?.async("text") ?? null;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -201,7 +348,8 @@ function getMimeType(path: string) {
 
 async function getAssets(sourceFile: ts.SourceFile, zip: JSZip): Promise<LovableAssetMap> {
   const assets: LovableAssetMap = new Map();
-  const imports: Array<{ localName: string; moduleName: string }> = [];
+  const imports: Array<{ localName: string; resolvedPath: string; fallbackPath: string }> = [];
+  const currentFilePath = normalizeProjectPath(sourceFile.fileName);
 
   sourceFile.forEachChild((node) => {
     if (!ts.isImportDeclaration(node) || !node.importClause?.name) {
@@ -214,24 +362,24 @@ async function getAssets(sourceFile: ts.SourceFile, zip: JSZip): Promise<Lovable
       return;
     }
 
-    if (!moduleName.text.includes("/assets/")) {
+    const resolvedAssetPath = resolveZipModulePath(zip, currentFilePath, moduleName.text);
+
+    if (!resolvedAssetPath || !isAssetFile(resolvedAssetPath)) {
       return;
     }
 
     imports.push({
       localName: node.importClause.name.text,
-      moduleName: moduleName.text
+      resolvedPath: resolvedAssetPath,
+      fallbackPath: normalizeProjectPath(moduleName.text.replace(/^@\//, "src/"))
     });
   });
 
   for (const assetImport of imports) {
-    const assetPath = assetImport.moduleName.replace("@/", "src/");
-    const zipEntry = Object.values(zip.files).find((entry) =>
-      entry.name.replace(/\\/g, "/").endsWith(assetPath)
-    );
+    const zipEntry = zip.file(assetImport.resolvedPath);
 
     if (!zipEntry) {
-      assets.set(assetImport.localName, assetImport.moduleName.replace("@/", "/"));
+      assets.set(assetImport.localName, assetImport.fallbackPath);
       continue;
     }
 
@@ -243,6 +391,144 @@ async function getAssets(sourceFile: ts.SourceFile, zip: JSZip): Promise<Lovable
   }
 
   return assets;
+}
+
+function getLocalComponentImports(
+  sourceFile: ts.SourceFile,
+  zip: JSZip
+): Map<string, LocalComponentImport> {
+  const currentFilePath = normalizeProjectPath(sourceFile.fileName);
+  const componentImports = new Map<string, LocalComponentImport>();
+
+  sourceFile.forEachChild((node) => {
+    if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) {
+      return;
+    }
+
+    const resolvedModulePath = resolveZipModulePath(
+      zip,
+      currentFilePath,
+      node.moduleSpecifier.text
+    );
+
+    if (!resolvedModulePath || !isRenderableSourceFile(resolvedModulePath)) {
+      return;
+    }
+
+    if (node.importClause?.name) {
+      componentImports.set(node.importClause.name.text, {
+        filePath: resolvedModulePath,
+        exportName: "default"
+      });
+    }
+
+    const namedBindings = node.importClause?.namedBindings;
+
+    if (!namedBindings || !ts.isNamedImports(namedBindings)) {
+      return;
+    }
+
+    namedBindings.elements.forEach((element) => {
+      componentImports.set(element.name.text, {
+        filePath: resolvedModulePath,
+        exportName: element.propertyName?.text ?? element.name.text
+      });
+    });
+  });
+
+  return componentImports;
+}
+
+async function loadProjectModule(
+  zip: JSZip,
+  filePath: string,
+  modules: Map<string, ProjectModule>
+): Promise<ProjectModule | null> {
+  const normalizedPath = normalizeProjectPath(filePath);
+  const cached = modules.get(normalizedPath);
+
+  if (cached) {
+    return cached;
+  }
+
+  const source = await readZipSourceFile(zip, normalizedPath);
+
+  if (!source) {
+    return null;
+  }
+
+  const sourceFile = createSourceFile(normalizedPath, source);
+  const assets = await getAssets(sourceFile, zip);
+  const constants = getConstants(sourceFile, assets);
+  const localComponentImports = getLocalComponentImports(sourceFile, zip);
+  const module: ProjectModule = {
+    filePath: normalizedPath,
+    sourceFile,
+    constants,
+    assets,
+    localComponentImports
+  };
+
+  modules.set(normalizedPath, module);
+
+  for (const importedModule of localComponentImports.values()) {
+    await loadProjectModule(zip, importedModule.filePath, modules);
+  }
+
+  for (const [localName, importedModule] of localComponentImports.entries()) {
+    const importedValue = resolveImportedBindingValue(importedModule, modules);
+
+    if (importedValue !== undefined) {
+      constants.set(localName, importedValue);
+    }
+  }
+
+  return module;
+}
+
+async function createProjectRenderContext(zip: JSZip, entryFile: string) {
+  const modules = new Map<string, ProjectModule>();
+  const entryModule = await loadProjectModule(zip, entryFile, modules);
+
+  if (!entryModule) {
+    return null;
+  }
+
+  return {
+    entryFile: normalizeProjectPath(entryFile),
+    modules
+  } satisfies ProjectRenderContext;
+}
+
+function resolveImportedBindingValue(
+  importedBinding: LocalComponentImport,
+  modules: Map<string, ProjectModule>
+) {
+  const targetModule = modules.get(importedBinding.filePath);
+
+  if (!targetModule) {
+    return undefined;
+  }
+
+  if (importedBinding.exportName !== "default") {
+    return targetModule.constants.get(importedBinding.exportName);
+  }
+
+  for (const statement of targetModule.sourceFile.statements) {
+    if (!ts.isExportAssignment(statement)) {
+      continue;
+    }
+
+    if (ts.isIdentifier(statement.expression)) {
+      return targetModule.constants.get(statement.expression.text);
+    }
+
+    if (ts.isExpression(statement.expression)) {
+      return parseLiteralValue(statement.expression, targetModule.assets) ?? undefined;
+    }
+  }
+
+  return undefined;
 }
 
 function getJsxAttributeValue(
@@ -436,12 +722,280 @@ function expressionContainsJsx(expression: ts.Expression): boolean {
   return false;
 }
 
+function bindValueToPattern(
+  name: ts.BindingName,
+  value: unknown,
+  scope: RenderScope
+) {
+  if (ts.isIdentifier(name)) {
+    scope.set(name.text, value);
+    return;
+  }
+
+  if (ts.isObjectBindingPattern(name)) {
+    name.elements.forEach((element) => {
+      const propertyName =
+        element.propertyName && ts.isIdentifier(element.propertyName)
+          ? element.propertyName.text
+          : ts.isIdentifier(element.name)
+            ? element.name.text
+            : null;
+      const nextValue = propertyName ? getObjectProperty(value, propertyName) : undefined;
+
+      bindValueToPattern(element.name, nextValue, scope);
+    });
+    return;
+  }
+
+  if (ts.isArrayBindingPattern(name)) {
+    name.elements.forEach((element, index) => {
+      if (!ts.isBindingElement(element)) {
+        return;
+      }
+
+      const nextValue = Array.isArray(value) ? value[index] : undefined;
+      bindValueToPattern(element.name, nextValue, scope);
+    });
+  }
+}
+
+function populateScopeFromStatements(
+  statements: readonly ts.Statement[],
+  sourceFile: ts.SourceFile,
+  constants: Map<string, unknown>,
+  assets: LovableAssetMap,
+  scope: RenderScope,
+  project?: ProjectRenderContext
+) {
+  for (const statement of statements) {
+    if (ts.isReturnStatement(statement)) {
+      return;
+    }
+
+    if (!ts.isVariableStatement(statement)) {
+      continue;
+    }
+
+    for (const declaration of statement.declarationList.declarations) {
+      if (!declaration.initializer) {
+        continue;
+      }
+
+      if (
+        ts.isArrayBindingPattern(declaration.name) &&
+        ts.isCallExpression(declaration.initializer) &&
+        ts.isIdentifier(declaration.initializer.expression) &&
+        declaration.initializer.expression.text === "useState"
+      ) {
+        const firstElement = declaration.name.elements[0];
+        const firstBinding =
+          firstElement && ts.isBindingElement(firstElement) ? firstElement.name : null;
+        const initialValue = declaration.initializer.arguments[0];
+
+        if (firstBinding && initialValue && ts.isExpression(initialValue)) {
+          bindValueToPattern(
+            firstBinding,
+            evaluateExpression(initialValue, sourceFile, constants, assets, scope, project),
+            scope
+          );
+        }
+
+        continue;
+      }
+
+      bindValueToPattern(
+        declaration.name,
+        evaluateExpression(declaration.initializer, sourceFile, constants, assets, scope, project),
+        scope
+      );
+    }
+  }
+}
+
+function findRenderableComponentDeclaration(
+  sourceFile: ts.SourceFile,
+  componentName: string
+): RenderableComponentDeclaration | null {
+  let found: RenderableComponentDeclaration | null = null;
+
+  function visit(node: ts.Node) {
+    if (found) {
+      return;
+    }
+
+    if (ts.isFunctionDeclaration(node) && node.name?.text === componentName && node.body) {
+      found = {
+        parameters: node.parameters,
+        body: node.body
+      };
+      return;
+    }
+
+    if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || declaration.name.text !== componentName) {
+          continue;
+        }
+
+        if (
+          declaration.initializer &&
+          (ts.isArrowFunction(declaration.initializer) ||
+            ts.isFunctionExpression(declaration.initializer))
+        ) {
+          found = {
+            parameters: declaration.initializer.parameters,
+            body: declaration.initializer.body
+          };
+          return;
+        }
+      }
+    }
+
+    node.forEachChild(visit);
+  }
+
+  sourceFile.forEachChild(visit);
+  return found;
+}
+
+function findDefaultExportComponentDeclaration(
+  sourceFile: ts.SourceFile
+): RenderableComponentDeclaration | null {
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isFunctionDeclaration(statement) &&
+      statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) &&
+      statement.body
+    ) {
+      return {
+        parameters: statement.parameters,
+        body: statement.body
+      };
+    }
+
+    if (ts.isExportAssignment(statement)) {
+      if (ts.isIdentifier(statement.expression)) {
+        return findRenderableComponentDeclaration(sourceFile, statement.expression.text);
+      }
+
+      if (
+        ts.isArrowFunction(statement.expression) ||
+        ts.isFunctionExpression(statement.expression)
+      ) {
+        return {
+          parameters: statement.expression.parameters,
+          body: statement.expression.body
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function renderComponentDeclaration(params: {
+  declaration: RenderableComponentDeclaration;
+  module: ProjectModule;
+  project: ProjectRenderContext;
+  props?: Record<string, unknown>;
+}) {
+  const scope: RenderScope = new Map();
+  const firstParameter = params.declaration.parameters[0];
+
+  if (firstParameter) {
+    bindValueToPattern(firstParameter.name, params.props ?? {}, scope);
+  }
+
+  if (ts.isBlock(params.declaration.body)) {
+    populateScopeFromStatements(
+      params.declaration.body.statements,
+      params.module.sourceFile,
+      params.module.constants,
+      params.module.assets,
+      scope,
+      params.project
+    );
+    const returnStatement = params.declaration.body.statements.find(ts.isReturnStatement);
+
+    return returnStatement?.expression
+      ? renderExpression(
+          returnStatement.expression,
+          params.module.sourceFile,
+          params.module.constants,
+          params.module.assets,
+          scope,
+          params.project
+        )
+      : "";
+  }
+
+  return renderExpression(
+    params.declaration.body,
+    params.module.sourceFile,
+    params.module.constants,
+    params.module.assets,
+    scope,
+    params.project
+  );
+}
+
+function renderComponentReference(params: {
+  module: ProjectModule;
+  componentName: string;
+  project: ProjectRenderContext;
+  props?: Record<string, unknown>;
+}) {
+  const localDeclaration = findRenderableComponentDeclaration(
+    params.module.sourceFile,
+    params.componentName
+  );
+
+  if (localDeclaration) {
+    return renderComponentDeclaration({
+      declaration: localDeclaration,
+      module: params.module,
+      project: params.project,
+      props: params.props
+    });
+  }
+
+  const importedComponent = params.module.localComponentImports.get(params.componentName);
+
+  if (!importedComponent) {
+    return "";
+  }
+
+  const targetModule = params.project.modules.get(importedComponent.filePath);
+
+  if (!targetModule) {
+    return "";
+  }
+
+  const targetDeclaration =
+    importedComponent.exportName === "default"
+      ? findDefaultExportComponentDeclaration(targetModule.sourceFile) ??
+        findRenderableComponentDeclaration(targetModule.sourceFile, params.componentName)
+      : findRenderableComponentDeclaration(targetModule.sourceFile, importedComponent.exportName);
+
+  if (!targetDeclaration) {
+    return "";
+  }
+
+  return renderComponentDeclaration({
+    declaration: targetDeclaration,
+    module: targetModule,
+    project: params.project,
+    props: params.props
+  });
+}
+
 function evaluateExpression(
   expression: ts.Expression,
   sourceFile: ts.SourceFile,
   constants: Map<string, unknown>,
   assets: LovableAssetMap,
-  scope: RenderScope
+  scope: RenderScope,
+  project?: ProjectRenderContext
 ): unknown {
   const literal = getStringLiteralValue(expression);
 
@@ -461,14 +1015,15 @@ function evaluateExpression(
           sourceFile,
           constants,
           assets,
-          scope
+          scope,
+          project
         );
 
         return Array.isArray(spreadValue) ? spreadValue : [];
       }
 
       return ts.isExpression(element)
-        ? [evaluateExpression(element, sourceFile, constants, assets, scope)]
+        ? [evaluateExpression(element, sourceFile, constants, assets, scope, project)]
         : [];
     });
   }
@@ -493,7 +1048,14 @@ function evaluateExpression(
         continue;
       }
 
-      objectValue[key] = evaluateExpression(property.initializer, sourceFile, constants, assets, scope);
+      objectValue[key] = evaluateExpression(
+        property.initializer,
+        sourceFile,
+        constants,
+        assets,
+        scope,
+        project
+      );
     }
 
     return objectValue;
@@ -508,7 +1070,14 @@ function evaluateExpression(
   }
 
   if (ts.isPrefixUnaryExpression(expression)) {
-    const value = evaluateExpression(expression.operand, sourceFile, constants, assets, scope);
+    const value = evaluateExpression(
+      expression.operand,
+      sourceFile,
+      constants,
+      assets,
+      scope,
+      project
+    );
 
     if (expression.operator === ts.SyntaxKind.ExclamationToken) {
       return !value;
@@ -534,13 +1103,67 @@ function evaluateExpression(
 
   if (ts.isPropertyAccessExpression(expression)) {
     return getObjectProperty(
-      evaluateExpression(expression.expression, sourceFile, constants, assets, scope),
+      evaluateExpression(
+        expression.expression,
+        sourceFile,
+        constants,
+        assets,
+        scope,
+        project
+      ),
       expression.name.text
     );
   }
 
+  if (ts.isElementAccessExpression(expression)) {
+    const objectValue = evaluateExpression(
+      expression.expression,
+      sourceFile,
+      constants,
+      assets,
+      scope,
+      project
+    );
+    const propertyValue = expression.argumentExpression
+      ? evaluateExpression(
+          expression.argumentExpression,
+          sourceFile,
+          constants,
+          assets,
+          scope,
+          project
+        )
+      : undefined;
+
+    if (Array.isArray(objectValue)) {
+      return typeof propertyValue === "number" ? objectValue[propertyValue] : undefined;
+    }
+
+    if (
+      objectValue &&
+      typeof objectValue === "object" &&
+      (typeof propertyValue === "string" || typeof propertyValue === "number")
+    ) {
+      return (objectValue as Record<string, unknown>)[String(propertyValue)];
+    }
+
+    return null;
+  }
+
+  if (ts.isAsExpression(expression)) {
+    return evaluateExpression(expression.expression, sourceFile, constants, assets, scope, project);
+  }
+
+  if (ts.isSatisfiesExpression(expression)) {
+    return evaluateExpression(expression.expression, sourceFile, constants, assets, scope, project);
+  }
+
+  if (ts.isNonNullExpression(expression)) {
+    return evaluateExpression(expression.expression, sourceFile, constants, assets, scope, project);
+  }
+
   if (ts.isParenthesizedExpression(expression)) {
-    return evaluateExpression(expression.expression, sourceFile, constants, assets, scope);
+    return evaluateExpression(expression.expression, sourceFile, constants, assets, scope, project);
   }
 
   if (ts.isTemplateExpression(expression)) {
@@ -553,7 +1176,8 @@ function evaluateExpression(
             sourceFile,
             constants,
             assets,
-            scope
+            scope,
+            project
           );
 
           return `${renderUnknownValue(value)}${span.literal.text}`;
@@ -569,14 +1193,45 @@ function evaluateExpression(
         sourceFile,
         constants,
         assets,
-        scope
+        scope,
+        project
       );
 
       return left
-        ? renderExpression(expression.right, sourceFile, constants, assets, scope)
+        ? renderExpression(expression.right, sourceFile, constants, assets, scope, project)
         : ts.isIdentifier(expression.left) && expressionContainsJsx(expression.right)
-          ? renderExpression(expression.right, sourceFile, constants, assets, scope)
-        : "";
+          ? renderExpression(expression.right, sourceFile, constants, assets, scope, project)
+          : "";
+    }
+
+    if (expression.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+      const left = evaluateExpression(
+        expression.left,
+        sourceFile,
+        constants,
+        assets,
+        scope,
+        project
+      );
+
+      return left
+        ? left
+        : evaluateExpression(expression.right, sourceFile, constants, assets, scope, project);
+    }
+
+    if (expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+      const left = evaluateExpression(
+        expression.left,
+        sourceFile,
+        constants,
+        assets,
+        scope,
+        project
+      );
+
+      return left !== null && left !== undefined && left !== ""
+        ? left
+        : evaluateExpression(expression.right, sourceFile, constants, assets, scope, project);
     }
 
     if (expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
@@ -585,21 +1240,37 @@ function evaluateExpression(
         sourceFile,
         constants,
         assets,
-        scope
+        scope,
+        project
       );
       const right = evaluateExpression(
         expression.right,
         sourceFile,
         constants,
         assets,
-        scope
+        scope,
+        project
       );
 
       return `${left ?? ""}${right ?? ""}`;
     }
 
-    const left = evaluateExpression(expression.left, sourceFile, constants, assets, scope);
-    const right = evaluateExpression(expression.right, sourceFile, constants, assets, scope);
+    const left = evaluateExpression(
+      expression.left,
+      sourceFile,
+      constants,
+      assets,
+      scope,
+      project
+    );
+    const right = evaluateExpression(
+      expression.right,
+      sourceFile,
+      constants,
+      assets,
+      scope,
+      project
+    );
 
     switch (expression.operatorToken.kind) {
       case ts.SyntaxKind.EqualsEqualsEqualsToken:
@@ -629,7 +1300,8 @@ function evaluateExpression(
       sourceFile,
       constants,
       assets,
-      scope
+      scope,
+      project
     );
 
     return renderExpression(
@@ -637,12 +1309,13 @@ function evaluateExpression(
       sourceFile,
       constants,
       assets,
-      scope
+      scope,
+      project
     );
   }
 
   if (ts.isCallExpression(expression)) {
-    return renderCallExpression(expression, sourceFile, constants, assets, scope);
+    return renderCallExpression(expression, sourceFile, constants, assets, scope, project);
   }
 
   if (ts.isNewExpression(expression)) {
@@ -654,7 +1327,7 @@ function evaluateExpression(
   }
 
   if (ts.isJsxElement(expression) || ts.isJsxSelfClosingElement(expression)) {
-    return renderJsxNode(expression, sourceFile, constants, assets, scope);
+    return renderJsxNode(expression, sourceFile, constants, assets, scope, project);
   }
 
   return "";
@@ -665,9 +1338,10 @@ function renderExpression(
   sourceFile: ts.SourceFile,
   constants: Map<string, unknown>,
   assets: LovableAssetMap,
-  scope: RenderScope
+  scope: RenderScope,
+  project?: ProjectRenderContext
 ): string {
-  const value = evaluateExpression(expression, sourceFile, constants, assets, scope);
+  const value = evaluateExpression(expression, sourceFile, constants, assets, scope, project);
 
   return typeof value === "string" ? value : renderUnknownValue(value);
 }
@@ -677,12 +1351,13 @@ function renderCallExpression(
   sourceFile: ts.SourceFile,
   constants: Map<string, unknown>,
   assets: LovableAssetMap,
-  scope: RenderScope
+  scope: RenderScope,
+  project?: ProjectRenderContext
 ): unknown {
   if (ts.isIdentifier(expression.expression) && expression.expression.text === "Array") {
     const lengthArg = expression.arguments[0];
     const length = lengthArg && ts.isExpression(lengthArg)
-      ? Number(evaluateExpression(lengthArg, sourceFile, constants, assets, scope))
+      ? Number(evaluateExpression(lengthArg, sourceFile, constants, assets, scope, project))
       : 0;
 
     return Number.isFinite(length) && length > 0 ? Array.from({ length }) : [];
@@ -697,11 +1372,12 @@ function renderCallExpression(
       sourceFile,
       constants,
       assets,
-      scope
+      scope,
+      project
     );
     const digitsArg = expression.arguments[0];
     const digits = digitsArg && ts.isExpression(digitsArg)
-      ? Number(evaluateExpression(digitsArg, sourceFile, constants, assets, scope))
+      ? Number(evaluateExpression(digitsArg, sourceFile, constants, assets, scope, project))
       : 0;
 
     return Number(receiver).toFixed(Number.isFinite(digits) ? digits : 0);
@@ -716,7 +1392,8 @@ function renderCallExpression(
       sourceFile,
       constants,
       assets,
-      scope
+      scope,
+      project
     );
 
     return receiver instanceof Date ? receiver.getFullYear() : new Date().getFullYear();
@@ -734,7 +1411,8 @@ function renderCallExpression(
     sourceFile,
     constants,
     assets,
-    scope
+    scope,
+    project
   );
   const callback = expression.arguments[0];
 
@@ -748,40 +1426,38 @@ function renderCallExpression(
       const itemParam = callback.parameters[0]?.name;
       const indexParam = callback.parameters[1]?.name;
 
-      if (itemParam && ts.isIdentifier(itemParam)) {
-        itemScope.set(itemParam.text, item);
+      if (itemParam) {
+        bindValueToPattern(itemParam, item, itemScope);
       }
 
-      if (indexParam && ts.isIdentifier(indexParam)) {
-        itemScope.set(indexParam.text, index);
+      if (indexParam) {
+        bindValueToPattern(indexParam, index, itemScope);
       }
 
       if (ts.isBlock(callback.body)) {
-        for (const statement of callback.body.statements) {
-          if (!ts.isVariableStatement(statement)) {
-            continue;
-          }
-
-          for (const declaration of statement.declarationList.declarations) {
-            if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
-              continue;
-            }
-
-            itemScope.set(
-              declaration.name.text,
-              evaluateExpression(declaration.initializer, sourceFile, constants, assets, itemScope)
-            );
-          }
-        }
-
+        populateScopeFromStatements(
+          callback.body.statements,
+          sourceFile,
+          constants,
+          assets,
+          itemScope,
+          project
+        );
         const returnStatement = callback.body.statements.find(ts.isReturnStatement);
 
         return returnStatement?.expression
-          ? renderExpression(returnStatement.expression, sourceFile, constants, assets, itemScope)
+          ? renderExpression(
+              returnStatement.expression,
+              sourceFile,
+              constants,
+              assets,
+              itemScope,
+              project
+            )
           : "";
       }
 
-      return renderExpression(callback.body, sourceFile, constants, assets, itemScope);
+      return renderExpression(callback.body, sourceFile, constants, assets, itemScope, project);
     })
     .join("");
 }
@@ -791,7 +1467,8 @@ function renderJsxAttributes(
   sourceFile: ts.SourceFile,
   constants: Map<string, unknown>,
   assets: LovableAssetMap,
-  scope: RenderScope
+  scope: RenderScope,
+  project?: ProjectRenderContext
 ): string {
   const rendered: string[] = [];
 
@@ -816,7 +1493,8 @@ function renderJsxAttributes(
               sourceFile,
               constants,
               assets,
-              scope
+              scope,
+              project
             )
           : ""
       : "";
@@ -837,6 +1515,178 @@ function renderJsxAttributes(
   }
 
   return rendered.join("");
+}
+
+function renderJsxChildren(
+  children: ts.NodeArray<ts.JsxChild>,
+  sourceFile: ts.SourceFile,
+  constants: Map<string, unknown>,
+  assets: LovableAssetMap,
+  scope: RenderScope,
+  project?: ProjectRenderContext
+): string {
+  const childList = [...children];
+
+  return childList
+    .map((child, index) => {
+      if (ts.isJsxText(child)) {
+        return renderJsxTextNode(child, sourceFile, childList[index - 1], childList[index + 1]);
+      }
+
+      if (ts.isJsxExpression(child) && child.expression) {
+        return renderExpression(child.expression, sourceFile, constants, assets, scope, project);
+      }
+
+      return renderJsxNode(child, sourceFile, constants, assets, scope, project);
+    })
+    .join("");
+}
+
+function renderCustomComponent(
+  tagName: string,
+  attributes: ts.JsxAttributes,
+  sourceFile: ts.SourceFile,
+  constants: Map<string, unknown>,
+  assets: LovableAssetMap,
+  scope: RenderScope,
+  project?: ProjectRenderContext,
+  children?: string
+): string {
+  if (NON_RENDERABLE_COMPONENTS.has(tagName)) {
+    return "";
+  }
+
+  const props: Record<string, unknown> = {};
+
+  for (const property of attributes.properties) {
+    if (!ts.isJsxAttribute(property) || !ts.isIdentifier(property.name)) {
+      continue;
+    }
+
+    const initializer = property.initializer;
+
+    props[property.name.text] = initializer
+      ? ts.isStringLiteral(initializer)
+        ? initializer.text
+        : ts.isJsxExpression(initializer) && initializer.expression
+          ? evaluateExpression(
+              initializer.expression,
+              sourceFile,
+              constants,
+              assets,
+              scope,
+              project
+            )
+          : ""
+      : true;
+  }
+
+  if (children) {
+    props.children = children;
+  }
+
+  if (project) {
+    const currentModule = project.modules.get(normalizeProjectPath(sourceFile.fileName));
+
+    if (currentModule) {
+      const renderedComponent = renderComponentReference({
+        module: currentModule,
+        componentName: tagName,
+        project,
+        props
+      });
+
+      if (renderedComponent.trim()) {
+        return renderedComponent;
+      }
+    }
+  }
+
+  const content = [props.title, props.body, props.children]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join(" ");
+
+  return content
+    ? `<div data-lovable-component="${escapeHtml(tagName)}">${escapeHtml(content)}</div>`
+    : "";
+}
+
+function renderJsxNode(
+  node: ts.Node,
+  sourceFile: ts.SourceFile,
+  constants: Map<string, unknown>,
+  assets: LovableAssetMap,
+  scope: RenderScope,
+  project?: ProjectRenderContext
+): string {
+  if (ts.isJsxFragment(node)) {
+    return renderJsxChildren(node.children, sourceFile, constants, assets, scope, project);
+  }
+
+  if (ts.isJsxSelfClosingElement(node)) {
+    const tagName = node.tagName.getText(sourceFile);
+
+    if (!isLowerCaseTag(tagName)) {
+      return renderCustomComponent(
+        tagName,
+        node.attributes,
+        sourceFile,
+        constants,
+        assets,
+        scope,
+        project
+      );
+    }
+
+    const attrs = renderJsxAttributes(
+      node.attributes,
+      sourceFile,
+      constants,
+      assets,
+      scope,
+      project
+    );
+
+    return tagName === "img" ? `<img${attrs} />` : `<${tagName}${attrs}></${tagName}>`;
+  }
+
+  if (ts.isJsxElement(node)) {
+    const tagName = node.openingElement.tagName.getText(sourceFile);
+
+    if (!isLowerCaseTag(tagName)) {
+      return renderCustomComponent(
+        tagName,
+        node.openingElement.attributes,
+        sourceFile,
+        constants,
+        assets,
+        scope,
+        project,
+        renderJsxChildren(node.children, sourceFile, constants, assets, scope, project)
+      );
+    }
+
+    const attrs = renderJsxAttributes(
+      node.openingElement.attributes,
+      sourceFile,
+      constants,
+      assets,
+      scope,
+      project
+    );
+    const children = renderJsxChildren(
+      node.children,
+      sourceFile,
+      constants,
+      assets,
+      scope,
+      project
+    );
+
+    return `<${tagName}${attrs}>${children}</${tagName}>`;
+  }
+
+  return "";
 }
 
 function renderJsxTextNode(
@@ -862,149 +1712,84 @@ function renderJsxTextNode(
   return escapeHtml(`${leadingSpace}${normalized}${trailingSpace}`);
 }
 
-function renderJsxChildren(
-  children: ts.NodeArray<ts.JsxChild>,
-  sourceFile: ts.SourceFile,
-  constants: Map<string, unknown>,
-  assets: LovableAssetMap,
-  scope: RenderScope
-): string {
-  const childList = [...children];
+function getCustomJsxTagName(
+  node: ts.JsxElement | ts.JsxSelfClosingElement,
+  sourceFile: ts.SourceFile
+) {
+  const tagName = ts.isJsxElement(node)
+    ? node.openingElement.tagName.getText(sourceFile)
+    : node.tagName.getText(sourceFile);
 
-  return childList
-    .map((child, index) => {
-      if (ts.isJsxText(child)) {
-        return renderJsxTextNode(child, sourceFile, childList[index - 1], childList[index + 1]);
+  return isLowerCaseTag(tagName) ? null : tagName;
+}
+
+function findRouteComponentReference(sourceFile: ts.SourceFile) {
+  let componentName: string | null = null;
+
+  function visit(node: ts.Node) {
+    if (componentName) {
+      return;
+    }
+
+    if (ts.isPropertyAssignment(node)) {
+      const propertyName =
+        ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)
+          ? node.name.text
+          : null;
+
+      if (
+        propertyName &&
+        /^(?:component|Component)$/i.test(propertyName) &&
+        ts.isIdentifier(node.initializer)
+      ) {
+        componentName = node.initializer.text;
+        return;
       }
 
-      if (ts.isJsxExpression(child) && child.expression) {
-        return renderExpression(child.expression, sourceFile, constants, assets, scope);
+      if (
+        propertyName === "element" &&
+        (ts.isJsxElement(node.initializer) || ts.isJsxSelfClosingElement(node.initializer))
+      ) {
+        const tagName = getCustomJsxTagName(node.initializer, sourceFile);
+
+        if (tagName) {
+          componentName = tagName;
+          return;
+        }
       }
-
-      return renderJsxNode(child, sourceFile, constants, assets, scope);
-    })
-    .join("");
-}
-
-function renderCustomComponent(
-  tagName: string,
-  attributes: ts.JsxAttributes,
-  sourceFile: ts.SourceFile,
-  constants: Map<string, unknown>,
-  assets: LovableAssetMap,
-  scope: RenderScope
-): string {
-  if (["Check", "Sparkles", "Heart", "Shield", "Truck", "Star", "Plus", "Minus"].includes(tagName)) {
-    return "";
-  }
-
-  const props: Record<string, string> = {};
-
-  for (const property of attributes.properties) {
-    if (!ts.isJsxAttribute(property) || !ts.isIdentifier(property.name)) {
-      continue;
     }
 
-    const initializer = property.initializer;
-
-    props[property.name.text] = initializer
-      ? ts.isStringLiteral(initializer)
-        ? initializer.text
-        : ts.isJsxExpression(initializer) && initializer.expression
-          ? renderExpression(
-              initializer.expression,
-              sourceFile,
-              constants,
-              assets,
-              scope
-            )
-          : ""
-      : "";
+    node.forEachChild(visit);
   }
 
-  const content = [props.title, props.body].filter(Boolean).join(" ");
-
-  return content
-    ? `<div data-lovable-component="${escapeHtml(tagName)}">${escapeHtml(content)}</div>`
-    : "";
+  sourceFile.forEachChild(visit);
+  return componentName;
 }
 
-function renderJsxNode(
-  node: ts.Node,
-  sourceFile: ts.SourceFile,
-  constants: Map<string, unknown>,
-  assets: LovableAssetMap,
-  scope: RenderScope
-): string {
-  if (ts.isJsxFragment(node)) {
-    return renderJsxChildren(node.children, sourceFile, constants, assets, scope);
-  }
-
-  if (ts.isJsxSelfClosingElement(node)) {
-    const tagName = node.tagName.getText(sourceFile);
-
-    if (!isLowerCaseTag(tagName)) {
-      return renderCustomComponent(
-        tagName,
-        node.attributes,
-        sourceFile,
-        constants,
-        assets,
-        scope
-      );
-    }
-
-    const attrs = renderJsxAttributes(node.attributes, sourceFile, constants, assets, scope);
-
-    return tagName === "img" ? `<img${attrs} />` : `<${tagName}${attrs}></${tagName}>`;
-  }
-
-  if (ts.isJsxElement(node)) {
-    const tagName = node.openingElement.tagName.getText(sourceFile);
-
-    if (!isLowerCaseTag(tagName)) {
-      return renderCustomComponent(
-        tagName,
-        node.openingElement.attributes,
-        sourceFile,
-        constants,
-        assets,
-        scope
-      );
-    }
-
-    const attrs = renderJsxAttributes(
-      node.openingElement.attributes,
-      sourceFile,
-      constants,
-      assets,
-      scope
-    );
-    const children = renderJsxChildren(
-      node.children,
-      sourceFile,
-      constants,
-      assets,
-      scope
-    );
-
-    return `<${tagName}${attrs}>${children}</${tagName}>`;
-  }
-
-  return "";
-}
-
-function findReturnedJsx(sourceFile: ts.SourceFile, functionName: string): ts.Expression | null {
+function findRenderedRootExpression(sourceFile: ts.SourceFile): ts.Expression | null {
   let found: ts.Expression | null = null;
 
   function visit(node: ts.Node) {
+    if (found || !ts.isCallExpression(node)) {
+      node.forEachChild(visit);
+      return;
+    }
+
+    const calleeText = node.expression.getText(sourceFile);
+    const jsxArgument = node.arguments.find(
+      (argument): argument is ts.Expression =>
+        ts.isExpression(argument) &&
+        (ts.isJsxElement(argument) ||
+          ts.isJsxSelfClosingElement(argument) ||
+          ts.isJsxFragment(argument))
+    );
+
     if (
-      ts.isFunctionDeclaration(node) &&
-      node.name?.text === functionName &&
-      node.body
+      jsxArgument &&
+      (/\.render$/i.test(calleeText) ||
+        /(?:^|\.)(?:hydrateRoot|render)$/i.test(calleeText))
     ) {
-      const returnStatement = node.body.statements.find(ts.isReturnStatement);
-      found = returnStatement?.expression ?? null;
+      found = jsxArgument;
       return;
     }
 
@@ -1012,97 +1797,221 @@ function findReturnedJsx(sourceFile: ts.SourceFile, functionName: string): ts.Ex
   }
 
   sourceFile.forEachChild(visit);
-
   return found;
 }
 
-function getInitialFunctionScope(
-  sourceFile: ts.SourceFile,
-  functionName: string,
-  constants: Map<string, unknown>,
-  assets: LovableAssetMap
-): RenderScope {
-  const scope: RenderScope = new Map();
-
-  function visit(node: ts.Node) {
+function findDefaultExportReference(sourceFile: ts.SourceFile) {
+  for (const statement of sourceFile.statements) {
     if (
-      !ts.isFunctionDeclaration(node) ||
-      node.name?.text !== functionName ||
-      !node.body
+      ts.isFunctionDeclaration(statement) &&
+      statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) &&
+      statement.name
     ) {
-      node.forEachChild(visit);
-      return;
+      return statement.name.text;
     }
 
-    for (const statement of node.body.statements) {
-      if (ts.isReturnStatement(statement)) {
-        return;
-      }
-
-      if (!ts.isVariableStatement(statement)) {
-        continue;
-      }
-
-      for (const declaration of statement.declarationList.declarations) {
-        if (!declaration.initializer) {
-          continue;
-        }
-
-        if (ts.isIdentifier(declaration.name)) {
-          scope.set(
-            declaration.name.text,
-            evaluateExpression(declaration.initializer, sourceFile, constants, assets, scope)
-          );
-          continue;
-        }
-
-        if (
-          ts.isArrayBindingPattern(declaration.name) &&
-          ts.isCallExpression(declaration.initializer) &&
-          ts.isIdentifier(declaration.initializer.expression) &&
-          declaration.initializer.expression.text === "useState"
-        ) {
-          const firstElement = declaration.name.elements[0];
-          const firstBinding = firstElement && ts.isBindingElement(firstElement)
-            ? firstElement.name
-            : null;
-          const initialValue = declaration.initializer.arguments[0];
-
-          if (firstBinding && ts.isIdentifier(firstBinding) && initialValue && ts.isExpression(initialValue)) {
-            scope.set(
-              firstBinding.text,
-              evaluateExpression(initialValue, sourceFile, constants, assets, scope)
-            );
-          }
-        }
-      }
+    if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) {
+      return statement.expression.text;
     }
   }
 
-  sourceFile.forEachChild(visit);
-  return scope;
+  return null;
 }
 
-function renderStaticLovableHtml(
-  sourceFile: ts.SourceFile,
-  constants: Map<string, unknown>,
-  assets: LovableAssetMap
-): string | null {
-  const rootExpression = findReturnedJsx(sourceFile, "Index");
+function findPreferredLocalComponentName(sourceFile: ts.SourceFile) {
+  const candidates = ["App", "Index", "Page", "Home", "Root"];
+  return candidates.find((candidate) => Boolean(findRenderableComponentDeclaration(sourceFile, candidate))) ?? null;
+}
 
-  if (!rootExpression) {
+function renderRootTarget(
+  target: RootRenderTarget,
+  module: ProjectModule,
+  project: ProjectRenderContext
+) {
+  return target.kind === "expression"
+    ? renderExpression(
+        target.expression,
+        module.sourceFile,
+        module.constants,
+        module.assets,
+        new Map(),
+        project
+      )
+    : renderComponentReference({
+        module,
+        componentName: target.componentName,
+        project,
+        props: {}
+      });
+}
+
+function rankProjectRenderCandidate(
+  project: ProjectRenderContext,
+  module: ProjectModule,
+  target: RootRenderTarget
+) {
+  const normalizedPath = normalizeProjectPath(module.filePath);
+  const basename = path.posix.basename(normalizedPath);
+  let priority = rankEntryFile(normalizedPath) * 10;
+
+  if (normalizedPath === normalizeProjectPath(project.entryFile)) {
+    priority += 100;
+  }
+
+  if (/(^|\/)src\/(?:routes|pages)\//i.test(normalizedPath)) {
+    priority -= 25;
+  }
+
+  if (/(^|\/)(?:index|home|landing|page|screen|view)\.(?:tsx|jsx|ts|js)$/i.test(normalizedPath)) {
+    priority -= 12;
+  }
+
+  if (/(^|\/)(?:components|ui|hooks|lib|utils|providers?)\//i.test(normalizedPath)) {
+    priority += 30;
+  }
+
+  if (/^(?:__root|root|layout|router|provider|providers|main|bootstrap|entry(?:-client|-server)?)\./i.test(basename)) {
+    priority += 18;
+  }
+
+  if (
+    target.kind === "component-reference" &&
+    /(?:Layout|Provider|Router|Outlet)$/i.test(target.componentName)
+  ) {
+    priority += 20;
+  }
+
+  if (
+    target.kind === "expression" &&
+    /(?:RouterProvider|BrowserRouter|HashRouter|MemoryRouter|Outlet)/.test(
+      target.expression.getText(module.sourceFile)
+    )
+  ) {
+    priority += 25;
+  }
+
+  return priority;
+}
+
+function collectProjectRenderCandidates(project: ProjectRenderContext) {
+  const candidates: ProjectRenderCandidate[] = [];
+
+  for (const module of project.modules.values()) {
+    const target = findRootRenderTarget(module.sourceFile);
+
+    if (!target) {
+      continue;
+    }
+
+    candidates.push({
+      module,
+      target,
+      priority: rankProjectRenderCandidate(project, module, target)
+    });
+  }
+
+  return candidates.sort((left, right) => {
+    if (left.priority !== right.priority) {
+      return left.priority - right.priority;
+    }
+
+    return left.module.filePath.localeCompare(right.module.filePath);
+  });
+}
+
+function scoreRenderedHtml(value: string) {
+  const text = normalizeText(value.replace(/<[^>]+>/g, " "));
+  const semanticNodeCount =
+    value.match(/<(?:main|section|article|header|footer|aside|nav|h1|h2|h3|p|img|button|a)\b/gi)
+      ?.length ?? 0;
+
+  return text.length + semanticNodeCount * 24;
+}
+
+function findRootRenderTarget(sourceFile: ts.SourceFile): RootRenderTarget | null {
+  const renderedRootExpression = findRenderedRootExpression(sourceFile);
+
+  if (renderedRootExpression) {
+    return {
+      kind: "expression",
+      expression: renderedRootExpression
+    };
+  }
+
+  const routeComponent = findRouteComponentReference(sourceFile);
+
+  if (routeComponent) {
+    return {
+      kind: "component-reference",
+      componentName: routeComponent
+    };
+  }
+
+  const defaultExportComponent = findDefaultExportReference(sourceFile);
+
+  if (defaultExportComponent) {
+    return {
+      kind: "component-reference",
+      componentName: defaultExportComponent
+    };
+  }
+
+  const preferredLocalComponent = findPreferredLocalComponentName(sourceFile);
+
+  if (preferredLocalComponent) {
+    return {
+      kind: "component-reference",
+      componentName: preferredLocalComponent
+    };
+  }
+
+  return null;
+}
+
+function renderStaticLovableHtml(project: ProjectRenderContext): string | null {
+  const entryModule = project.modules.get(project.entryFile);
+
+  if (!entryModule) {
     return null;
   }
 
-  const body = renderExpression(
-    rootExpression,
-    sourceFile,
-    constants,
-    assets,
-    getInitialFunctionScope(sourceFile, "Index", constants, assets)
-  );
+  const target = findRootRenderTarget(entryModule.sourceFile);
 
-  return body.trim() ? body : null;
+  if (!target) {
+    return null;
+  }
+
+  const body = renderRootTarget(target, entryModule, project).trim();
+
+  if (body) {
+    return body;
+  }
+
+  const seenOutputs = new Set<string>(body ? [body] : []);
+  let bestFallbackOutput = "";
+  let bestFallbackScore = -1;
+
+  for (const candidate of collectProjectRenderCandidates(project)) {
+    if (candidate.module.filePath === entryModule.filePath) {
+      continue;
+    }
+
+    const renderedCandidate = renderRootTarget(candidate.target, candidate.module, project).trim();
+
+    if (!renderedCandidate || seenOutputs.has(renderedCandidate)) {
+      continue;
+    }
+
+    seenOutputs.add(renderedCandidate);
+    const candidateScore = scoreRenderedHtml(renderedCandidate) - candidate.priority;
+
+    if (candidateScore > bestFallbackScore) {
+      bestFallbackOutput = renderedCandidate;
+      bestFallbackScore = candidateScore;
+    }
+  }
+
+  return bestFallbackOutput || null;
 }
 
 function getTitle(sourceFile: ts.SourceFile, constants: Map<string, unknown>): string {
@@ -1136,36 +2045,138 @@ function getTitle(sourceFile: ts.SourceFile, constants: Map<string, unknown>): s
   return typeof routeTitle === "string" ? routeTitle : title;
 }
 
-export async function extractLovableProjectHtml(
-  zip: JSZip
-): Promise<string | null> {
-  const routeEntry =
-    zip.file(/src\/routes\/index\.(tsx|jsx)$/)[0] ??
-    zip.file(/src\/pages\/index\.(tsx|jsx)$/)[0] ??
-    zip.file(/src\/App\.(tsx|jsx)$/)[0];
+function rankEntryFile(filePath: string) {
+  const normalized = normalizeProjectPath(filePath);
 
-  if (!routeEntry) {
+  if (/src\/main\.(?:tsx|jsx|ts|js)$/i.test(normalized)) {
+    return 0;
+  }
+
+  if (/src\/index\.(?:tsx|jsx|ts|js)$/i.test(normalized)) {
+    return 1;
+  }
+
+  if (/src\/App\.(?:tsx|jsx|ts|js)$/i.test(normalized)) {
+    return 2;
+  }
+
+  if (/src\/(?:Root|root|entry(?:-client|-server)?)\.(?:tsx|jsx|ts|js)$/i.test(normalized)) {
+    return 3;
+  }
+
+  if (/src\/(?:routes|pages)\/index\.(?:tsx|jsx|ts|js)$/i.test(normalized)) {
+    return 4;
+  }
+
+  if (/src\/(?:routes|pages)\//i.test(normalized)) {
+    return 5;
+  }
+
+  if (/\.(?:tsx|jsx)$/i.test(normalized)) {
+    return 6;
+  }
+
+  return 7;
+}
+
+async function findHtmlLinkedEntry(zip: JSZip) {
+  const htmlEntries = Object.keys(zip.files)
+    .map((name) => normalizeProjectPath(name))
+    .filter((name) => /(?:^|\/)index\.html$/i.test(name) || name.toLowerCase().endsWith(".html"))
+    .sort((left, right) => {
+      const leftPriority = /(?:^|\/)index\.html$/i.test(left) ? 0 : 1;
+      const rightPriority = /(?:^|\/)index\.html$/i.test(right) ? 0 : 1;
+
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+
+      return left.length - right.length || left.localeCompare(right);
+    });
+
+  for (const htmlEntry of htmlEntries) {
+    const html = await readZipSourceFile(zip, htmlEntry);
+
+    if (!html) {
+      continue;
+    }
+
+    for (const match of html.matchAll(
+      /<script[^>]+type=["']module["'][^>]+src=["']([^"']+)["']/gi
+    )) {
+      const candidate = resolveZipModulePath(zip, htmlEntry, match[1]);
+
+      if (candidate && isRenderableSourceFile(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function pickLovableEntryFile(zip: JSZip, preferredEntryFile?: string | null) {
+  const normalizedPreferredEntry = preferredEntryFile ? normalizeProjectPath(preferredEntryFile) : null;
+
+  if (normalizedPreferredEntry && zip.file(normalizedPreferredEntry)) {
+    return normalizedPreferredEntry;
+  }
+
+  const htmlLinkedEntry = await findHtmlLinkedEntry(zip);
+
+  if (htmlLinkedEntry) {
+    return htmlLinkedEntry;
+  }
+
+  const candidates = Object.keys(zip.files)
+    .map((name) => normalizeProjectPath(name))
+    .filter((name) => isRenderableSourceFile(name) && /(^|\/)src\//i.test(name))
+    .sort((left, right) => {
+      const leftRank = rankEntryFile(left);
+      const rightRank = rankEntryFile(right);
+
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+
+      return left.length - right.length || left.localeCompare(right);
+    });
+
+  return candidates[0] ?? null;
+}
+
+export async function extractLovableProjectHtml(
+  zip: JSZip,
+  options: {
+    entryFile?: string | null;
+  } = {}
+): Promise<string | null> {
+  const entryFile = await pickLovableEntryFile(zip, options.entryFile);
+
+  if (!entryFile) {
     return null;
   }
 
-  const source = await routeEntry.async("text");
-  const sourceFile = ts.createSourceFile(
-    routeEntry.name,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX
-  );
-  const assets = await getAssets(sourceFile, zip);
-  const constants = getConstants(sourceFile, assets);
-  const renderedHtml = renderStaticLovableHtml(sourceFile, constants, assets);
+  const project = await createProjectRenderContext(zip, entryFile);
+
+  if (!project) {
+    return null;
+  }
+
+  const entryModule = project.modules.get(project.entryFile);
+
+  if (!entryModule) {
+    return null;
+  }
+
+  const renderedHtml = renderStaticLovableHtml(project);
 
   if (renderedHtml) {
     return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>${escapeHtml(getTitle(sourceFile, constants))}</title>
+    <title>${escapeHtml(getTitle(entryModule.sourceFile, entryModule.constants))}</title>
   </head>
   <body>
 ${renderedHtml}
@@ -1173,11 +2184,15 @@ ${renderedHtml}
 </html>`;
   }
 
-  const nodes = collectNodesFromJsx(sourceFile, constants, assets);
+  const nodes = collectNodesFromJsx(
+    entryModule.sourceFile,
+    entryModule.constants,
+    entryModule.assets
+  );
 
   if (!nodes.length) {
     return null;
   }
 
-  return renderExtractedNodes(getTitle(sourceFile, constants), nodes);
+  return renderExtractedNodes(getTitle(entryModule.sourceFile, entryModule.constants), nodes);
 }

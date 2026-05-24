@@ -11,6 +11,7 @@ import {
   resolveSourceFromHtml,
   resolveSourceFromUpload
 } from "@/lib/converter-v3/resolve/source-resolver";
+import { ContentIntegrityError } from "@/lib/converter-v3/validate/content-integrity";
 import { VisualValidationError } from "@/lib/converter-v3/visual-regression-validator";
 import {
   InvalidElementorJsonError,
@@ -148,6 +149,7 @@ function buildBlockedResponse(
       snapshotEnabled: result.report.snapshotEnabled,
       snapshotReason: result.report.snapshotReason,
       snapshot: result.snapshot,
+      contentIntegrity: result.contentIntegrity,
       warnings,
       artifacts: buildArtifactsFromV3(result)
     }
@@ -178,6 +180,7 @@ function buildV3Success(result: ExportPipelineResult): PreparedConversion {
       snapshotEnabled: result.report.snapshotEnabled,
       snapshotReason: result.report.snapshotReason,
       snapshot: result.snapshot,
+      contentIntegrity: result.contentIntegrity,
       screenshots: result.capture.artifacts.screenshots,
       warnings,
       artifacts: buildArtifactsFromV3(result)
@@ -303,6 +306,18 @@ export function createConvertPostHandler(
             error: error.message,
             validation: error.report,
             issues: error.report.issues
+          },
+          { status: 422 }
+        );
+      }
+
+      if (error instanceof ContentIntegrityError) {
+        return NextResponse.json(
+          {
+            error: error.message,
+            contentIntegrity: error.report,
+            failureStage: error.report.failureStage,
+            recommendation: error.report.recommendation
           },
           { status: 422 }
         );

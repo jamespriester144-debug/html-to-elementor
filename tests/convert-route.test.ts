@@ -4,6 +4,7 @@ import {
   createConvertPostHandler,
   type ConvertRouteDependencies
 } from "../lib/api/convert-route";
+import { ContentIntegrityError } from "../lib/converter-v3/validate/content-integrity";
 import { VisualValidationError } from "../lib/converter-v3/visual-regression-validator";
 
 function createBaseDependencies(): ConvertRouteDependencies {
@@ -76,6 +77,11 @@ function createExportResult(params: {
           threshold: 0.99,
           convertedScreenshotPath: "/tmp/export/snapshot-preview.png",
           originalScreenshotPath: "/tmp/capture/desktop.png",
+          viewportSimilarities: {
+            desktop: params.snapshotSimilarity ?? 0.995,
+            tablet: params.snapshotSimilarity ?? 0.995,
+            mobile: params.snapshotSimilarity ?? 0.995
+          },
           sectionReports: [],
           totals: {
             htmlSections: 1,
@@ -164,6 +170,23 @@ function createExportResult(params: {
           matchedPositionedNodes: 2
         }
       },
+      viewportSimilarities:
+        params.snapshotSimilarity !== undefined
+          ? {
+              desktop: params.snapshotSimilarity,
+              tablet: params.snapshotSimilarity,
+              mobile: params.snapshotSimilarity
+            }
+          : undefined,
+      visualIssues: [],
+      visualLogs: [
+        "[VISUAL SNAPSHOT] Secao 01 (mock-section) capturada com sucesso",
+        "[LINK OVERLAY] 1 links preservados",
+        ...(params.snapshotSimilarity !== undefined
+          ? [`[VALIDATION] similaridade desktop: ${(params.snapshotSimilarity * 100).toFixed(2)}%`]
+          : []),
+        "[EXPORT] aprovado"
+      ],
       warnings,
       snapshot
     },
@@ -210,12 +233,51 @@ function createExportResult(params: {
         matchedPositionedNodes: 2
       }
     },
+    contentIntegrity: {
+      status: "passed",
+      inputFile: "/tmp/source/index.html",
+      outputFile: "/tmp/export/elementor-template.json",
+      sourceHtmlSize: 64,
+      originalHtmlSize: 96,
+      renderedHtmlSize: 96,
+      outputSize: 512,
+      elementorJsonSize: 384,
+      previewHtmlSize: 128,
+      originalTextCount: 1,
+      outputTextCount: 1,
+      originalImageCount: 1,
+      outputImageCount: 1,
+      originalButtonCount: 1,
+      outputButtonCount: 1,
+      originalLinkCount: 1,
+      outputLinkCount: 1,
+      originalSectionCount: 1,
+      outputSectionCount: 1,
+      originalVisibleHeight: 800,
+      convertedVisibleHeight: 800,
+      visibleContentDetected: true,
+      convertedBodyEmpty: false,
+      hasRealWidgets: true,
+      snapshotGenerated: params.emittedMode === "snapshot",
+      overlaysGenerated: params.emittedMode === "snapshot",
+      modeUsed:
+        params.emittedMode === "snapshot"
+          ? "section-snapshot"
+          : params.emittedMode === "pixel-perfect"
+            ? "pixel-perfect"
+            : params.emittedMode === "hybrid"
+              ? "hybrid"
+              : "editable",
+      recommendation: "mock report",
+      errorsFound: []
+    },
     snapshot,
     artifacts: {
       elementorTemplatePath: "/tmp/export/elementor-template.json",
       reportPath: "/tmp/export/conversion-report.json",
       previewHtmlPath: "/tmp/export/snapshot-preview.html",
-      convertedScreenshotPath: snapshot?.convertedScreenshotPath
+      convertedScreenshotPath: snapshot?.convertedScreenshotPath,
+      contentIntegrityReportPath: "/tmp/export/content-integrity-report.json"
     }
   } as never;
 }
@@ -547,6 +609,72 @@ async function testConvertRouteBlocksWhenValidationFails() {
   assert.equal((payload.issues as Array<{ nodeId: string }>)[0]?.nodeId, "card-1");
 }
 
+async function testConvertRouteBlocksWhenContentIntegrityFails() {
+  const deps = createBaseDependencies();
+  deps.runExportPipelineV3 = async () => {
+    throw new ContentIntegrityError({
+      status: "blocked",
+      inputFile: "/tmp/source/runtime-root.html",
+      outputFile: "/tmp/export/elementor-template.json",
+      sourceHtmlSize: 298,
+      originalHtmlSize: 1024,
+      renderedHtmlSize: 1024,
+      outputSize: 128,
+      elementorJsonSize: 96,
+      previewHtmlSize: 32,
+      originalTextCount: 3,
+      outputTextCount: 0,
+      originalImageCount: 1,
+      outputImageCount: 0,
+      originalButtonCount: 1,
+      outputButtonCount: 0,
+      originalLinkCount: 1,
+      outputLinkCount: 0,
+      originalSectionCount: 1,
+      outputSectionCount: 0,
+      originalVisibleHeight: 900,
+      convertedVisibleHeight: 0,
+      visibleContentDetected: false,
+      convertedBodyEmpty: true,
+      hasRealWidgets: false,
+      snapshotGenerated: false,
+      overlaysGenerated: false,
+      modeUsed: "full-page-snapshot",
+      failureStage: "full-page-snapshot",
+      failureReason:
+        "Falha no full-page snapshot: nao foi possivel capturar conteudo visual da pagina original.",
+      recommendation: "Refaca o full-page snapshot apos estabilizar viewport e assets.",
+      errorsFound: [
+        "Falha no full-page snapshot: nao foi possivel capturar conteudo visual da pagina original."
+      ]
+    });
+  };
+
+  const handler = createConvertPostHandler(deps);
+  const response = await handler(
+    new Request("http://localhost/api/convert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        html: "<div id=\"root\"></div>"
+      })
+    })
+  );
+  const payload = (await response.json()) as Record<string, unknown>;
+
+  assert.equal(response.status, 422);
+  assert.equal(
+    payload.error,
+    "Falha no full-page snapshot: não foi possível capturar conteúdo visual da página original."
+  );
+  assert.equal(
+    (payload.contentIntegrity as { failureStage?: string }).failureStage,
+    "full-page-snapshot"
+  );
+}
+
 async function main() {
   await testConvertRouteUsesV3ForRawHtmlAndForcesBrowserCapture();
   await testConvertRouteUsesV3ResolverForUploadAndAllowsPixelPerfect();
@@ -554,6 +682,7 @@ async function main() {
   await testConvertRouteBlocksWhenSimilarityFallsBelowThreshold();
   await testConvertRouteReturns500WhenV3Fails();
   await testConvertRouteBlocksWhenValidationFails();
+  await testConvertRouteBlocksWhenContentIntegrityFails();
   console.log("convert route tests passed");
 }
 

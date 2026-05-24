@@ -90,11 +90,17 @@ export async function extractViewportNodes(
       const rect = element.getBoundingClientRect();
       const backgroundImage = computed.getPropertyValue("background-image").trim();
       const href = element instanceof HTMLAnchorElement ? element.href : element.getAttribute("href");
-      const src = element instanceof HTMLImageElement ? element.currentSrc || element.src : element.getAttribute("src");
+      const src =
+        element instanceof HTMLImageElement
+          ? element.currentSrc || element.src
+          : element instanceof HTMLSourceElement
+            ? element.srcset || element.getAttribute("src")
+            : element.getAttribute("src");
       const asset = {
         href: href?.trim() || undefined,
         src: src?.trim() || undefined,
         alt: (element.getAttribute("alt") || "").trim() || undefined,
+        poster: (element.getAttribute("poster") || "").trim() || undefined,
         backgroundImage:
           backgroundImage && backgroundImage !== "none" ? backgroundImage : undefined
       };
@@ -165,11 +171,17 @@ export async function extractRenderedDomNodes(
       const rect = element.getBoundingClientRect();
       const backgroundImage = computed.getPropertyValue("background-image").trim();
       const href = element instanceof HTMLAnchorElement ? element.href : element.getAttribute("href");
-      const src = element instanceof HTMLImageElement ? element.currentSrc || element.src : element.getAttribute("src");
+      const src =
+        element instanceof HTMLImageElement
+          ? element.currentSrc || element.src
+          : element instanceof HTMLSourceElement
+            ? element.srcset || element.getAttribute("src")
+            : element.getAttribute("src");
       const asset = {
         href: href?.trim() || undefined,
         src: src?.trim() || undefined,
         alt: (element.getAttribute("alt") || "").trim() || undefined,
+        poster: (element.getAttribute("poster") || "").trim() || undefined,
         backgroundImage:
           backgroundImage && backgroundImage !== "none" ? backgroundImage : undefined
       };

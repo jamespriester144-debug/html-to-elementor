@@ -207,6 +207,58 @@ export async function preparePageForVisualCapture(
           }
         };
 
+        const hasMeaningfulContent = () => {
+          const candidates = Array.from(document.body.querySelectorAll<HTMLElement>("*")).filter(
+            (element) => {
+              if (["script", "style", "noscript"].includes(element.tagName.toLowerCase())) {
+                return false;
+              }
+
+              const computed = window.getComputedStyle(element);
+              const rect = element.getBoundingClientRect();
+              const text = (element.textContent || "").replace(/\s+/g, " ").trim();
+              const backgroundImage = computed.backgroundImage || "";
+              const isPlaceholderRoot =
+                /^(root|app|__next)$/i.test(element.id) &&
+                element.children.length === 0 &&
+                text.length === 0;
+
+              if (isPlaceholderRoot) {
+                return false;
+              }
+
+              return (
+                computed.display !== "none" &&
+                computed.visibility !== "hidden" &&
+                computed.opacity !== "0" &&
+                (text.length > 0 ||
+                  element.tagName === "IMG" ||
+                  element.tagName === "SVG" ||
+                  element.tagName === "PICTURE" ||
+                  element.tagName === "CANVAS" ||
+                  element.tagName === "VIDEO" ||
+                  element.tagName === "IFRAME" ||
+                  element.tagName === "BUTTON" ||
+                  (element.tagName === "A" && Boolean(element.getAttribute("href"))) ||
+                  backgroundImage !== "none") &&
+                (rect.width > 0 || rect.height > 0)
+              );
+            }
+          );
+
+          return candidates.length > 0;
+        };
+
+        const waitForMeaningfulContent = async () => {
+          while (now() < deadline) {
+            if (hasMeaningfulContent()) {
+              return;
+            }
+
+            await wait(120);
+          }
+        };
+
         boostLazyAssets();
         freezeInteractiveMedia();
         await waitForFonts();
@@ -219,6 +271,7 @@ export async function preparePageForVisualCapture(
         boostLazyAssets();
         freezeInteractiveMedia();
         await waitForImages();
+        await waitForMeaningfulContent();
         await waitForBackgroundImages();
         await waitForFonts();
         await wait(120);

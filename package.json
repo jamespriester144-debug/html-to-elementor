@@ -12,10 +12,11 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test:converter": "tsx tests/converter.test.ts",
-    "test:converter:v3": "tsx tests/converter-v3.test.ts && tsx tests/converter-v3-universal.test.ts",
+    "test:converter:v3": "tsx tests/converter-v3.test.ts && tsx tests/converter-v3-universal.test.ts && tsx tests/converter-v3-empty-output.test.ts && tsx tests/converter-v3-learning.test.ts",
     "test:api:convert": "tsx tests/convert-route.test.ts",
     "test:api:download": "tsx tests/download-route.test.ts",
-    "test:assets": "tsx tests/asset-persistence.test.ts"
+    "test:assets": "tsx tests/asset-persistence.test.ts",
+    "learn:converter:v3": "tsx scripts/converter-v3-learn.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

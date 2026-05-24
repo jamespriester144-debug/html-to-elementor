@@ -2,12 +2,17 @@ import type { SourceKind } from "@/lib/converter-v3/contracts/source";
 import type { ZipProjectSnapshot } from "@/lib/converter-v3/resolve/zip-project-reader";
 
 export function detectSourceKindFromZipSnapshot(snapshot: ZipProjectSnapshot): SourceKind {
-  if (snapshot.htmlEntries.length > 0) {
-    return "static-html-archive";
+  const hasLovableReactSource =
+    snapshot.reactEntryCandidates.length > 0 ||
+    snapshot.routeEntries.length > 0 ||
+    (snapshot.sourceEntries.length > 0 && snapshot.packageJsonEntries.length > 0);
+
+  if (hasLovableReactSource) {
+    return "lovable-react-source";
   }
 
-  if (snapshot.routeEntries.length > 0) {
-    return "lovable-react-source";
+  if (snapshot.htmlEntries.length > 0) {
+    return "static-html-archive";
   }
 
   throw new Error(

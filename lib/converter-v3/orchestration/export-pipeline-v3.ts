@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { ExportPipelineResult } from "@/lib/converter-v3/contracts/output";
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
+import { writeConversionDebugBundle } from "@/lib/converter-v3/debug/conversion-debug";
 import { createElementorNativeExport } from "@/lib/converter-v3/elementor-native-exporter";
 import type { CapturePipelineOptions } from "@/lib/converter-v3/orchestration/pipeline-v3";
 import { runCapturePipelineV3 } from "@/lib/converter-v3/orchestration/pipeline-v3";
@@ -11,6 +12,11 @@ import { buildUniversalVisualValidationReport } from "@/lib/converter-v3/reports
 import { resolveSourceFromHtml, resolveSourceFromUpload } from "@/lib/converter-v3/resolve/source-resolver";
 import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
 import {
+  assertContentIntegrity,
+  validateContentIntegrity
+} from "@/lib/converter-v3/validate/content-integrity";
+import {
+  isDebugConversionEnabled,
   isForceVisualSnapshotEnabled,
   isSafeFullPageFallbackEnabled
 } from "@/lib/env";
@@ -105,6 +111,80 @@ function resolveSnapshotStatus(params: {
   };
 }
 
+function mergeWarnings(...warningGroups: Array<Array<string | undefined>>) {
+  return [...new Set(warningGroups.flat().filter((warning): warning is string => Boolean(warning)))];
+}
+
+export function shouldRecoverBlockedExportWithPixelPerfect(params: {
+  forceVisualSnapshot: boolean;
+  emittedMode: ExportPipelineResult["emittedMode"];
+  capture: ExportPipelineResult["capture"];
+  layout: ExportPipelineResult["layout"];
+  contentIntegrity: ExportPipelineResult["contentIntegrity"];
+}) {
+  if (
+    params.forceVisualSnapshot ||
+    params.emittedMode === "pixel-perfect" ||
+    params.contentIntegrity.status !== "blocked"
+  ) {
+    return false;
+  }
+
+  if (!params.capture.inputAnalysis.diagnostics.htmlRendered) {
+    return false;
+  }
+
+  const hasMeaningfulSourceContent =
+    params.layout.sectionIds.length > 0 ||
+    params.layout.detectedSections.length > 0 ||
+    params.capture.summary.visibleNodes > 3 ||
+    params.capture.summary.textBlocks > 0 ||
+    params.capture.summary.images > 0 ||
+    params.capture.summary.buttons > 0;
+
+  if (!hasMeaningfulSourceContent) {
+    return false;
+  }
+
+  return params.capture.renderer !== "browser";
+}
+
+export function shouldRecoverBlockedExportWithSnapshot(params: {
+  forceVisualSnapshot: boolean;
+  emittedMode: ExportPipelineResult["emittedMode"];
+  capture: ExportPipelineResult["capture"];
+  layout: ExportPipelineResult["layout"];
+  contentIntegrity: ExportPipelineResult["contentIntegrity"];
+}) {
+  if (
+    params.forceVisualSnapshot ||
+    params.emittedMode === "snapshot" ||
+    params.capture.renderer !== "browser" ||
+    params.contentIntegrity.status !== "blocked"
+  ) {
+    return false;
+  }
+
+  if (!params.capture.inputAnalysis.diagnostics.htmlRendered) {
+    return false;
+  }
+
+  const hasMeaningfulSourceContent =
+    params.layout.sectionIds.length > 0 ||
+    params.layout.detectedSections.length > 0 ||
+    params.capture.summary.visibleNodes > 3 ||
+    params.capture.summary.textBlocks > 0 ||
+    params.capture.summary.images > 0 ||
+    params.capture.summary.buttons > 0 ||
+    (params.capture.summary.links ?? 0) > 0;
+
+  if (!hasMeaningfulSourceContent) {
+    return false;
+  }
+
+  return true;
+}
+
 export async function runExportPipelineV3(
   resolvedSource: ResolvedSource,
   options: CapturePipelineOptions = {}
@@ -143,49 +223,130 @@ export async function runExportPipelineV3(
           ...captureResult.analysis.reasons
         ]
       };
-    } else if (preferUniversalSnapshot) {
-      selectedMode = "snapshot";
-      captureResult.analysis = {
-        ...captureResult.analysis,
-        selectedMode,
-        reasons: [
-          captureResult.capture.inputAnalysis.renderStrategy.preferFullPageSnapshot
-            ? "Analise universal solicitou fallback seguro de pagina inteira quando a divisao por secoes for insegura."
-            : captureResult.capture.inputAnalysis.renderStrategy.preferVisualSnapshot
-              ? "Analise universal detectou sinais de risco estrutural e priorizou snapshot visual."
-              : "SAFE_FULL_PAGE_FALLBACK ativo: snapshot visual de pagina inteira permanece disponivel mesmo sem secoes seguras.",
-          ...captureResult.analysis.reasons
-        ]
-      };
-    } else if (sections.length > 0) {
-      selectedMode = "snapshot";
-      captureResult.analysis = {
-        ...captureResult.analysis,
-        selectedMode,
-        reasons: [
-          "Snapshot Elementor habilitado por haver captura real no navegador.",
-          ...captureResult.analysis.reasons
-        ]
-      };
     } else {
-      selectedMode = "pixel-perfect";
+      selectedMode = selectedMode === "editable" ? "editable" : "hybrid";
       captureResult.analysis = {
         ...captureResult.analysis,
         selectedMode,
         reasons: [
-          "Nao houve secoes elegiveis para snapshot; exportando em pixel-perfect para preservar a fidelidade visual.",
+          preferUniversalSnapshot
+            ? captureResult.capture.inputAnalysis.renderStrategy.preferFullPageSnapshot
+              ? "Analise universal marcou pagina inteira como fallback seguro se a conversao estrutural falhar."
+              : captureResult.capture.inputAnalysis.renderStrategy.preferVisualSnapshot
+                ? "Analise universal marcou snapshot visual como fallback se a conversao estrutural perder fidelidade."
+                : "SAFE_FULL_PAGE_FALLBACK ativo: snapshot visual de pagina inteira permanece disponivel como fallback."
+            : "Conversao estrutural do DOM renderizado sera tentada antes de qualquer snapshot visual.",
           ...captureResult.analysis.reasons
         ]
       };
     }
   }
 
-  const exportResult = await createElementorNativeExport({
+  let exportResult = await createElementorNativeExport({
     capture: captureResult.capture,
     layout: captureResult.layout,
     selectedMode,
     outputDir
   });
+  const sectionCroppingRisk = Boolean(
+    captureResult.capture.sections?.some((section) => section.debug?.unsafeSectionBoundary)
+  );
+  const elementorTemplatePath = path.join(outputDir, "elementor-template.json");
+  const reportPath = path.join(outputDir, "conversion-report.json");
+  const visualValidationReportFileName = `visual-validation-report-${sanitizeReportFileSegment(
+    captureResult.capture.inputAnalysis.fileName
+  )}.json`;
+  const visualValidationReportPath = path.join(outputDir, visualValidationReportFileName);
+  const contentIntegrityReportPath = path.join(outputDir, "content-integrity-report.json");
+  let contentIntegrity = await validateContentIntegrity({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    document: exportResult.document,
+    emittedMode: exportResult.emittedMode,
+    previewHtml: exportResult.previewHtml,
+    snapshot: exportResult.snapshot,
+    outputFile: elementorTemplatePath,
+    failureStage: exportResult.exportStage
+  });
+
+  if (
+    shouldRecoverBlockedExportWithSnapshot({
+      forceVisualSnapshot,
+      emittedMode: exportResult.emittedMode,
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      contentIntegrity
+    })
+  ) {
+    const recoveryReason =
+      "Conversao estrutural/geometrica perdeu conteudo detectavel; fallback universal para snapshot visual foi acionado.";
+    const recoveredExport = await createElementorNativeExport({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      selectedMode: "snapshot",
+      outputDir
+    });
+
+    exportResult = {
+      ...recoveredExport,
+      fallbackReason: recoveryReason,
+      warnings: mergeWarnings(
+        exportResult.warnings,
+        recoveredExport.warnings,
+        [contentIntegrity.failureReason, recoveryReason]
+      )
+    };
+
+    contentIntegrity = await validateContentIntegrity({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      document: exportResult.document,
+      emittedMode: exportResult.emittedMode,
+      previewHtml: exportResult.previewHtml,
+      snapshot: exportResult.snapshot,
+      outputFile: elementorTemplatePath,
+      failureStage: exportResult.exportStage
+    });
+  } else if (
+    shouldRecoverBlockedExportWithPixelPerfect({
+      forceVisualSnapshot,
+      emittedMode: exportResult.emittedMode,
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      contentIntegrity
+    })
+  ) {
+    const recoveryReason =
+      "Renderizacao visual nao permitiu snapshot confiavel; fallback final em iframe preservou o DOM completo.";
+    const recoveredExport = await createElementorNativeExport({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      selectedMode: "pixel-perfect",
+      outputDir
+    });
+
+    exportResult = {
+      ...recoveredExport,
+      fallbackReason: recoveryReason,
+      warnings: mergeWarnings(
+        exportResult.warnings,
+        recoveredExport.warnings,
+        [contentIntegrity.failureReason, recoveryReason]
+      )
+    };
+
+    contentIntegrity = await validateContentIntegrity({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      document: exportResult.document,
+      emittedMode: exportResult.emittedMode,
+      previewHtml: exportResult.previewHtml,
+      snapshot: exportResult.snapshot,
+      outputFile: elementorTemplatePath,
+      failureStage: exportResult.exportStage
+    });
+  }
+
   const emittedMode = exportResult.emittedMode;
   const fallbackReason = exportResult.fallbackReason ?? resolveFallbackReason(selectedMode);
   const warnings = exportResult.warnings;
@@ -193,9 +354,6 @@ export async function runExportPipelineV3(
   const validation = exportResult.validation;
   const previewHtml = exportResult.previewHtml;
   const snapshot = exportResult.snapshot;
-  const sectionCroppingRisk = Boolean(
-    captureResult.capture.sections?.some((section) => section.debug?.unsafeSectionBoundary)
-  );
   const fullPageSnapshotFailed =
     snapshot?.renderStrategy === "full-page-snapshot" &&
     snapshot.visualValidationReport?.status === "blocked";
@@ -214,6 +372,7 @@ export async function runExportPipelineV3(
     snapshot
   });
 
+  const debugConversionEnabled = isDebugConversionEnabled();
   const report = buildExportReport({
     capture: captureResult.capture,
     layout: captureResult.layout,
@@ -226,6 +385,16 @@ export async function runExportPipelineV3(
     warnings,
     snapshot
   });
+  const previewHtmlPath = previewHtml ? path.join(outputDir, "snapshot-preview.html") : undefined;
+  let artifacts: ExportPipelineResult["artifacts"] = {
+    elementorTemplatePath,
+    reportPath,
+    previewHtmlPath,
+    convertedScreenshotPath: snapshot?.convertedScreenshotPath,
+    snapshotSectionsPath: captureResult.capture.artifacts.sectionArtifactsPath || undefined,
+    visualValidationReportPath,
+    contentIntegrityReportPath
+  };
   const universalVisualValidationReport = buildUniversalVisualValidationReport({
     ...captureResult,
     emittedMode,
@@ -234,30 +403,55 @@ export async function runExportPipelineV3(
     validation,
     report,
     snapshot,
-    artifacts: {
-      elementorTemplatePath: "",
-      reportPath: ""
-    }
+    contentIntegrity,
+    artifacts
   });
-  const elementorTemplatePath = path.join(outputDir, "elementor-template.json");
-  const reportPath = path.join(outputDir, "conversion-report.json");
-  const previewHtmlPath = previewHtml ? path.join(outputDir, "snapshot-preview.html") : undefined;
-  const visualValidationReportFileName = `visual-validation-report-${sanitizeReportFileSegment(
-    captureResult.capture.inputAnalysis.fileName
-  )}.json`;
-  const visualValidationReportPath = path.join(outputDir, visualValidationReportFileName);
+
+  if (debugConversionEnabled) {
+    const debugBundle = await writeConversionDebugBundle({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      document: elementorDocument,
+      validation,
+      contentIntegrity,
+      report,
+      snapshot,
+      previewHtml
+    });
+
+    contentIntegrity = {
+      ...contentIntegrity,
+      debugArtifacts: {
+        ...contentIntegrity.debugArtifacts,
+        originalScreenshotPath: debugBundle.originalScreenshotPath,
+        convertedScreenshotPath: debugBundle.convertedScreenshotPath,
+        debugConversionDir: debugBundle.debugDir,
+        extractedElementsPath: debugBundle.extractedElementsPath,
+        detectedSectionsPath: debugBundle.detectedSectionsPath,
+        lostElementsPath: debugBundle.lostElementsPath,
+        conversionReportPath: debugBundle.conversionReportPath
+      }
+    };
+    artifacts = {
+      ...artifacts,
+      debugConversionDir: debugBundle.debugDir
+    };
+  }
+
+  await writeJson(contentIntegrityReportPath, contentIntegrity);
+  await writeJson(visualValidationReportPath, universalVisualValidationReport);
+
+  if (snapshot?.visualValidationReport) {
+    await writeJson(path.join(outputDir, "visual-validation-report.json"), snapshot.visualValidationReport);
+  }
+
+  assertContentIntegrity(contentIntegrity);
 
   await writeJson(elementorTemplatePath, elementorDocument);
   await writeJson(reportPath, report);
 
   if (previewHtmlPath && previewHtml) {
     await writeFile(previewHtmlPath, previewHtml, "utf8");
-  }
-
-  await writeJson(visualValidationReportPath, universalVisualValidationReport);
-
-  if (snapshot?.visualValidationReport) {
-    await writeJson(path.join(outputDir, "visual-validation-report.json"), snapshot.visualValidationReport);
   }
 
   return {
@@ -268,14 +462,8 @@ export async function runExportPipelineV3(
     validation,
     report,
     snapshot,
-    artifacts: {
-      elementorTemplatePath,
-      reportPath,
-      previewHtmlPath,
-      convertedScreenshotPath: snapshot?.convertedScreenshotPath,
-      snapshotSectionsPath: captureResult.capture.artifacts.sectionArtifactsPath || undefined,
-      visualValidationReportPath
-    }
+    contentIntegrity,
+    artifacts
   };
 }
 

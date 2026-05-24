@@ -11,8 +11,9 @@ export default function UploadPage() {
           Envie o build do seu site
         </h1>
         <p className="mt-3 max-w-2xl text-ink/70">
-          Use um arquivo HTML exportado ou um ZIP que contenha `index.html`.
-          Projetos Lovable baixados do GitHub precisam ser compilados antes do envio.
+          O envio agora acontece somente por arquivo: use um HTML exportado ou um ZIP que
+          contenha `index.html`. Projetos Lovable baixados do GitHub precisam ser compilados
+          antes do envio.
         </p>
       </div>
       <UploadForm />

@@ -2,6 +2,6 @@ import type { CaptureViewportProfile } from "@/lib/converter-v3/contracts/captur
 
 export const CAPTURE_VIEWPORTS: CaptureViewportProfile[] = [
   { name: "desktop", width: 1440, height: 1200 },
-  { name: "tablet", width: 834, height: 1194 },
+  { name: "tablet", width: 768, height: 1024 },
   { name: "mobile", width: 390, height: 844 }
 ];

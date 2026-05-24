@@ -19,6 +19,8 @@ export type ExportArtifactPaths = {
   convertedScreenshotPath?: string;
   snapshotSectionsPath?: string;
   visualValidationReportPath?: string;
+  contentIntegrityReportPath?: string;
+  debugConversionDir?: string;
 };
 
 export type UniversalVisualMode =
@@ -168,6 +170,21 @@ export type SnapshotVisualValidationReport = {
   blockingReason?: string;
 };
 
+export type VisualValidationIssueSummary = {
+  sectionId?: string;
+  sectionName?: string;
+  sectionType?: string;
+  viewport?: CaptureViewportName;
+  similarity?: number;
+  lossType?: SnapshotValidationLossType;
+  fallbackStage?:
+    | "section-snapshot"
+    | "section-recapture"
+    | "pure-snapshot"
+    | "full-page-snapshot";
+  message: string;
+};
+
 export type VisualValidationReport = {
   passed: boolean;
   mode: OutputMode;
@@ -214,6 +231,20 @@ export type ExportReport = {
   analysis: ComplexityAnalysis;
   validation: VisualValidationReport;
   warnings: string[];
+  contentMetrics: {
+    detectedTexts: number;
+    detectedImages: number;
+    detectedButtons: number;
+    detectedLinks: number;
+    detectedVisualContainers: number;
+    detectedGeometryGroups: number;
+    createdSections: number;
+  };
+  viewportSimilarities?: Partial<Record<CaptureViewportName, number>>;
+  visualIssues: VisualValidationIssueSummary[];
+  visualLogs: string[];
+  learningNotes: string[];
+  fallbackTrail: string[];
   snapshot?: SnapshotVisualSummary;
 };
 
@@ -234,6 +265,7 @@ export type UniversalVisualValidationReport = {
   fallbackReason?: string;
   linksPreserved: number;
   finalSimilarity: number;
+  viewportSimilarities?: Partial<Record<CaptureViewportName, number>>;
   htmlRendered: boolean;
   cssLoaded: boolean;
   imagesLoaded: boolean;
@@ -241,7 +273,59 @@ export type UniversalVisualValidationReport = {
   viewportMatched: boolean;
   sectionCroppingRisk: boolean;
   fullPageSnapshotFailed: boolean;
+  visualIssues: VisualValidationIssueSummary[];
+  learningNotes: string[];
+  logs: string[];
   errors: string[];
+};
+
+export type ContentIntegrityStatus = "passed" | "blocked";
+
+export type ContentIntegrityReport = {
+  status: ContentIntegrityStatus;
+  inputFile: string;
+  outputFile: string;
+  sourceHtmlSize: number;
+  originalHtmlSize: number;
+  renderedHtmlSize: number;
+  outputSize: number;
+  elementorJsonSize: number;
+  previewHtmlSize: number;
+  originalTextCount: number;
+  outputTextCount: number;
+  originalImageCount: number;
+  outputImageCount: number;
+  originalButtonCount: number;
+  outputButtonCount: number;
+  originalLinkCount: number;
+  outputLinkCount: number;
+  originalSectionCount: number;
+  outputSectionCount: number;
+  originalVisibleHeight: number;
+  convertedVisibleHeight: number;
+  visibleContentDetected: boolean;
+  convertedBodyEmpty: boolean;
+  hasRealWidgets: boolean;
+  snapshotGenerated: boolean;
+  overlaysGenerated: boolean;
+  modeUsed: UniversalVisualMode;
+  failureStage?: string;
+  failureReason?: string;
+  recommendation: string;
+  errorsFound: string[];
+  debugArtifacts?: {
+    renderedHtmlPath?: string;
+    pageCapturePath?: string;
+    visibleElementsPath?: string;
+    geometryGroupsPath?: string;
+    originalScreenshotPath?: string;
+    convertedScreenshotPath?: string;
+    debugConversionDir?: string;
+    extractedElementsPath?: string;
+    detectedSectionsPath?: string;
+    lostElementsPath?: string;
+    conversionReportPath?: string;
+  };
 };
 
 export type ExportPipelineResult = {
@@ -259,5 +343,6 @@ export type ExportPipelineResult = {
   validation: VisualValidationReport;
   report: ExportReport;
   snapshot?: SnapshotVisualSummary;
+  contentIntegrity: ContentIntegrityReport;
   artifacts: ExportArtifactPaths;
 };

@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content="Lovable" />
+    <title>lovable-editorial-layout</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #020617;
+        color: #e2e8f0;
+      }
+      .shell {
+        min-height: 100vh;
+        padding: 36px 24px 48px;
+      }
+      .frame {
+        max-width: 1200px;
+        margin: 0 auto;
+        display: grid;
+        gap: 24px;
+      }
+      .editorial-grid {
+        display: grid;
+        gap: 24px;
+        grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+      }
+      .hero-panel,
+      .side-panel,
+      .insight-card {
+        border-radius: 28px;
+        overflow: hidden;
+        box-shadow: 0 22px 70px rgba(15, 23, 42, 0.35);
+      }
+      .hero-panel {
+        padding: 40px;
+        background:
+          radial-gradient(circle at top right, rgba(56, 189, 248, 0.34), transparent 35%),
+          linear-gradient(145deg, #0f172a, #111827 55%, #1d4ed8);
+      }
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 34px;
+        padding: 0 14px;
+        border-radius: 999px;
+        background: rgba(148, 163, 184, 0.18);
+        color: #bae6fd;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .hero-title {
+        margin: 20px 0 14px;
+        font-size: clamp(2.8rem, 5vw, 4.8rem);
+        line-height: 0.95;
+      }
+      .hero-body {
+        max-width: 700px;
+        font-size: 1.05rem;
+        line-height: 1.7;
+        color: #cbd5e1;
+      }
+      .cta-row {
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+        margin-top: 28px;
+      }
+      .primary-link,
+      .secondary-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 50px;
+        padding: 0 24px;
+        border-radius: 999px;
+        text-decoration: none;
+        font-weight: 700;
+      }
+      .primary-link {
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .secondary-link {
+        background: rgba(15, 23, 42, 0.28);
+        color: #e2e8f0;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+      }
+      .metric-grid {
+        display: grid;
+        gap: 16px;
+        margin-top: 34px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .metric-card {
+        padding: 18px 20px;
+        border-radius: 22px;
+        background: rgba(15, 23, 42, 0.28);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+      .metric-card strong {
+        display: block;
+        font-size: 1.6rem;
+      }
+      .side-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+      .side-panel {
+        background: #0f172a;
+      }
+      .side-panel img {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .side-copy {
+        padding: 22px 24px 26px;
+      }
+      .insight-grid {
+        display: grid;
+        gap: 20px;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      .insight-card {
+        padding: 24px;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-lovable-app="true">
+      <div class="shell">
+        <div class="frame mx-auto px-6 py-8">
+          <div class="editorial-grid">
+            <div class="hero-panel">
+              <div class="eyebrow">AI research board</div>
+              <h1 class="hero-title">
+                The converter should survive new Lovable layouts without learning custom rules.
+              </h1>
+              <p class="hero-body">
+                This fixture mixes editorial typography, utility-like classes, nested grids,
+                image panels and generic wrappers so the pipeline must rely on rendered geometry
+                and visible content instead of matching a single example site.
+              </p>
+              <div class="cta-row">
+                <a class="primary-link" href="#board">Generate board</a>
+                <a class="secondary-link" href="#insights">Open insights</a>
+              </div>
+              <div class="metric-grid" id="board">
+                <div class="metric-card">
+                  <strong>12x</strong>
+                  <span>More layout variants covered by render-first extraction.</span>
+                </div>
+                <div class="metric-card">
+                  <strong>99%</strong>
+                  <span>Similarity target before structural output is accepted.</span>
+                </div>
+                <div class="metric-card">
+                  <strong>0</strong>
+                  <span>Hardcoded class or text assumptions required.</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="side-stack">
+              <div class="side-panel">
+                <img src="./assets/common/hero.svg" alt="Abstract research collage" />
+              </div>
+              <div class="side-panel">
+                <div class="side-copy">
+                  <h2>Rendered-first capture</h2>
+                  <p>
+                    Bounding boxes, buttons, text layers and assets are extracted after the page
+                    is visually ready, not from brittle source selectors.
+                  </p>
+                  <a class="secondary-link" href="#rendered">See rendered view</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="insight-grid" id="insights">
+            <div class="insight-card">
+              <h2>Visual order</h2>
+              <p>Children are grouped by on-screen order before any semantic reshaping happens.</p>
+            </div>
+            <div class="insight-card">
+              <h2>Neutral containers</h2>
+              <p>Complex Lovable bands stay generic instead of being forced into preset cards.</p>
+            </div>
+            <div class="insight-card">
+              <h2>Safe fallback</h2>
+              <p>Snapshot and pixel-perfect remain available when structure loses fidelity.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

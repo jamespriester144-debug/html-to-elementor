@@ -73,8 +73,53 @@ async function testPersistEmbeddedConversionAssetsReplacesSnapshotBase64Recursiv
   assert.doesNotThrow(() => JSON.parse(persistedJsonText));
 }
 
+async function testPersistEmbeddedConversionAssetsKeepsOriginalDataUrlWhenUploadFails() {
+  const pngDataUrl =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7ZQ1sAAAAASUVORK5CYII=";
+  const persistEmbeddedConversionAssets = createEmbeddedConversionAssetPersister(
+    {
+      uploadConversionAsset: async () => {
+        throw new Error("Bad Request");
+      }
+    }
+  );
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+
+  console.warn = (message?: unknown, ...optionalParams: unknown[]) => {
+    warnings.push([message, ...optionalParams].join(" "));
+  };
+
+  try {
+    const persisted = await persistEmbeddedConversionAssets(
+      `<html><body><img src="${pngDataUrl}" /></body></html>`,
+      {
+        content: [
+          {
+            settings: {
+              image: {
+                url: pngDataUrl
+              }
+            }
+          }
+        ]
+      },
+      "conversion-key"
+    );
+
+    assert.match(persisted.html, /data:image\/png;base64/);
+    assert.match(JSON.stringify(persisted.elementorJson), /data:image\/png;base64/);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /Mantendo data URL original/);
+    assert.match(warnings[0], /Bad Request/);
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 async function main() {
   await testPersistEmbeddedConversionAssetsReplacesSnapshotBase64Recursively();
+  await testPersistEmbeddedConversionAssetsKeepsOriginalDataUrlWhenUploadFails();
   console.log("asset persistence tests passed");
 }
 
