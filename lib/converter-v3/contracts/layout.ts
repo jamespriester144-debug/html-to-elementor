@@ -14,6 +14,8 @@ export type LayoutSemanticRole =
   | "header"
   | "hero"
   | "section"
+  | "cta"
+  | "faq"
   | "grid"
   | "card"
   | "button"
@@ -141,7 +143,14 @@ export type LayoutNode = {
   responsive: Partial<Record<ResponsiveViewportName, ResponsiveLayoutState>>;
 };
 
-export type DetectedSectionType = "header" | "hero" | "section" | "grid" | "footer";
+export type DetectedSectionType =
+  | "header"
+  | "hero"
+  | "section"
+  | "cta"
+  | "faq"
+  | "grid"
+  | "footer";
 
 export type DetectedSection = {
   id: string;

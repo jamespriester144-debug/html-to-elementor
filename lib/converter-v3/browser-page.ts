@@ -27,6 +27,7 @@ export type BrowserScreenshotOptions = {
   };
   path?: string;
   fullPage?: boolean;
+  scale?: "css" | "device";
   type?: "png" | "jpeg";
 };
 

@@ -339,6 +339,7 @@ export type ExportPipelineResult = {
   analysis: ComplexityAnalysis;
   emittedMode: OutputMode;
   fallbackReason?: string;
+  previewHtml?: string;
   elementorDocument: ElementorDocument;
   validation: VisualValidationReport;
   report: ExportReport;

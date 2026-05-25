@@ -3,6 +3,10 @@ import type { CapturedNode, CapturedNodeAsset } from "@/lib/converter-v3/contrac
 export const CAPTURED_STYLE_PROPERTIES = [
   "display",
   "position",
+  "top",
+  "right",
+  "bottom",
+  "left",
   "width",
   "height",
   "max-width",
@@ -30,18 +34,25 @@ export const CAPTURED_STYLE_PROPERTIES = [
   "background-image",
   "background-size",
   "background-position",
+  "background-repeat",
+  "background-clip",
   "color",
   "font-family",
   "font-size",
+  "font-style",
   "font-weight",
   "line-height",
   "letter-spacing",
+  "text-transform",
   "text-decoration",
+  "white-space",
   "border",
   "border-color",
   "border-radius",
   "box-shadow",
   "overflow",
+  "overflow-x",
+  "overflow-y",
   "object-fit",
   "object-position",
   "text-align",
@@ -49,7 +60,8 @@ export const CAPTURED_STYLE_PROPERTIES = [
   "visibility",
   "opacity",
   "transform",
-  "z-index"
+  "z-index",
+  "pointer-events"
 ] as const;
 
 export type ExtractedViewportNode = {
@@ -89,7 +101,12 @@ export async function extractViewportNodes(
       const computed = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       const backgroundImage = computed.getPropertyValue("background-image").trim();
-      const href = element instanceof HTMLAnchorElement ? element.href : element.getAttribute("href");
+      const href =
+        element instanceof HTMLAnchorElement
+          ? element.href
+          : element.getAttribute("href") ||
+            element.getAttribute("data-href") ||
+            element.getAttribute("data-url");
       const src =
         element instanceof HTMLImageElement
           ? element.currentSrc || element.src
@@ -122,21 +139,28 @@ export async function extractViewportNodes(
         element.getAttribute("aria-hidden") !== "true" &&
         hasVisiblePixels;
 
+      const absoluteLeft = rect.left + window.scrollX;
+      const absoluteTop = rect.top + window.scrollY;
+      const width = Math.max(rect.width, 0);
+      const height = Math.max(rect.height, 0);
+      const absoluteRight = absoluteLeft + width;
+      const absoluteBottom = absoluteTop + height;
+
       return {
         id: element.getAttribute("data-capture-id") || `capture-node-${index + 1}`,
         computedStyles,
         box: hasVisiblePixels
           ? {
-              x: rect.x,
-              y: rect.y,
-              top: rect.top,
-              right: rect.right,
-              bottom: rect.bottom,
-              left: rect.left,
-              width: rect.width,
-              height: rect.height,
-              centerX: rect.left + rect.width / 2,
-              centerY: rect.top + rect.height / 2
+              x: absoluteLeft,
+              y: absoluteTop,
+              top: absoluteTop,
+              right: absoluteRight,
+              bottom: absoluteBottom,
+              left: absoluteLeft,
+              width,
+              height,
+              centerX: absoluteLeft + width / 2,
+              centerY: absoluteTop + height / 2
             }
           : null,
         isVisible,
@@ -170,7 +194,12 @@ export async function extractRenderedDomNodes(
       const computed = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       const backgroundImage = computed.getPropertyValue("background-image").trim();
-      const href = element instanceof HTMLAnchorElement ? element.href : element.getAttribute("href");
+      const href =
+        element instanceof HTMLAnchorElement
+          ? element.href
+          : element.getAttribute("href") ||
+            element.getAttribute("data-href") ||
+            element.getAttribute("data-url");
       const src =
         element instanceof HTMLImageElement
           ? element.currentSrc || element.src
@@ -216,6 +245,13 @@ export async function extractRenderedDomNodes(
         element.getAttribute("aria-hidden") !== "true" &&
         hasVisiblePixels;
 
+      const absoluteLeft = rect.left + window.scrollX;
+      const absoluteTop = rect.top + window.scrollY;
+      const width = Math.max(rect.width, 0);
+      const height = Math.max(rect.height, 0);
+      const absoluteRight = absoluteLeft + width;
+      const absoluteBottom = absoluteTop + height;
+
       return {
         id: element.getAttribute("data-capture-id") || `capture-node-${index + 1}`,
         tag: element.tagName.toLowerCase(),
@@ -228,16 +264,16 @@ export async function extractRenderedDomNodes(
         computedStyles,
         box: hasVisiblePixels
           ? {
-              x: rect.x,
-              y: rect.y,
-              top: rect.top,
-              right: rect.right,
-              bottom: rect.bottom,
-              left: rect.left,
-              width: rect.width,
-              height: rect.height,
-              centerX: rect.left + rect.width / 2,
-              centerY: rect.top + rect.height / 2
+              x: absoluteLeft,
+              y: absoluteTop,
+              top: absoluteTop,
+              right: absoluteRight,
+              bottom: absoluteBottom,
+              left: absoluteLeft,
+              width,
+              height,
+              centerX: absoluteLeft + width / 2,
+              centerY: absoluteTop + height / 2
             }
           : null,
         viewportStates: {},

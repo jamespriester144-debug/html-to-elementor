@@ -12,11 +12,16 @@ import { buildUniversalVisualValidationReport } from "@/lib/converter-v3/reports
 import { resolveSourceFromHtml, resolveSourceFromUpload } from "@/lib/converter-v3/resolve/source-resolver";
 import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
 import {
+  isLovableLikeSource,
+  shouldForceUniversalFullPageSnapshot
+} from "@/lib/converter-v3/visual-clone-policy";
+import {
   assertContentIntegrity,
   validateContentIntegrity
 } from "@/lib/converter-v3/validate/content-integrity";
 import {
   isDebugConversionEnabled,
+  isForceFullPageSnapshotEnabled,
   isForceVisualSnapshotEnabled,
   isSafeFullPageFallbackEnabled
 } from "@/lib/env";
@@ -189,18 +194,27 @@ export async function runExportPipelineV3(
   resolvedSource: ResolvedSource,
   options: CapturePipelineOptions = {}
 ): Promise<ExportPipelineResult> {
+  const forceFullPageSnapshot = isForceFullPageSnapshotEnabled();
   const forceVisualSnapshot = isForceVisualSnapshotEnabled();
   const safeFullPageFallback = isSafeFullPageFallbackEnabled();
   const captureResult = await runCapturePipelineV3(resolvedSource, options);
+  const forceUniversalFullPageSnapshot = shouldForceUniversalFullPageSnapshot(
+    captureResult.capture,
+    captureResult.layout
+  );
+  const preferUniversalVisualSnapshot =
+    captureResult.capture.renderer === "browser" && isLovableLikeSource(captureResult.capture);
   const outputDir = captureResult.capture.artifacts.outputDir;
   let selectedMode = captureResult.analysis.selectedMode;
 
   if (captureResult.capture.renderer === "browser") {
-    const sections = await buildVisualSectionCaptures({
-      capture: captureResult.capture,
-      layout: captureResult.layout,
-      outputDir
-    });
+    const sections = forceFullPageSnapshot || forceUniversalFullPageSnapshot
+      ? []
+      : await buildVisualSectionCaptures({
+          capture: captureResult.capture,
+          layout: captureResult.layout,
+          outputDir
+        });
 
     captureResult.capture.sections = sections;
     captureResult.capture.artifacts.sectionArtifactsPath = path.join(outputDir, "sections.json");
@@ -211,15 +225,31 @@ export async function runExportPipelineV3(
       captureResult.capture.inputAnalysis.renderStrategy.preferFullPageSnapshot ||
       safeFullPageFallback;
 
-    if (forceVisualSnapshot) {
+    if (forceFullPageSnapshot || forceUniversalFullPageSnapshot) {
       selectedMode = "snapshot";
       captureResult.analysis = {
         ...captureResult.analysis,
         selectedMode,
         reasons: [
-          sections.length > 0
-            ? "FORCE_VISUAL_SNAPSHOT ativo: snapshots visuais por secao/pagina inteira sao o modo principal."
-            : "FORCE_VISUAL_SNAPSHOT ativo: secoes nao ficaram prontas, entao o snapshot responsivo da pagina inteira sera o modo principal.",
+          forceFullPageSnapshot
+            ? "FORCE_FULL_PAGE_SNAPSHOT ativo: somente o snapshot responsivo da pagina inteira sera usado como saida principal."
+            : "Politica universal Lovable-like ativa: somente o snapshot responsivo da pagina inteira sera usado como saida principal.",
+          ...captureResult.analysis.reasons
+        ]
+      };
+    } else if (forceVisualSnapshot || preferUniversalVisualSnapshot) {
+      selectedMode = "snapshot";
+      captureResult.analysis = {
+        ...captureResult.analysis,
+        selectedMode,
+        reasons: [
+          forceVisualSnapshot
+            ? sections.length > 0
+              ? "FORCE_VISUAL_SNAPSHOT ativo: snapshots visuais por secao/pagina inteira sao o modo principal."
+              : "FORCE_VISUAL_SNAPSHOT ativo: secoes nao ficaram prontas, entao o snapshot responsivo da pagina inteira sera o modo principal."
+            : sections.length > 0
+              ? "Politica visual Lovable-like ativa: snapshots por secao/pagina inteira sao o modo principal."
+              : "Politica visual Lovable-like ativa: secoes nao ficaram prontas, entao o snapshot responsivo da pagina inteira sera o modo principal.",
           ...captureResult.analysis.reasons
         ]
       };
@@ -271,7 +301,7 @@ export async function runExportPipelineV3(
 
   if (
     shouldRecoverBlockedExportWithSnapshot({
-      forceVisualSnapshot,
+      forceVisualSnapshot: forceVisualSnapshot || forceUniversalFullPageSnapshot,
       emittedMode: exportResult.emittedMode,
       capture: captureResult.capture,
       layout: captureResult.layout,
@@ -309,7 +339,7 @@ export async function runExportPipelineV3(
     });
   } else if (
     shouldRecoverBlockedExportWithPixelPerfect({
-      forceVisualSnapshot,
+      forceVisualSnapshot: forceVisualSnapshot || forceUniversalFullPageSnapshot,
       emittedMode: exportResult.emittedMode,
       capture: captureResult.capture,
       layout: captureResult.layout,
@@ -458,6 +488,7 @@ export async function runExportPipelineV3(
     ...captureResult,
     emittedMode,
     fallbackReason,
+    previewHtml,
     elementorDocument,
     validation,
     report,

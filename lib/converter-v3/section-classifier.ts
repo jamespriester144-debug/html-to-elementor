@@ -93,6 +93,69 @@ function nodeHasMultipleLinks(node: LayoutNode, byId: NodeMaps["byId"]): boolean
   return collectSubtree(node.id, byId).filter((candidate) => candidate.kind === "button").length >= 2;
 }
 
+function countButtons(node: LayoutNode, byId: NodeMaps["byId"]): number {
+  return collectSubtree(node.id, byId).filter((candidate) => candidate.kind === "button").length;
+}
+
+function countQuestionLikeTexts(node: LayoutNode, byId: NodeMaps["byId"]): number {
+  return collectSubtree(node.id, byId).filter((candidate) => {
+    const text = candidate.content.text ?? "";
+    return (
+      (candidate.kind === "text" || candidate.kind === "button") &&
+      /\?/.test(text) &&
+      normalizeWhitespace(text).length >= 6
+    );
+  }).length;
+}
+
+function countTextBlocks(node: LayoutNode, byId: NodeMaps["byId"]): number {
+  return collectSubtree(node.id, byId).filter((candidate) => candidate.kind === "text").length;
+}
+
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function isLikelyFaq(node: LayoutNode, byId: NodeMaps["byId"]): boolean {
+  const subtree = collectSubtree(node.id, byId);
+  const questionLikeTextCount = countQuestionLikeTexts(node, byId);
+  const accordionLikeNodes = subtree.filter((candidate) =>
+    ["details", "summary"].includes(candidate.tag ?? "")
+  ).length;
+  const buttonCount = countButtons(node, byId);
+  const faqKeywordHit = subtree.some((candidate) =>
+    /faq|perguntas|duvidas|d[úu]vidas|questions/i.test(candidate.content.text ?? "")
+  );
+
+  return (
+    questionLikeTextCount >= 2 &&
+    (accordionLikeNodes >= 1 || buttonCount >= 2 || faqKeywordHit)
+  );
+}
+
+function isLikelyCta(node: LayoutNode, byId: NodeMaps["byId"]): boolean {
+  const buttonCount = countButtons(node, byId);
+  const textBlockCount = countTextBlocks(node, byId);
+  const hasHeading = nodeHasHeading(node, byId);
+  const hasMedia = nodeHasImage(node, byId);
+  const hasVisualTreatment =
+    Boolean(node.style.backgroundColor) || Boolean(node.style.backgroundImage);
+
+  if (buttonCount === 0 || !hasHeading) {
+    return false;
+  }
+
+  if (hasMedia && node.box.height >= 280) {
+    return false;
+  }
+
+  return (
+    buttonCount <= 3 &&
+    textBlockCount <= 6 &&
+    (hasVisualTreatment || node.box.height <= 280)
+  );
+}
+
 function isGridLike(node: LayoutNode, byId: NodeMaps["byId"]): boolean {
   const children = node.children
     .map((childId) => byId.get(childId))
@@ -163,7 +226,10 @@ function classifySectionType(params: {
   const hasImage = nodeHasImage(node, byId);
   const multipleLinks = nodeHasMultipleLinks(node, byId);
 
-  if (node.tag === "header" || (index === 0 && node.box.y <= 120 && multipleLinks)) {
+  if (
+    node.tag === "header" ||
+    (index === 0 && node.box.y <= 120 && multipleLinks && !isLikelyFaq(node, byId))
+  ) {
     return { type: "header", confidence: node.tag === "header" ? 0.99 : 0.82 };
   }
 
@@ -174,12 +240,20 @@ function classifySectionType(params: {
     return { type: "footer", confidence: node.tag === "footer" ? 0.99 : 0.84 };
   }
 
+  if (isLikelyFaq(node, byId)) {
+    return { type: "faq", confidence: 0.88 };
+  }
+
   if (gridNodeIds.has(node.id)) {
     return { type: "grid", confidence: 0.86 };
   }
 
   if (index <= 1 && hasHeading && (hasButton || hasImage) && node.box.height >= 280) {
     return { type: "hero", confidence: 0.9 };
+  }
+
+  if (isLikelyCta(node, byId)) {
+    return { type: "cta", confidence: 0.82 };
   }
 
   return { type: "section", confidence: 0.72 };
@@ -308,6 +382,10 @@ export function classifySections(layout: LayoutDocument): LayoutDocument {
       dominantPattern:
         sectionType.type === "grid"
           ? "multi-column"
+          : sectionType.type === "faq"
+            ? "faq-stack"
+            : sectionType.type === "cta"
+              ? "cta-stack"
           : enrichedNode.detection?.containsMedia && enrichedNode.detection?.containsInteractive
             ? "cta-media"
             : "stack"

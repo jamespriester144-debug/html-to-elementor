@@ -68,6 +68,29 @@ async function replaceDataUrlsInString(
   return nextValue;
 }
 
+function createTraversalContainer(value: object) {
+  return Array.isArray(value) ? new Array(value.length) : {};
+}
+
+function getTraversalEntries(value: object) {
+  return Array.isArray(value)
+    ? value.map((item, index) => [index, item] as const)
+    : Object.entries(value);
+}
+
+function assignTraversalValue(
+  target: Record<string, unknown> | unknown[],
+  key: string | number,
+  value: unknown
+) {
+  if (Array.isArray(target)) {
+    target[key as number] = value;
+    return;
+  }
+
+  target[key as string] = value;
+}
+
 async function persistAssetsInValue<T>(
   value: T,
   replaceDataUrl: (dataUrl: string) => Promise<string>
@@ -86,14 +109,69 @@ async function persistAssetsInValue<T>(
     return value;
   }
 
-  const entries = await Promise.all(
-    Object.entries(value).map(async ([key, nestedValue]) => [
-      key,
-      await persistAssetsInValue(nestedValue, replaceDataUrl)
-    ])
-  );
+  const rootSource = value as object;
+  const rootTarget = createTraversalContainer(rootSource) as T;
+  const visited = new WeakMap<object, Record<string, unknown> | unknown[]>([
+    [rootSource, rootTarget as Record<string, unknown> | unknown[]]
+  ]);
+  const stack: Array<{
+    source: object;
+    target: Record<string, unknown> | unknown[];
+    entries: ReadonlyArray<readonly [string | number, unknown]>;
+    index: number;
+  }> = [
+    {
+      source: rootSource,
+      target: rootTarget as Record<string, unknown> | unknown[],
+      entries: getTraversalEntries(rootSource),
+      index: 0
+    }
+  ];
 
-  return Object.fromEntries(entries) as T;
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+
+    if (frame.index >= frame.entries.length) {
+      stack.pop();
+      continue;
+    }
+
+    const [key, nestedValue] = frame.entries[frame.index];
+    frame.index += 1;
+
+    if (typeof nestedValue === "string") {
+      assignTraversalValue(
+        frame.target,
+        key,
+        await replaceDataUrlsInString(nestedValue, replaceDataUrl)
+      );
+      continue;
+    }
+
+    if (!nestedValue || typeof nestedValue !== "object") {
+      assignTraversalValue(frame.target, key, nestedValue);
+      continue;
+    }
+
+    const cached = visited.get(nestedValue);
+
+    if (cached) {
+      assignTraversalValue(frame.target, key, cached);
+      continue;
+    }
+
+    const nextTarget = createTraversalContainer(nestedValue);
+    visited.set(nestedValue, nextTarget);
+    assignTraversalValue(frame.target, key, nextTarget);
+    stack.push({
+      source: nestedValue,
+      target: nextTarget,
+      entries: getTraversalEntries(nestedValue),
+      index: 0
+    });
+  }
+
+  return rootTarget;
 }
 
 export function createEmbeddedConversionAssetPersister(

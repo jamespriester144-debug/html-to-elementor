@@ -1,5 +1,6 @@
 import type { PageCapture } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode } from "@/lib/converter-v3/contracts/layout";
+import { isLovableLikeSource } from "@/lib/converter-v3/visual-clone-policy";
 
 export function shouldUseUniversalNeutralLayoutMode(
   capture: PageCapture,
@@ -7,17 +8,13 @@ export function shouldUseUniversalNeutralLayoutMode(
 ) : boolean {
   const renderedInBrowser =
     capture.renderer === "browser" && capture.inputAnalysis.diagnostics.htmlRendered === true;
-  const lovableLikeSource =
-    capture.sourceKind === "lovable-react-source" ||
-    capture.inputAnalysis.frameworkHints.includes("lovable") ||
-    capture.inputAnalysis.layoutTypes.includes("lovable-export");
   const modernUtilityLayout =
     capture.inputAnalysis.frameworkHints.includes("tailwind") ||
     (capture.summary.visualContainers ?? 0) > 0 ||
     (capture.summary.geometryGroups ?? 0) > 0 ||
     layout.nodeCount > 24;
 
-  return renderedInBrowser && lovableLikeSource && modernUtilityLayout;
+  return renderedInBrowser && isLovableLikeSource(capture) && modernUtilityLayout;
 }
 
 export function getVisualOrderChildIds(

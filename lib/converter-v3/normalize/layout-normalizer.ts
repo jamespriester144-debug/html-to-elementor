@@ -47,15 +47,17 @@ function isDecorativeNode(node: CapturedNode, kind: LayoutNodeKind): boolean {
   const hasMeaningfulText = Boolean(pickText(node.text));
   const hasMedia = kind === "image";
   const hasAction = kind === "button";
+  const backgroundImage = pickStyle(node.computedStyles, "background-image");
+  const hasBackgroundImageAsset = Boolean(backgroundImage) && /url\(/i.test(backgroundImage ?? "");
   const hasBackground =
     Boolean(pickStyle(node.computedStyles, "background")) ||
     Boolean(pickStyle(node.computedStyles, "background-color")) ||
-    Boolean(pickStyle(node.computedStyles, "background-image"));
+    Boolean(backgroundImage);
   const isAbsolute =
     pickStyle(node.computedStyles, "position") === "absolute" ||
     pickStyle(node.computedStyles, "position") === "fixed";
 
-  if (hasMeaningfulText || hasMedia || hasAction) {
+  if (hasMeaningfulText || hasMedia || hasAction || hasBackgroundImageAsset) {
     return false;
   }
 
@@ -245,6 +247,7 @@ function containsMedia(node: LayoutNode, layoutById: Map<string, LayoutNode>) {
   return collectSubtreeNodes(node.id, layoutById).some(
     (candidate) =>
       candidate.kind === "image" ||
+      (Boolean(candidate.style.backgroundImage) && /url\(/i.test(candidate.style.backgroundImage ?? "")) ||
       ["video", "iframe", "canvas", "svg"].includes(candidate.tag ?? "")
   );
 }

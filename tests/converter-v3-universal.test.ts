@@ -19,6 +19,10 @@ import {
   CONVERTER_V3_UNIVERSAL_FIXTURES
 } from "./support/converter-v3-fixture-matrix";
 
+if (typeof process.env.FORCE_FULL_PAGE_SNAPSHOT !== "string") {
+  process.env.FORCE_FULL_PAGE_SNAPSHOT = "false";
+}
+
 const FIXTURE_DIR = path.join(process.cwd(), "tests", "fixtures", "sites");
 
 function isForceVisualSnapshotEnabled() {
@@ -176,6 +180,23 @@ async function testUniversalFixtures() {
         contentIntegrity.snapshotGenerated || report.modeUsed === "pixel-perfect",
         true
       );
+    }
+
+    if (
+      fixture.tags.includes("lovable") &&
+      result.snapshot?.visualValidationReport &&
+      report.modeUsed !== "pixel-perfect"
+    ) {
+      assert.equal(result.snapshot.visualValidationReport.status, "passed");
+      assert.deepEqual(result.snapshot.visualValidationReport.viewportsTested, [
+        "desktop",
+        "tablet",
+        "mobile"
+      ]);
+      assert.equal(result.capture.summary.textBlocks === 0 || contentIntegrity.outputTextCount > 0 || contentIntegrity.snapshotGenerated, true);
+      assert.equal(result.capture.summary.images === 0 || contentIntegrity.outputImageCount > 0 || contentIntegrity.snapshotGenerated, true);
+      assert.equal(result.capture.summary.buttons === 0 || contentIntegrity.outputButtonCount > 0 || contentIntegrity.snapshotGenerated, true);
+      assert.equal((result.capture.summary.links ?? 0) === 0 || contentIntegrity.outputLinkCount > 0 || contentIntegrity.overlaysGenerated, true);
     }
 
     fixture.assertResult(report);

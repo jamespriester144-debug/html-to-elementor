@@ -108,6 +108,51 @@ function getSubtreeNodeIds(rootId: string, layoutById: NodeMaps["layoutById"]): 
   return ids;
 }
 
+function getLayoutRootNodeId(layoutById: NodeMaps["layoutById"]) {
+  for (const node of layoutById.values()) {
+    if (node.parentId === null || node.kind === "page") {
+      return node.id;
+    }
+  }
+
+  return undefined;
+}
+
+function shouldUseViewportWidthForContainer(
+  node: LayoutNode,
+  layoutById: NodeMaps["layoutById"]
+) {
+  const rootNodeId = getLayoutRootNodeId(layoutById);
+
+  if (!rootNodeId) {
+    return false;
+  }
+
+  return node.id === rootNodeId || node.parentId === rootNodeId;
+}
+
+function getContainerWidthSettings(
+  node: LayoutNode,
+  layoutById: NodeMaps["layoutById"],
+  fallbackMaxWidth?: string
+) {
+  if (shouldUseViewportWidthForContainer(node, layoutById)) {
+    return {
+      width: "100%",
+      max_width: undefined,
+      tablet_width: "100%",
+      tablet_max_width: "100%",
+      mobile_width: "100%",
+      mobile_max_width: "100%"
+    };
+  }
+
+  return {
+    width: node.box.width ? `${Math.round(node.box.width)}px` : undefined,
+    max_width: fallbackMaxWidth
+  };
+}
+
 function countSubtreeOverlaps(rootId: string, layoutById: NodeMaps["layoutById"]) {
   const ids = new Set(getSubtreeNodeIds(rootId, layoutById));
   const nodes = [...ids]
@@ -345,6 +390,25 @@ function isNodeSimpleEnough(rootId: string, maps: NodeMaps, neutralLayoutMode = 
     nestedSections <= 6 &&
     overlaps === 0
   );
+}
+
+function hasVisibleBackground(value?: string) {
+  if (!value) {
+    return false;
+  }
+
+  const normalized = value.replace(/\s+/g, "").toLowerCase();
+  return normalized !== "transparent" && normalized !== "rgba(0,0,0,0)" && normalized !== "none";
+}
+
+function shouldExportRootNode(layout: LayoutDocument) {
+  const rootNode = layout.nodes.find((node) => node.id === layout.rootNodeId);
+
+  if (!rootNode) {
+    return false;
+  }
+
+  return hasVisibleBackground(rootNode.style.backgroundColor) || Boolean(rootNode.style.backgroundImage);
 }
 
 function buildWidgetFromNode(
@@ -681,6 +745,11 @@ function buildContainerFromNode(
     sectionLayoutDefaults.gap ??
     presetLayoutDefaults.gap ??
     derivedLayout.gap;
+  const widthSettings = getContainerWidthSettings(
+    node,
+    maps.layoutById,
+    sectionStructureDefaults.max_width
+  );
 
   return {
     id: createElementId(node.kind === "section" ? "section" : "container", index),
@@ -689,8 +758,6 @@ function buildContainerFromNode(
       content_width: "full",
       converter_v3_source_node_id: node.id,
       converter_v3_universal_neutral_mode: neutralLayoutMode || undefined,
-      width: node.box.width ? `${Math.round(node.box.width)}px` : undefined,
-      max_width: sectionStructureDefaults.max_width,
       min_height: node.box.height ? `${Math.round(node.box.height)}px` : undefined,
       flex_direction: flexDirection,
       flex_wrap: derivedLayout.flexWrap,
@@ -707,6 +774,7 @@ function buildContainerFromNode(
       converter_v3_tag: node.kind,
       converter_v3_responsive: serializeResponsiveContainer(node, maps.layoutById),
       ...createElementorResponsiveSettings(node, maps.layoutById),
+      ...widthSettings,
       converter_v3_section_preset: sectionStructure?.preset,
       converter_v3_section_signature: sectionStructure?.signature,
       converter_v3_section_phases: sectionStructure?.phases,
@@ -889,7 +957,11 @@ function buildElementFromNode(params: {
   });
 }
 
-function getTopLevelNodeIds(layout: LayoutDocument) {
+function getTopLevelNodeIds(layout: LayoutDocument, neutralLayoutMode = false) {
+  if (!neutralLayoutMode && shouldExportRootNode(layout)) {
+    return [layout.rootNodeId];
+  }
+
   if (layout.sectionIds.length) {
     return layout.sectionIds;
   }
@@ -912,7 +984,7 @@ export function createHybridElementorDocumentV3(params: {
   const $ = cheerio.load(params.capture.renderedHtml);
   const counter = { value: 0 };
   const htmlFallbacks = new Set<string>();
-  const topLevelNodeIds = getTopLevelNodeIds(params.layout);
+  const topLevelNodeIds = getTopLevelNodeIds(params.layout, neutralLayoutMode);
   const content = topLevelNodeIds
     .map((nodeId) =>
       buildElementFromNode({

@@ -12,6 +12,10 @@ import {
   groupVisibleContentByGeometry,
   summarizeVisibleContent
 } from "@/lib/converter-v3/universal-content";
+import {
+  isLovableLikeSource,
+  shouldForceUniversalFullPageSnapshot
+} from "@/lib/converter-v3/visual-clone-policy";
 import { buildVisualHierarchy } from "@/lib/converter-v3/visual-hierarchy";
 import {
   type BrowserRenderOptions,
@@ -65,9 +69,32 @@ export async function runCapturePipelineV3(
     geometryGroups: geometryGroups.length
   };
 
+  const forceUniversalFullPageSnapshot = shouldForceUniversalFullPageSnapshot(capture, layout);
+  const preferUniversalVisualSnapshot =
+    capture.renderer === "browser" && isLovableLikeSource(capture);
   let analysis = analyzeLayoutComplexity(layout);
 
-  if (universalAnalysisEnabled && capture.renderer === "browser") {
+  if (forceUniversalFullPageSnapshot) {
+    analysis = {
+      ...analysis,
+      selectedMode: "snapshot",
+      reasons: [
+        "Politica universal para sites Lovable-like: clonagem visual full-page priorizada para preservar a aparencia e evitar conflitos de reconstrucao editavel.",
+        ...analysis.reasons
+      ]
+    };
+  } else if (preferUniversalVisualSnapshot) {
+    analysis = {
+      ...analysis,
+      selectedMode: "snapshot",
+      reasons: [
+        "Politica visual para sites Lovable-like: snapshots por secao/pagina inteira sao priorizados para maximizar a fidelidade.",
+        ...analysis.reasons
+      ]
+    };
+  }
+
+  if (universalAnalysisEnabled && capture.renderer === "browser" && !forceUniversalFullPageSnapshot) {
     const preferVisualSnapshot = capture.inputAnalysis.renderStrategy.preferVisualSnapshot;
     const preferFullPageSnapshot = capture.inputAnalysis.renderStrategy.preferFullPageSnapshot;
 

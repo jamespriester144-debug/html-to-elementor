@@ -67,8 +67,9 @@ const semanticTagMap: Record<string, string> = {
   blockquote: "blockquote"
 };
 
-const ASSET_FILE_PATTERN = /\.(?:png|jpe?g|webp|svg|gif|avif|ico)$/i;
+const ASSET_FILE_PATTERN = /\.(?:png|jpe?g|webp|svg|gif|avif|ico|woff2?|ttf|otf|eot)$/i;
 const RENDERABLE_SOURCE_PATTERN = /\.(?:tsx|jsx|ts|js)$/i;
+const STYLESHEET_SOURCE_PATTERN = /\.css(?:\?.*)?$/i;
 const EXCLUDED_SOURCE_PATTERN = /\.d\.ts$|\.(?:test|spec|stories)\.(?:tsx|jsx|ts|js)$/i;
 const NON_RENDERABLE_COMPONENTS = new Set([
   "Check",
@@ -93,6 +94,17 @@ function isRenderableSourceFile(filePath: string) {
 
 function isAssetFile(filePath: string) {
   return ASSET_FILE_PATTERN.test(normalizeProjectPath(filePath));
+}
+
+function shouldInlineStylesheetUrl(value: string) {
+  const trimmed = value.trim();
+
+  return (
+    trimmed.length > 0 &&
+    !trimmed.startsWith("data:") &&
+    !trimmed.startsWith("#") &&
+    !/^(?:https?:|blob:|\/\/)/i.test(trimmed)
+  );
 }
 
 function resolveProjectSpecifier(currentFilePath: string, specifier: string) {
@@ -177,6 +189,139 @@ function createSourceFile(filePath: string, source: string) {
 
 async function readZipSourceFile(zip: JSZip, filePath: string) {
   return zip.file(normalizeProjectPath(filePath))?.async("text") ?? null;
+}
+
+function isStylesheetSourceFile(specifier: string) {
+  return STYLESHEET_SOURCE_PATTERN.test(specifier.trim());
+}
+
+function sanitizeProjectStylesheet(source: string) {
+  return source
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*@(?:import|source|custom-variant)\b/i.test(line))
+    .join("\n")
+    .trim();
+}
+
+function getMimeType(path: string) {
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+  if (path.endsWith(".webp")) return "image/webp";
+  if (path.endsWith(".svg")) return "image/svg+xml";
+  if (path.endsWith(".gif")) return "image/gif";
+  if (path.endsWith(".avif")) return "image/avif";
+  if (path.endsWith(".ico")) return "image/x-icon";
+  if (path.endsWith(".woff2")) return "font/woff2";
+  if (path.endsWith(".woff")) return "font/woff";
+  if (path.endsWith(".ttf")) return "font/ttf";
+  if (path.endsWith(".otf")) return "font/otf";
+  if (path.endsWith(".eot")) return "application/vnd.ms-fontobject";
+  return "application/octet-stream";
+}
+
+async function readZipAssetDataUrl(zip: JSZip, filePath: string) {
+  const normalizedPath = normalizeProjectPath(filePath);
+  const zipEntry = zip.file(normalizedPath);
+
+  if (!zipEntry) {
+    return null;
+  }
+
+  const base64 = await zipEntry.async("base64");
+  return `data:${getMimeType(normalizedPath.toLowerCase())};base64,${base64}`;
+}
+
+async function inlineStylesheetAssetUrls(
+  zip: JSZip,
+  stylesheetPath: string,
+  source: string
+) {
+  const urlPattern = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+  const matches = [...source.matchAll(urlPattern)];
+
+  if (matches.length === 0) {
+    return source;
+  }
+
+  let nextSource = source;
+
+  for (const match of matches) {
+    const rawUrl = match[2]?.trim();
+
+    if (!rawUrl || !shouldInlineStylesheetUrl(rawUrl)) {
+      continue;
+    }
+
+    const resolvedAssetPath = resolveZipModulePath(zip, stylesheetPath, rawUrl);
+
+    if (!resolvedAssetPath || !isAssetFile(resolvedAssetPath)) {
+      continue;
+    }
+
+    const dataUrl = await readZipAssetDataUrl(zip, resolvedAssetPath);
+
+    if (!dataUrl) {
+      continue;
+    }
+
+    nextSource = nextSource.replace(match[0], `url("${dataUrl}")`);
+  }
+
+  return nextSource;
+}
+
+async function collectProjectStylesheets(
+  project: ProjectRenderContext,
+  zip: JSZip
+) {
+  const stylePaths = new Set<string>();
+
+  for (const module of project.modules.values()) {
+    module.sourceFile.forEachChild((node) => {
+      if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) {
+        return;
+      }
+
+      const specifier = node.moduleSpecifier.text;
+
+      if (!isStylesheetSourceFile(specifier)) {
+        return;
+      }
+
+      const resolvedPath = resolveZipModulePath(zip, module.filePath, specifier);
+
+      if (resolvedPath) {
+        stylePaths.add(resolvedPath);
+      }
+    });
+  }
+
+  const stylesheets = await Promise.all(
+    [...stylePaths].map(async (stylePath) => {
+      const source = await readZipSourceFile(zip, stylePath);
+
+      if (!source) {
+        return null;
+      }
+
+      const sanitized = sanitizeProjectStylesheet(
+        await inlineStylesheetAssetUrls(zip, stylePath, source)
+      );
+
+      if (!sanitized) {
+        return null;
+      }
+
+      return {
+        path: stylePath,
+        source: sanitized
+      };
+    })
+  );
+
+  return stylesheets.filter(
+    (stylesheet): stylesheet is { path: string; source: string } => Boolean(stylesheet)
+  );
 }
 
 function escapeHtml(value: string): string {
@@ -337,15 +482,6 @@ function getConstants(
   return constants;
 }
 
-function getMimeType(path: string) {
-  if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-  if (path.endsWith(".webp")) return "image/webp";
-  if (path.endsWith(".svg")) return "image/svg+xml";
-  if (path.endsWith(".gif")) return "image/gif";
-  return "application/octet-stream";
-}
-
 async function getAssets(sourceFile: ts.SourceFile, zip: JSZip): Promise<LovableAssetMap> {
   const assets: LovableAssetMap = new Map();
   const imports: Array<{ localName: string; resolvedPath: string; fallbackPath: string }> = [];
@@ -376,18 +512,14 @@ async function getAssets(sourceFile: ts.SourceFile, zip: JSZip): Promise<Lovable
   });
 
   for (const assetImport of imports) {
-    const zipEntry = zip.file(assetImport.resolvedPath);
+    const dataUrl = await readZipAssetDataUrl(zip, assetImport.resolvedPath);
 
-    if (!zipEntry) {
+    if (!dataUrl) {
       assets.set(assetImport.localName, assetImport.fallbackPath);
       continue;
     }
 
-    const base64 = await zipEntry.async("base64");
-    assets.set(
-      assetImport.localName,
-      `data:${getMimeType(zipEntry.name.toLowerCase())};base64,${base64}`
-    );
+    assets.set(assetImport.localName, dataUrl);
   }
 
   return assets;
@@ -671,8 +803,23 @@ ${body}
 </html>`;
 }
 
+function renderProjectStyles(styleEntries: Array<{ path: string; source: string }>) {
+  if (styleEntries.length === 0) {
+    return "";
+  }
+
+  return `<style data-converter-v3-project-css>
+${styleEntries
+  .map(
+    (entry) =>
+      `/* ${escapeHtml(entry.path)} */\n${entry.source.replace(/<\/style/gi, "<\\/style")}`
+  )
+  .join("\n\n")}
+</style>`;
+}
+
 function isLowerCaseTag(tagName: string): boolean {
-  return tagName[0] === tagName[0]?.toLowerCase();
+  return /^[a-z][a-z0-9-]*$/.test(tagName);
 }
 
 function renderUnknownValue(value: unknown): string {
@@ -1479,8 +1626,30 @@ function renderJsxAttributes(
 
     const rawName = property.name.text;
     const attrName = rawName === "className" ? "class" : rawName;
+    const isDataAttribute = attrName.startsWith("data-");
+    const isAriaAttribute = attrName.startsWith("aria-");
 
-    if (!["class", "href", "src", "alt", "id", "width", "height", "loading", "style"].includes(attrName)) {
+    if (
+      ![
+        "class",
+        "href",
+        "src",
+        "srcSet",
+        "sizes",
+        "alt",
+        "id",
+        "width",
+        "height",
+        "loading",
+        "poster",
+        "target",
+        "rel",
+        "role",
+        "style"
+      ].includes(attrName) &&
+      !isDataAttribute &&
+      !isAriaAttribute
+    ) {
       continue;
     }
 
@@ -1517,6 +1686,132 @@ function renderJsxAttributes(
   return rendered.join("");
 }
 
+function resolveAssetReference(
+  tagName: string,
+  scope: RenderScope,
+  constants: Map<string, unknown>,
+  assets: LovableAssetMap
+) {
+  const value = scope.get(tagName) ?? constants.get(tagName) ?? assets.get(tagName);
+  return typeof value === "string" && value.startsWith("data:") ? value : null;
+}
+
+function renderGenericComponentAttributes(
+  props: Record<string, unknown>,
+  omittedKeys: Set<string> = new Set()
+) {
+  return Object.entries(props)
+    .flatMap(([key, value]) => {
+      if (omittedKeys.has(key)) {
+        return [];
+      }
+
+      const attrName =
+        key === "className"
+          ? "class"
+          : key === "srcSet"
+            ? "srcset"
+            : key === "htmlFor"
+              ? "for"
+              : key;
+
+      if (
+        ![
+          "class",
+          "href",
+          "src",
+          "srcSet",
+          "sizes",
+          "alt",
+          "id",
+          "width",
+          "height",
+          "loading",
+          "poster",
+          "target",
+          "rel",
+          "role",
+          "type",
+          "title"
+        ].includes(attrName) &&
+        !attrName.startsWith("data-") &&
+        !attrName.startsWith("aria-")
+      ) {
+        return [];
+      }
+
+      if (typeof value === "string" || typeof value === "number") {
+        return [` ${attrName}="${escapeHtml(String(value))}"`];
+      }
+
+      if (value === true) {
+        return [` ${attrName}="true"`];
+      }
+
+      return [];
+    })
+    .join("");
+}
+
+function renderGenericComponentFallback(
+  tagName: string,
+  props: Record<string, unknown>,
+  children?: string
+) {
+  const resolvedHref =
+    typeof props.href === "string" && props.href.trim()
+      ? props.href
+      : typeof props.to === "string" && props.to.trim()
+        ? props.to
+        : undefined;
+  const resolvedProps = resolvedHref ? { ...props, href: resolvedHref } : props;
+  const className =
+    typeof resolvedProps.className === "string"
+      ? resolvedProps.className
+      : typeof resolvedProps.class === "string"
+        ? resolvedProps.class
+        : undefined;
+  const styleValue = renderStyleObject(resolvedProps.style);
+  const baseAttrs = renderGenericComponentAttributes(resolvedProps);
+  const attrs =
+    baseAttrs +
+    (className && !/\sclass=/.test(baseAttrs)
+      ? ` class="${escapeHtml(className)}"`
+      : "") +
+    (styleValue ? ` style="${escapeHtml(styleValue)}"` : "");
+  const innerHtml =
+    typeof children === "string" && children.trim()
+      ? children
+      : [resolvedProps.title, resolvedProps.body]
+          .filter((value) => typeof value === "string" && value.trim())
+          .map((value) => escapeHtml(String(value)))
+          .join(" ");
+
+  if (typeof resolvedProps.src === "string" && resolvedProps.src.trim()) {
+    const imageAttrs =
+      renderGenericComponentAttributes(
+        resolvedProps,
+        new Set(["src", "alt", "className", "class", "style"])
+      ) +
+      (className ? ` class="${escapeHtml(className)}"` : "") +
+      (styleValue ? ` style="${escapeHtml(styleValue)}"` : "");
+
+    return `<img${imageAttrs} src="${escapeHtml(resolvedProps.src)}" alt="${escapeHtml(
+      typeof resolvedProps.alt === "string" ? resolvedProps.alt : ""
+    )}" />`;
+  }
+
+  if (typeof resolvedProps.href === "string" && resolvedProps.href.trim()) {
+    return `<a${attrs}>${innerHtml}</a>`;
+  }
+
+  if (/button|trigger/i.test(tagName) || resolvedProps.role === "button") {
+    return `<button${attrs}>${innerHtml}</button>`;
+  }
+
+  return innerHtml ? `<div${attrs}>${innerHtml}</div>` : "";
+}
+
 function renderJsxChildren(
   children: ts.NodeArray<ts.JsxChild>,
   sourceFile: ts.SourceFile,
@@ -1542,6 +1837,95 @@ function renderJsxChildren(
     .join("");
 }
 
+const ICON_FALLBACK_PATHS: Record<string, string> = {
+  Check: '<path d="M5 12.5l4 4L19 6.5"></path>',
+  Plus: '<path d="M12 5v14"></path><path d="M5 12h14"></path>',
+  Minus: '<path d="M5 12h14"></path>',
+  Heart:
+    '<path d="M12 20s-6.5-4.2-8.5-8C1.8 8.6 3.9 5 7.8 5c1.8 0 3.2 0.9 4.2 2.2C13 5.9 14.4 5 16.2 5c3.9 0 6 3.6 4.3 7-2 3.8-8.5 8-8.5 8z"></path>',
+  Shield: '<path d="M12 3l7 3v5c0 5-3.3 8.1-7 10-3.7-1.9-7-5-7-10V6l7-3z"></path>',
+  Truck:
+    '<path d="M3 7h10v8H3z"></path><path d="M13 10h4l3 3v2h-7z"></path><circle cx="7.5" cy="17.5" r="1.5"></circle><circle cx="17.5" cy="17.5" r="1.5"></circle>',
+  Star:
+    '<path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 16.8 6.7 19.6l1-5.8-4.2-4.1 5.9-.9L12 3.5z"></path>',
+  Sparkles:
+    '<path d="M12 3.5l2.2 5 5.3 2.2-5.3 2.2-2.2 5-2.2-5-5.3-2.2 5.3-2.2 2.2-5z"></path>'
+};
+
+function serializeSvgLength(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  return null;
+}
+
+function isLikelyIconComponent(tagName: string, props: Record<string, unknown>) {
+  if (NON_RENDERABLE_COMPONENTS.has(tagName) || /Icon$/i.test(tagName)) {
+    return true;
+  }
+
+  const propKeys = Object.keys(props);
+
+  if (propKeys.length === 0 || propKeys.length > 8) {
+    return false;
+  }
+
+  const iconLikeProps = new Set([
+    "class",
+    "className",
+    "color",
+    "size",
+    "strokeWidth",
+    "width",
+    "height",
+    "aria-hidden"
+  ]);
+
+  return (
+    /^[A-Z][A-Za-z0-9]+$/.test(tagName) &&
+    propKeys.every((key) => iconLikeProps.has(key))
+  );
+}
+
+function renderIconFallback(tagName: string, props: Record<string, unknown>) {
+  const className =
+    typeof props.className === "string"
+      ? props.className
+      : typeof props.class === "string"
+        ? props.class
+        : "";
+  const width = serializeSvgLength(props.width ?? props.size) ?? "24";
+  const height = serializeSvgLength(props.height ?? props.size) ?? width;
+  const strokeWidth = serializeSvgLength(props.strokeWidth) ?? "1.5";
+  const color = typeof props.color === "string" && props.color.trim() ? props.color.trim() : "currentColor";
+  const pathMarkup =
+    ICON_FALLBACK_PATHS[tagName] ??
+    '<circle cx="12" cy="12" r="8"></circle><path d="M12 8v8"></path><path d="M8 12h8"></path>';
+  const attrs = [
+    `data-lovable-icon="${escapeHtml(tagName)}"`,
+    'viewBox="0 0 24 24"',
+    'fill="none"',
+    `stroke="${escapeHtml(color)}"`,
+    `stroke-width="${escapeHtml(strokeWidth)}"`,
+    'stroke-linecap="round"',
+    'stroke-linejoin="round"',
+    'aria-hidden="true"',
+    `width="${escapeHtml(width)}"`,
+    `height="${escapeHtml(height)}"`
+  ];
+
+  if (className) {
+    attrs.push(`class="${escapeHtml(className)}"`);
+  }
+
+  return `<svg ${attrs.join(" ")}>${pathMarkup}</svg>`;
+}
+
 function renderCustomComponent(
   tagName: string,
   attributes: ts.JsxAttributes,
@@ -1552,10 +1936,6 @@ function renderCustomComponent(
   project?: ProjectRenderContext,
   children?: string
 ): string {
-  if (NON_RENDERABLE_COMPONENTS.has(tagName)) {
-    return "";
-  }
-
   const props: Record<string, unknown> = {};
 
   for (const property of attributes.properties) {
@@ -1585,6 +1965,20 @@ function renderCustomComponent(
     props.children = children;
   }
 
+  const assetReference = resolveAssetReference(tagName, scope, constants, assets);
+
+  if (assetReference) {
+    return renderGenericComponentFallback(tagName, {
+      ...props,
+      src: props.src ?? assetReference,
+      alt: typeof props.alt === "string" ? props.alt : tagName
+    });
+  }
+
+  if (NON_RENDERABLE_COMPONENTS.has(tagName)) {
+    return renderIconFallback(tagName, props);
+  }
+
   if (project) {
     const currentModule = project.modules.get(normalizeProjectPath(sourceFile.fileName));
 
@@ -1602,13 +1996,11 @@ function renderCustomComponent(
     }
   }
 
-  const content = [props.title, props.body, props.children]
-    .filter((value) => typeof value === "string" && value.trim())
-    .join(" ");
+  if (isLikelyIconComponent(tagName, props)) {
+    return renderIconFallback(tagName, props);
+  }
 
-  return content
-    ? `<div data-lovable-component="${escapeHtml(tagName)}">${escapeHtml(content)}</div>`
-    : "";
+  return renderGenericComponentFallback(tagName, props, children);
 }
 
 function renderJsxNode(
@@ -2169,6 +2561,10 @@ export async function extractLovableProjectHtml(
     return null;
   }
 
+  const projectStyles = renderProjectStyles(
+    await collectProjectStylesheets(project, zip)
+  );
+
   const renderedHtml = renderStaticLovableHtml(project);
 
   if (renderedHtml) {
@@ -2177,6 +2573,7 @@ export async function extractLovableProjectHtml(
   <head>
     <meta charset="utf-8" />
     <title>${escapeHtml(getTitle(entryModule.sourceFile, entryModule.constants))}</title>
+    ${projectStyles}
   </head>
   <body>
 ${renderedHtml}
@@ -2194,5 +2591,14 @@ ${renderedHtml}
     return null;
   }
 
-  return renderExtractedNodes(getTitle(entryModule.sourceFile, entryModule.constants), nodes);
+  const extractedHtml = renderExtractedNodes(
+    getTitle(entryModule.sourceFile, entryModule.constants),
+    nodes
+  );
+
+  if (!projectStyles) {
+    return extractedHtml;
+  }
+
+  return extractedHtml.replace("</head>", `  ${projectStyles}\n  </head>`);
 }

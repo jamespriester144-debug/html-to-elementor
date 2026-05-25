@@ -105,6 +105,7 @@ export type SectionOverlayLink = {
   nodeId: string;
   href: string;
   text: string;
+  ariaLabel?: string;
   title?: string;
   target?: string;
   rel?: string;

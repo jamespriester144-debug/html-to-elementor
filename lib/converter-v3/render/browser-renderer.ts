@@ -142,7 +142,7 @@ function createFallbackAsset(
   const backgroundImage = inlineStyles["background-image"];
 
   return {
-    href: attributes.href,
+    href: attributes.href || attributes["data-href"] || attributes["data-url"],
     src: attributes.src,
     alt: attributes.alt,
     poster: attributes.poster,
@@ -580,7 +580,11 @@ async function captureUsingPageFactory(
       );
 
       const screenshotPath = join(outputDir, `screenshot-${viewport.name}.png`);
-      await session.page.screenshot({ path: screenshotPath, fullPage: true });
+      await session.page.screenshot({
+        path: screenshotPath,
+        fullPage: true,
+        scale: "css"
+      });
       screenshots[viewport.name] = screenshotPath;
 
       if (viewport.name !== "desktop") {

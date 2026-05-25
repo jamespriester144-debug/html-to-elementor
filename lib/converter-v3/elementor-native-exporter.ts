@@ -20,7 +20,8 @@ import {
   compareImagesPixelByPixel,
   renderHtmlToScreenshot
 } from "@/lib/converter-v3/visual-similarity";
-import { isForceVisualSnapshotEnabled } from "@/lib/env";
+import { shouldForceUniversalFullPageSnapshot } from "@/lib/converter-v3/visual-clone-policy";
+import { isForceFullPageSnapshotEnabled, isForceVisualSnapshotEnabled } from "@/lib/env";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
 export type NativeExporterResult = {
@@ -53,15 +54,285 @@ type StructuralVisualAssessment = {
   diffScreenshotPath?: string;
 };
 
+type ParsedGradient = {
+  type: "linear" | "radial";
+  colorA: string;
+  colorB: string;
+  colorStopA: number;
+  colorStopB: number;
+  angle?: number;
+  position?: string;
+};
+
+type ParsedBackgroundStyle = {
+  imageUrl?: string;
+  imageLayerIndex?: number;
+  gradient?: ParsedGradient;
+};
+
 const STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD = 0.99;
+
+function splitCssSegments(value: string) {
+  const segments: string[] = [];
+  let current = "";
+  let depth = 0;
+
+  for (const character of value) {
+    if (character === "(") {
+      depth += 1;
+      current += character;
+      continue;
+    }
+
+    if (character === ")") {
+      depth = Math.max(0, depth - 1);
+      current += character;
+      continue;
+    }
+
+    if (character === "," && depth === 0) {
+      const segment = current.trim();
+
+      if (segment) {
+        segments.push(segment);
+      }
+
+      current = "";
+      continue;
+    }
+
+    current += character;
+  }
+
+  const trailingSegment = current.trim();
+
+  if (trailingSegment) {
+    segments.push(trailingSegment);
+  }
+
+  return segments;
+}
 
 function parseBackgroundUrl(value?: string): string | undefined {
   if (!value || value === "none") {
     return undefined;
   }
 
-  const match = value.match(/url\((['"]?)(.*?)\1\)/i);
+  const match = value.trim().match(/^url\((['"]?)(.*?)\1\)$/i);
   return match?.[2]?.trim() || undefined;
+}
+
+function parseCssAngle(value: string) {
+  const match = value.trim().toLowerCase().match(/^(-?\d+(?:\.\d+)?)(deg|turn|rad)$/i);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const amount = Number.parseFloat(match[1]);
+
+  if (!Number.isFinite(amount)) {
+    return undefined;
+  }
+
+  const unit = match[2].toLowerCase();
+  let degrees = amount;
+
+  if (unit === "turn") {
+    degrees = amount * 360;
+  } else if (unit === "rad") {
+    degrees = (amount * 180) / Math.PI;
+  }
+
+  const normalized = ((degrees % 360) + 360) % 360;
+  return Number.parseFloat(normalized.toFixed(2));
+}
+
+function parseLinearGradientDirection(value: string) {
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, " ");
+
+  switch (normalized) {
+    case "to top":
+      return 0;
+    case "to top right":
+    case "to right top":
+      return 45;
+    case "to right":
+      return 90;
+    case "to bottom right":
+    case "to right bottom":
+      return 135;
+    case "to bottom":
+      return 180;
+    case "to bottom left":
+    case "to left bottom":
+      return 225;
+    case "to left":
+      return 270;
+    case "to top left":
+    case "to left top":
+      return 315;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeGradientPosition(value?: string) {
+  const normalized = value?.trim().replace(/\s+/g, " ");
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  switch (normalized.toLowerCase()) {
+    case "center":
+      return "center center";
+    case "left":
+      return "left center";
+    case "right":
+      return "right center";
+    case "top":
+      return "center top";
+    case "bottom":
+      return "center bottom";
+    default:
+      return normalized;
+  }
+}
+
+function parseGradientColorStop(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const match = trimmed.match(/^(.*?)(?:\s+(-?\d+(?:\.\d+)?)%)?$/);
+
+  if (!match?.[1]?.trim()) {
+    return undefined;
+  }
+
+  const stopValue = match[2] !== undefined ? Number.parseFloat(match[2]) : undefined;
+
+  return {
+    color: match[1].trim(),
+    stop: Number.isFinite(stopValue) ? stopValue : undefined
+  };
+}
+
+function looksLikeRadialGradientDescriptor(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return (
+    /\bat\b/.test(normalized) ||
+    /\bcircle\b/.test(normalized) ||
+    /\bellipse\b/.test(normalized) ||
+    /\bclosest-side\b/.test(normalized) ||
+    /\bfarthest-side\b/.test(normalized) ||
+    /\bclosest-corner\b/.test(normalized) ||
+    /\bfarthest-corner\b/.test(normalized)
+  );
+}
+
+function parseCssGradient(value: string): ParsedGradient | undefined {
+  const match = value.trim().match(/^(linear|radial)-gradient\((.*)\)$/i);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const type = match[1].toLowerCase() as ParsedGradient["type"];
+  const segments = splitCssSegments(match[2]);
+
+  if (segments.length < 2) {
+    return undefined;
+  }
+
+  let cursor = 0;
+  let angle: number | undefined;
+  let position: string | undefined;
+
+  if (type === "linear") {
+    angle = parseCssAngle(segments[0]) ?? parseLinearGradientDirection(segments[0]);
+
+    if (angle !== undefined) {
+      cursor = 1;
+    }
+  } else if (looksLikeRadialGradientDescriptor(segments[0])) {
+    const descriptor = segments[0];
+    const positionMatch = descriptor.match(/\bat\s+(.+)$/i);
+    position = normalizeGradientPosition(positionMatch?.[1] ?? "center center");
+    cursor = 1;
+  }
+
+  const colorStops = segments
+    .slice(cursor)
+    .map(parseGradientColorStop)
+    .filter((stop): stop is NonNullable<ReturnType<typeof parseGradientColorStop>> => Boolean(stop));
+
+  if (colorStops.length < 2) {
+    return undefined;
+  }
+
+  const firstStop = colorStops[0];
+  const lastStop = colorStops[colorStops.length - 1];
+
+  if (!firstStop || !lastStop) {
+    return undefined;
+  }
+
+  return {
+    type,
+    colorA: firstStop.color,
+    colorB: lastStop.color,
+    colorStopA: firstStop.stop ?? 0,
+    colorStopB: lastStop.stop ?? 100,
+    angle,
+    position
+  };
+}
+
+function parseBackgroundStyle(value?: string): ParsedBackgroundStyle {
+  if (!value || value === "none") {
+    return {};
+  }
+
+  const layers = splitCssSegments(value);
+  let imageUrl: string | undefined;
+  let imageLayerIndex: number | undefined;
+  let gradient: ParsedGradient | undefined;
+
+  layers.forEach((layer, index) => {
+    const parsedUrl = parseBackgroundUrl(layer);
+
+    if (parsedUrl) {
+      imageUrl = parsedUrl;
+      imageLayerIndex = index;
+      return;
+    }
+
+    gradient = gradient ?? parseCssGradient(layer);
+  });
+
+  return {
+    imageUrl,
+    imageLayerIndex,
+    gradient
+  };
+}
+
+function pickCssLayerValue(value: string | undefined, layerIndex: number | undefined) {
+  if (!value) {
+    return undefined;
+  }
+
+  const layers = splitCssSegments(value);
+
+  if (!layers.length) {
+    return undefined;
+  }
+
+  return layers[layerIndex ?? layers.length - 1] ?? layers[layers.length - 1];
 }
 
 function buildNodeMap(layout: LayoutDocument) {
@@ -80,6 +351,73 @@ function normalizeBackgroundSize(value?: string) {
   return undefined;
 }
 
+function hasMeaningfulBackgroundColor(value?: string) {
+  if (!value) {
+    return false;
+  }
+
+  const normalized = value.replace(/\s+/g, "").toLowerCase();
+  return normalized !== "transparent" && normalized !== "rgba(0,0,0,0)" && normalized !== "none";
+}
+
+function createElementorUnitValue(unit: "%" | "deg", size: number) {
+  return {
+    unit,
+    size: Number.parseFloat(size.toFixed(2)),
+    sizes: []
+  };
+}
+
+function setMirroredSetting(
+  settings: ElementorElement["settings"],
+  key: string,
+  value: unknown
+) {
+  if (value === undefined) {
+    return;
+  }
+
+  settings[key] = value;
+  settings[`_${key}`] = value;
+}
+
+function applyGradientSettings(
+  settings: ElementorElement["settings"],
+  keyPrefix: "background" | "background_overlay",
+  gradient: ParsedGradient
+) {
+  setMirroredSetting(settings, `${keyPrefix}_background`, "gradient");
+  setMirroredSetting(settings, `${keyPrefix}_color`, gradient.colorA);
+  setMirroredSetting(settings, `${keyPrefix}_color_b`, gradient.colorB);
+  setMirroredSetting(
+    settings,
+    `${keyPrefix}_color_stop`,
+    createElementorUnitValue("%", gradient.colorStopA)
+  );
+  setMirroredSetting(
+    settings,
+    `${keyPrefix}_color_b_stop`,
+    createElementorUnitValue("%", gradient.colorStopB)
+  );
+  setMirroredSetting(settings, `${keyPrefix}_gradient_type`, gradient.type);
+
+  if (typeof gradient.angle === "number") {
+    setMirroredSetting(
+      settings,
+      `${keyPrefix}_gradient_angle`,
+      createElementorUnitValue("deg", gradient.angle)
+    );
+  }
+
+  if (gradient.position) {
+    setMirroredSetting(
+      settings,
+      `${keyPrefix}_gradient_position`,
+      normalizeGradientPosition(gradient.position)
+    );
+  }
+}
+
 function applySourceNodeMetadata(
   element: ElementorElement,
   nodeById: Map<string, LayoutNode>
@@ -89,7 +427,8 @@ function applySourceNodeMetadata(
       ? element.settings.converter_v3_source_node_id
       : undefined;
   const node = sourceNodeId ? nodeById.get(sourceNodeId) : undefined;
-  const backgroundImageUrl = parseBackgroundUrl(node?.style.backgroundImage);
+  const backgroundStyle = parseBackgroundStyle(node?.style.backgroundImage);
+  const backgroundImageUrl = backgroundStyle.imageUrl;
 
   const nextElement = {
     ...element,
@@ -112,13 +451,46 @@ function applySourceNodeMetadata(
     nextElement.settings.z_index = node.visual.effectiveZIndex;
   }
 
-  if (backgroundImageUrl && nextElement.elType === "container") {
-    nextElement.settings.background_background = "classic";
-    nextElement.settings.background_image = {
+  if ((nextElement.elType === "container" || nextElement.elType === "section") && hasMeaningfulBackgroundColor(node.style.backgroundColor)) {
+    setMirroredSetting(nextElement.settings, "background_color", node.style.backgroundColor);
+    setMirroredSetting(
+      nextElement.settings,
+      "background_background",
+      nextElement.settings.background_background ?? "classic"
+    );
+  }
+
+  if (backgroundImageUrl && (nextElement.elType === "container" || nextElement.elType === "section")) {
+    const backgroundPosition = pickCssLayerValue(
+      node.style.backgroundPosition,
+      backgroundStyle.imageLayerIndex
+    );
+    const backgroundSize = pickCssLayerValue(
+      node.style.backgroundSize,
+      backgroundStyle.imageLayerIndex
+    );
+
+    setMirroredSetting(nextElement.settings, "background_background", "classic");
+    setMirroredSetting(nextElement.settings, "background_image", {
       url: backgroundImageUrl
-    };
-    nextElement.settings.background_position = node.style.backgroundPosition;
-    nextElement.settings.background_size = normalizeBackgroundSize(node.style.backgroundSize);
+    });
+    setMirroredSetting(nextElement.settings, "background_position", backgroundPosition);
+    setMirroredSetting(
+      nextElement.settings,
+      "background_size",
+      normalizeBackgroundSize(backgroundSize)
+    );
+  }
+
+  if (
+    backgroundStyle.gradient &&
+    (nextElement.elType === "container" || nextElement.elType === "section")
+  ) {
+    applyGradientSettings(
+      nextElement.settings,
+      backgroundImageUrl ? "background_overlay" : "background",
+      backgroundStyle.gradient
+    );
   }
 
   if (node.detection?.semanticRole === "header") {
@@ -243,10 +615,15 @@ function buildPixelPerfectCandidate(params: {
 
 function getCandidateModes(params: {
   selectedMode: OutputMode;
+  forceFullPageSnapshot: boolean;
   forceVisualSnapshot: boolean;
   renderer: PageCapture["renderer"];
 }): InternalCandidateMode[] {
-  const { selectedMode, forceVisualSnapshot, renderer } = params;
+  const { selectedMode, forceFullPageSnapshot, forceVisualSnapshot, renderer } = params;
+
+  if (forceFullPageSnapshot) {
+    return ["snapshot"];
+  }
 
   if (forceVisualSnapshot) {
     return ["snapshot", "pixel-perfect"];
@@ -376,8 +753,32 @@ function buildSnapshotValidationFailure(
               nodeId: rootNodeId,
               message: blockingReason
             }
-          ]
+      ]
   };
+}
+
+function documentHasEmbeddedMediaAssets(document: ElementorDocument) {
+  const queue = [...document.content];
+
+  while (queue.length > 0) {
+    const element = queue.shift();
+
+    if (!element) {
+      continue;
+    }
+
+    const mediaUrl =
+      (element.settings?.image as { url?: string } | undefined)?.url ??
+      (element.settings?.background_image as { url?: string } | undefined)?.url;
+
+    if (typeof mediaUrl === "string" && mediaUrl.startsWith("data:image/")) {
+      return true;
+    }
+
+    queue.push(...element.elements);
+  }
+
+  return false;
 }
 
 export async function createElementorNativeExport(params: {
@@ -386,9 +787,13 @@ export async function createElementorNativeExport(params: {
   selectedMode: OutputMode;
   outputDir?: string;
 }): Promise<NativeExporterResult> {
+  const forceFullPageSnapshot =
+    isForceFullPageSnapshotEnabled() ||
+    shouldForceUniversalFullPageSnapshot(params.capture, params.layout);
   const forceVisualSnapshot = isForceVisualSnapshotEnabled();
   const attemptedModes = getCandidateModes({
     selectedMode: params.selectedMode,
+    forceFullPageSnapshot,
     forceVisualSnapshot,
     renderer: params.capture.renderer
   });
@@ -458,6 +863,40 @@ export async function createElementorNativeExport(params: {
     }
 
     if (
+      forceFullPageSnapshot &&
+      candidate.emittedMode === "snapshot" &&
+      candidate.snapshot?.requiresPixelPerfect
+    ) {
+      const pixelPerfectReason =
+        candidate.snapshot.pixelPerfectReason ??
+        "Snapshot da pagina inteira nao pode ser gerado; fallback emergencial para pixel-perfect.";
+      warnings.push(pixelPerfectReason);
+
+      const pixelPerfectCandidate = buildPixelPerfectCandidate({
+        capture: params.capture,
+        selectedMode: params.selectedMode,
+        fallbackReason: pixelPerfectReason
+      });
+      const pixelPerfectValidation = validateElementorExport({
+        capture: params.capture,
+        layout: params.layout,
+        document: pixelPerfectCandidate.document,
+        mode: pixelPerfectCandidate.emittedMode
+      });
+
+      return {
+        document: pixelPerfectCandidate.document,
+        emittedMode: pixelPerfectCandidate.emittedMode,
+        exportStage: pixelPerfectCandidate.exportStage,
+        fallbackReason: pixelPerfectReason,
+        warnings: [...warnings, ...pixelPerfectCandidate.warnings],
+        validation: pixelPerfectValidation,
+        previewHtml: pixelPerfectCandidate.previewHtml,
+        snapshot: candidate.snapshot
+      };
+    }
+
+    if (
       candidate.emittedMode === "snapshot" &&
       candidate.snapshot &&
       candidate.snapshot.requiresPixelPerfect
@@ -509,14 +948,22 @@ export async function createElementorNativeExport(params: {
     }
 
     if (structuralVisualAssessment && !structuralVisualAssessment.passed) {
-      warnings.push(
-        `Modo ${candidate.emittedMode} ficou em ${(
-          structuralVisualAssessment.similarity * 100
-        ).toFixed(2)}% de similaridade visual, abaixo do minimo de ${(
-          STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD * 100
-        ).toFixed(2)}%; escalando para fallback mais fiel.`
-      );
-      continue;
+      if (validation.passed && documentHasEmbeddedMediaAssets(enrichedDocument)) {
+        warnings.push(
+          `Modo ${candidate.emittedMode} preservou assets locais embutidos; mantendo a exportacao nativa apesar da previa estrutural ficar em ${(
+            structuralVisualAssessment.similarity * 100
+          ).toFixed(2)}%.`
+        );
+      } else {
+        warnings.push(
+          `Modo ${candidate.emittedMode} ficou em ${(
+            structuralVisualAssessment.similarity * 100
+          ).toFixed(2)}% de similaridade visual, abaixo do minimo de ${(
+            STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD * 100
+          ).toFixed(2)}%; escalando para fallback mais fiel.`
+        );
+        continue;
+      }
     }
 
     if (validation.passed) {

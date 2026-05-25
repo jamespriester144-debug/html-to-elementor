@@ -36,6 +36,10 @@ export function isForceVisualSnapshotEnabled(): boolean {
   return getBooleanEnv("FORCE_VISUAL_SNAPSHOT", true);
 }
 
+export function isForceFullPageSnapshotEnabled(): boolean {
+  return getBooleanEnv("FORCE_FULL_PAGE_SNAPSHOT", false);
+}
+
 export function isUniversalInputAnalysisEnabled(): boolean {
   return getBooleanEnv("UNIVERSAL_INPUT_ANALYSIS", false);
 }

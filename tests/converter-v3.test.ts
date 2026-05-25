@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -22,12 +22,26 @@ import {
   getOrderedChildIdsForPattern
 } from "../lib/converter-v3/emitters/elementor/responsive-layout";
 import { createEditableElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/editable";
-import { runExportPipelineV3FromHtml } from "../lib/converter-v3/orchestration/export-pipeline-v3";
+import {
+  runExportPipelineV3,
+  runExportPipelineV3FromHtml
+} from "../lib/converter-v3/orchestration/export-pipeline-v3";
 import { runCapturePipelineV3FromHtml } from "../lib/converter-v3/orchestration/pipeline-v3";
-import { resolveSourceFromUpload } from "../lib/converter-v3/resolve/source-resolver";
+import { buildExportReport } from "../lib/converter-v3/reports/report-builder";
+import {
+  resolveSourceFromLocalFile,
+  resolveSourceFromUpload
+} from "../lib/converter-v3/resolve/source-resolver";
 import { classifySections } from "../lib/converter-v3/section-classifier";
 import { buildVisualHierarchy } from "../lib/converter-v3/visual-hierarchy";
-import { isForceVisualSnapshotEnabled as isForceVisualSnapshotEnabledFromEnv } from "../lib/env";
+import {
+  isForceFullPageSnapshotEnabled as isForceFullPageSnapshotEnabledFromEnv,
+  isForceVisualSnapshotEnabled as isForceVisualSnapshotEnabledFromEnv
+} from "../lib/env";
+
+if (typeof process.env.FORCE_FULL_PAGE_SNAPSHOT !== "string") {
+  process.env.FORCE_FULL_PAGE_SNAPSHOT = "false";
+}
 
 function isForceVisualSnapshotEnabled() {
   const value = String(process.env.FORCE_VISUAL_SNAPSHOT || "").toLowerCase().trim();
@@ -45,6 +59,24 @@ function isForceVisualSnapshotEnabled() {
   }
 
   return true;
+}
+
+function isForceFullPageSnapshotEnabled() {
+  const value = String(process.env.FORCE_FULL_PAGE_SNAPSHOT || "").toLowerCase().trim();
+
+  if (!value) {
+    return false;
+  }
+
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+
+  return false;
 }
 
 function expectedPrimaryMode() {
@@ -84,6 +116,22 @@ async function testForceVisualSnapshotDefaultsToTrue() {
       process.env.FORCE_VISUAL_SNAPSHOT = previous;
     } else {
       delete process.env.FORCE_VISUAL_SNAPSHOT;
+    }
+  }
+}
+
+async function testForceFullPageSnapshotDefaultsToFalse() {
+  const previous = process.env.FORCE_FULL_PAGE_SNAPSHOT;
+
+  try {
+    delete process.env.FORCE_FULL_PAGE_SNAPSHOT;
+    assert.equal(isForceFullPageSnapshotEnabledFromEnv(), false);
+    assert.equal(isForceFullPageSnapshotEnabled(), false);
+  } finally {
+    if (typeof previous === "string") {
+      process.env.FORCE_FULL_PAGE_SNAPSHOT = previous;
+    } else {
+      delete process.env.FORCE_FULL_PAGE_SNAPSHOT;
     }
   }
 }
@@ -161,6 +209,66 @@ function createMockInputAnalysis(
       fullPageSnapshotFailed: false,
       resources: [],
       ...(overrides.diagnostics ?? {})
+    }
+  };
+}
+
+function createMockCapture(overrides: Partial<PageCapture> = {}): PageCapture {
+  return {
+    id: overrides.id ?? "mock-capture",
+    sourceKind: overrides.sourceKind ?? "raw-html",
+    title: overrides.title ?? "Mock Capture",
+    sourceHtml: overrides.sourceHtml ?? "<html><body></body></html>",
+    renderedHtml: overrides.renderedHtml ?? "<html><body></body></html>",
+    renderer: overrides.renderer ?? "browser",
+    inputAnalysis: overrides.inputAnalysis ?? createMockInputAnalysis(),
+    viewports: overrides.viewports ?? [
+      {
+        name: "desktop",
+        width: 1440,
+        height: 1200
+      },
+      {
+        name: "tablet",
+        width: 1024,
+        height: 1366
+      },
+      {
+        name: "mobile",
+        width: 390,
+        height: 844
+      }
+    ],
+    domSnapshot: overrides.domSnapshot ?? [],
+    styleSnapshot: overrides.styleSnapshot ?? [],
+    boxSnapshot: overrides.boxSnapshot ?? [],
+    responsiveSnapshot: overrides.responsiveSnapshot ?? [],
+    nodes: overrides.nodes ?? [],
+    sections: overrides.sections,
+    summary: overrides.summary ?? {
+      totalNodes: 0,
+      visibleNodes: 0,
+      links: 0,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      visualContainers: 0,
+      geometryGroups: 0,
+      sections: 0
+    },
+    artifacts: overrides.artifacts ?? {
+      outputDir: path.join(os.tmpdir(), "mock-capture"),
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {}
     }
   };
 }
@@ -4677,9 +4785,15 @@ async function testV3NativeExportPreservesBackgroundImages() {
   ) as {
     content: Array<{
       settings?: {
+        width?: string;
+        tablet_width?: string;
+        mobile_width?: string;
         background_image?: { url?: string };
+        _background_image?: { url?: string };
         background_size?: string;
+        _background_size?: string;
         background_position?: string;
+        _background_position?: string;
       };
     }>;
   };
@@ -4695,12 +4809,176 @@ async function testV3NativeExportPreservesBackgroundImages() {
   }
 
   assert.equal(result.validation.passed, true);
+  assert.equal(elementorTemplate.content[0].settings?.width, "100%");
+  assert.equal(elementorTemplate.content[0].settings?.tablet_width, "100%");
+  assert.equal(elementorTemplate.content[0].settings?.mobile_width, "100%");
   assert.equal(
     elementorTemplate.content[0].settings?.background_image?.url,
     "https://example.com/hero-bg.jpg"
   );
+  assert.equal(
+    elementorTemplate.content[0].settings?._background_image?.url,
+    "https://example.com/hero-bg.jpg"
+  );
   assert.equal(elementorTemplate.content[0].settings?.background_size, "cover");
+  assert.equal(elementorTemplate.content[0].settings?._background_size, "cover");
   assert.equal(elementorTemplate.content[0].settings?.background_position, "center center");
+  assert.equal(
+    elementorTemplate.content[0].settings?._background_position,
+    "center center"
+  );
+}
+
+async function testV3NativeExportPreservesNestedBackgroundImagesFromLocalAssets() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const sourceRoot = path.join(outputRoot, "nested-background-assets");
+  const assetDir = path.join(sourceRoot, "assets");
+
+  await mkdir(assetDir, { recursive: true });
+  await writeFile(
+    path.join(assetDir, "hero.svg"),
+    `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300"><rect width="400" height="300" fill="#123456" /><circle cx="308" cy="84" r="52" fill="#fed766" /></svg>`
+  );
+  await writeFile(
+    path.join(sourceRoot, "index.html"),
+    `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Nested Background Media</title>
+    <style>
+      body { margin: 0; background: #f5f1e8; font-family: Arial, sans-serif; }
+      section { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; padding: 32px; }
+      .card { padding: 24px; border-radius: 24px; background: #ffffff; }
+      .hero-art {
+        min-height: 280px;
+        border-radius: 24px;
+        background-image: url("./assets/hero.svg");
+        background-size: cover;
+        background-position: center center;
+      }
+    </style>
+  </head>
+  <body>
+    <section>
+      <div class="card">
+        <h1>Hero</h1>
+        <p>Copy that should stay editable.</p>
+      </div>
+      <div class="hero-art" aria-label="Decorative hero panel"></div>
+    </section>
+  </body>
+</html>`
+  );
+
+  const result = await withSnapshotFlagsDisabled(async () => {
+    const resolvedSource = await resolveSourceFromLocalFile(path.join(sourceRoot, "index.html"));
+    return runExportPipelineV3(resolvedSource, {
+      preferBrowser: true,
+      outputRoot
+    });
+  });
+  const elementorTemplate = JSON.parse(
+    await readFile(result.artifacts.elementorTemplatePath, "utf8")
+  ) as {
+    content: unknown[];
+  };
+  const backgroundImages = [
+    ...JSON.stringify(elementorTemplate).matchAll(
+      /"background_image"\s*:\s*\{\s*"url"\s*:\s*"([^"]+)"/g
+    )
+  ].map((match) => match[1]);
+
+  assert.equal(result.validation.passed, true);
+  assert.notEqual(result.emittedMode, "snapshot");
+  assert.equal(backgroundImages.some((url) => url.startsWith("data:image/svg+xml;base64,")), true);
+}
+
+async function testV3NativeExportPreservesRootBackgroundColorImageAndGradientOverlay() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const sourceRoot = path.join(outputRoot, "root-background-assets");
+  const assetDir = path.join(sourceRoot, "assets");
+
+  await mkdir(assetDir, { recursive: true });
+  await writeFile(
+    path.join(assetDir, "hero.svg"),
+    `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500" viewBox="0 0 800 500"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#102542" /><stop offset="100%" stop-color="#f87060" /></linearGradient></defs><rect width="800" height="500" fill="url(#g)" /><circle cx="620" cy="120" r="90" fill="#ffd166" /></svg>`
+  );
+  await writeFile(
+    path.join(sourceRoot, "index.html"),
+    `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Root Background Overlay</title>
+    <style>
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        min-height: 100vh;
+        background-color: #f5f1e8;
+        background-image: linear-gradient(135deg, rgba(16, 37, 66, 0.86), rgba(248, 112, 96, 0.78)), url("./assets/hero.svg");
+        background-size: cover;
+        background-position: center center;
+        color: #fff;
+        font-family: Arial, sans-serif;
+      }
+      main { min-height: 100vh; padding: 48px; }
+      .panel { max-width: 520px; padding: 32px; border-radius: 28px; background: rgba(255, 255, 255, 0.12); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="panel">
+        <h1>Hero background</h1>
+        <p>Testing root color, image and effect export.</p>
+      </div>
+    </main>
+  </body>
+</html>`
+  );
+
+  const result = await withSnapshotFlagsDisabled(async () => {
+    const resolvedSource = await resolveSourceFromLocalFile(path.join(sourceRoot, "index.html"));
+    return runExportPipelineV3(resolvedSource, {
+      preferBrowser: true,
+      outputRoot
+    });
+  });
+  const elementorTemplate = JSON.parse(
+    await readFile(result.artifacts.elementorTemplatePath, "utf8")
+  ) as {
+    content: Array<{
+      settings?: {
+        background_color?: string;
+        _background_color?: string;
+        background_image?: { url?: string };
+        _background_image?: { url?: string };
+        background_position?: string;
+        _background_position?: string;
+        background_size?: string;
+        _background_size?: string;
+        background_overlay_background?: string;
+        _background_overlay_background?: string;
+        background_overlay_gradient_type?: string;
+        _background_overlay_gradient_type?: string;
+      };
+    }>;
+  };
+  const rootSettings = elementorTemplate.content[0]?.settings;
+
+  assert.equal(result.validation.passed, true);
+  assert.equal(rootSettings?.background_color, "rgb(245, 241, 232)");
+  assert.equal(rootSettings?._background_color, "rgb(245, 241, 232)");
+  assert.equal(rootSettings?.background_image?.url?.startsWith("data:image/svg+xml;base64,"), true);
+  assert.equal(rootSettings?._background_image?.url?.startsWith("data:image/svg+xml;base64,"), true);
+  assert.equal(rootSettings?.background_position, "50% 50%");
+  assert.equal(rootSettings?._background_position, "50% 50%");
+  assert.equal(rootSettings?.background_size, "cover");
+  assert.equal(rootSettings?._background_size, "cover");
+  assert.equal(rootSettings?.background_overlay_background, "gradient");
+  assert.equal(rootSettings?._background_overlay_background, "gradient");
+  assert.equal(rootSettings?.background_overlay_gradient_type, "linear");
+  assert.equal(rootSettings?._background_overlay_gradient_type, "linear");
 }
 
 function testSectionClassifierDetectsSemanticSections() {
@@ -4958,13 +5236,210 @@ function testSectionClassifierDetectsSemanticSections() {
   );
 }
 
+function testSectionClassifierDetectsFaqAndCtaSections() {
+  const layout: LayoutDocument = {
+    id: "faq-cta-layout",
+    title: "FAQ CTA Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 12,
+    sectionIds: ["faq", "cta"],
+    semanticIndex: {},
+    detectedSections: [],
+    nodes: [
+      {
+        id: "page",
+        tag: "body",
+        kind: "page",
+        parentId: null,
+        children: ["faq", "cta"],
+        box: { x: 0, y: 0, width: 1200, height: 900 },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "faq",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["faq-title", "faq-q1", "faq-a1", "faq-q2", "faq-a2"],
+        box: { x: 0, y: 80, width: 1200, height: 360 },
+        visualOrder: 2,
+        layout: {},
+        spacing: {},
+        style: { backgroundColor: "#f8fafc" },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "faq-title",
+        tag: "h2",
+        kind: "text",
+        parentId: "faq",
+        children: [],
+        box: { x: 80, y: 120, width: 300, height: 40 },
+        visualOrder: 3,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Perguntas frequentes" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "faq-q1",
+        tag: "button",
+        kind: "button",
+        parentId: "faq",
+        children: [],
+        box: { x: 80, y: 190, width: 520, height: 48 },
+        visualOrder: 4,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Como funciona o plano?" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "faq-a1",
+        tag: "p",
+        kind: "text",
+        parentId: "faq",
+        children: [],
+        box: { x: 80, y: 250, width: 640, height: 48 },
+        visualOrder: 5,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Ele libera o snapshot visual e os overlays clicaveis." },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "faq-q2",
+        tag: "button",
+        kind: "button",
+        parentId: "faq",
+        children: [],
+        box: { x: 80, y: 320, width: 520, height: 48 },
+        visualOrder: 6,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Posso importar no Elementor?" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "faq-a2",
+        tag: "p",
+        kind: "text",
+        parentId: "faq",
+        children: [],
+        box: { x: 80, y: 380, width: 640, height: 48 },
+        visualOrder: 7,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Sim, com JSON pronto para WordPress/Elementor." },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "cta",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["cta-title", "cta-copy", "cta-button"],
+        box: { x: 0, y: 500, width: 1200, height: 220 },
+        visualOrder: 8,
+        layout: {},
+        spacing: {},
+        style: { backgroundColor: "#102542" },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "cta-title",
+        tag: "h2",
+        kind: "text",
+        parentId: "cta",
+        children: [],
+        box: { x: 80, y: 560, width: 380, height: 40 },
+        visualOrder: 9,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Pronto para clonar com fidelidade?" },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "cta-copy",
+        tag: "p",
+        kind: "text",
+        parentId: "cta",
+        children: [],
+        box: { x: 80, y: 616, width: 520, height: 32 },
+        visualOrder: 10,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Ative o modo visual para exportar snapshots responsivos." },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "cta-button",
+        tag: "a",
+        kind: "button",
+        parentId: "cta",
+        children: [],
+        box: { x: 80, y: 664, width: 220, height: 44 },
+        visualOrder: 11,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: { text: "Comecar agora", href: "#start" },
+        flags: {},
+        responsive: {}
+      }
+    ]
+  };
+
+  const classified = classifySections(buildVisualHierarchy(layout));
+
+  assert.deepEqual(
+    classified.detectedSections.map((section) => section.type),
+    ["faq", "cta"]
+  );
+  assert.equal(
+    classified.nodes.find((node) => node.id === "faq")?.detection?.semanticRole,
+    "faq"
+  );
+  assert.equal(
+    classified.nodes.find((node) => node.id === "cta")?.detection?.semanticRole,
+    "cta"
+  );
+}
+
 function createSvgDataUrl(svg: string) {
   return `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`;
 }
 
 async function withForceVisualSnapshot<T>(callback: () => Promise<T>) {
   const previousForceVisualSnapshot = process.env.FORCE_VISUAL_SNAPSHOT;
+  const previousForceFullPageSnapshot = process.env.FORCE_FULL_PAGE_SNAPSHOT;
   process.env.FORCE_VISUAL_SNAPSHOT = "true";
+  process.env.FORCE_FULL_PAGE_SNAPSHOT = "false";
 
   try {
     return await callback();
@@ -4973,6 +5448,58 @@ async function withForceVisualSnapshot<T>(callback: () => Promise<T>) {
       process.env.FORCE_VISUAL_SNAPSHOT = previousForceVisualSnapshot;
     } else {
       delete process.env.FORCE_VISUAL_SNAPSHOT;
+    }
+
+    if (typeof previousForceFullPageSnapshot === "string") {
+      process.env.FORCE_FULL_PAGE_SNAPSHOT = previousForceFullPageSnapshot;
+    } else {
+      delete process.env.FORCE_FULL_PAGE_SNAPSHOT;
+    }
+  }
+}
+
+async function withForceFullPageSnapshot<T>(callback: () => Promise<T>) {
+  const previousForceVisualSnapshot = process.env.FORCE_VISUAL_SNAPSHOT;
+  const previousForceFullPageSnapshot = process.env.FORCE_FULL_PAGE_SNAPSHOT;
+  process.env.FORCE_VISUAL_SNAPSHOT = "true";
+  process.env.FORCE_FULL_PAGE_SNAPSHOT = "true";
+
+  try {
+    return await callback();
+  } finally {
+    if (typeof previousForceVisualSnapshot === "string") {
+      process.env.FORCE_VISUAL_SNAPSHOT = previousForceVisualSnapshot;
+    } else {
+      delete process.env.FORCE_VISUAL_SNAPSHOT;
+    }
+
+    if (typeof previousForceFullPageSnapshot === "string") {
+      process.env.FORCE_FULL_PAGE_SNAPSHOT = previousForceFullPageSnapshot;
+    } else {
+      delete process.env.FORCE_FULL_PAGE_SNAPSHOT;
+    }
+  }
+}
+
+async function withSnapshotFlagsDisabled<T>(callback: () => Promise<T>) {
+  const previousForceVisualSnapshot = process.env.FORCE_VISUAL_SNAPSHOT;
+  const previousForceFullPageSnapshot = process.env.FORCE_FULL_PAGE_SNAPSHOT;
+  process.env.FORCE_VISUAL_SNAPSHOT = "false";
+  process.env.FORCE_FULL_PAGE_SNAPSHOT = "false";
+
+  try {
+    return await callback();
+  } finally {
+    if (typeof previousForceVisualSnapshot === "string") {
+      process.env.FORCE_VISUAL_SNAPSHOT = previousForceVisualSnapshot;
+    } else {
+      delete process.env.FORCE_VISUAL_SNAPSHOT;
+    }
+
+    if (typeof previousForceFullPageSnapshot === "string") {
+      process.env.FORCE_FULL_PAGE_SNAPSHOT = previousForceFullPageSnapshot;
+    } else {
+      delete process.env.FORCE_FULL_PAGE_SNAPSHOT;
     }
   }
 }
@@ -5697,6 +6224,363 @@ async function testV3ForceVisualSnapshotFallsBackToPixelPerfectWhenSnapshotCanno
   );
 }
 
+async function testV3ForceFullPageSnapshotUsesSingleResponsivePageSnapshot() {
+  const desktopWidth = 1280;
+  const tabletWidth = 834;
+  const mobileWidth = 430;
+  const pageHeight = 220;
+  const outputDir = await ensureOutputDir("snapshot-force-full-page-tests");
+  const desktop = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${desktopWidth}" height="${pageHeight}" viewBox="0 0 ${desktopWidth} ${pageHeight}"><rect width="${desktopWidth}" height="${pageHeight}" fill="#102542" /></svg>`
+  );
+  const tablet = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${tabletWidth}" height="${pageHeight}" viewBox="0 0 ${tabletWidth} ${pageHeight}"><rect width="${tabletWidth}" height="${pageHeight}" fill="#102542" /></svg>`
+  );
+  const mobile = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${mobileWidth}" height="${pageHeight}" viewBox="0 0 ${mobileWidth} ${pageHeight}"><rect width="${mobileWidth}" height="${pageHeight}" fill="#102542" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-force-full-page",
+    sourceKind: "raw-html",
+    title: "Forced Full Page Snapshot",
+    sourceHtml: "<body></body>",
+    renderedHtml:
+      '<!doctype html><html><body style="margin:0;"><section style="height:220px;background:#102542;"></section></body></html>',
+    renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
+    viewports: [
+      {
+        name: "desktop",
+        width: desktopWidth,
+        height: pageHeight
+      },
+      {
+        name: "tablet",
+        width: tabletWidth,
+        height: pageHeight
+      },
+      {
+        name: "mobile",
+        width: mobileWidth,
+        height: pageHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [
+      {
+        id: "cta-link",
+        tag: "a",
+        text: "Pricing",
+        attributes: {
+          href: "#pricing",
+          target: "_blank",
+          rel: "noopener",
+          "aria-label": "Open pricing"
+        },
+        parentId: "page",
+        childIds: [],
+        computedStyles: {
+          position: "absolute",
+          "z-index": "5"
+        },
+        box: {
+          x: 120,
+          y: 80,
+          top: 80,
+          right: 360,
+          bottom: 112,
+          left: 120,
+          width: 240,
+          height: 32,
+          centerX: 240,
+          centerY: 96
+        },
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              position: "absolute",
+              "z-index": "5"
+            },
+            box: {
+              x: 120,
+              y: 80,
+              top: 80,
+              right: 360,
+              bottom: 112,
+              left: 120,
+              width: 240,
+              height: 32,
+              centerX: 240,
+              centerY: 96
+            },
+            isVisible: true
+          },
+          tablet: {
+            computedStyles: {
+              position: "absolute",
+              "z-index": "5"
+            },
+            box: {
+              x: 90,
+              y: 80,
+              top: 80,
+              right: 290,
+              bottom: 112,
+              left: 90,
+              width: 200,
+              height: 32,
+              centerX: 190,
+              centerY: 96
+            },
+            isVisible: true
+          },
+          mobile: {
+            computedStyles: {
+              position: "absolute",
+              "z-index": "5"
+            },
+            box: {
+              x: 40,
+              y: 80,
+              top: 80,
+              right: 220,
+              bottom: 112,
+              left: 40,
+              width: 180,
+              height: 32,
+              centerX: 130,
+              centerY: 96
+            },
+            isVisible: true
+          }
+        },
+        visualOrder: 1,
+        isVisible: true,
+        asset: {
+          href: "#pricing"
+        }
+      }
+    ],
+    summary: {
+      totalNodes: 2,
+      visibleNodes: 2,
+      links: 1,
+      images: 0,
+      buttons: 1,
+      textBlocks: 1,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop,
+        tablet,
+        mobile
+      }
+    },
+    sections: []
+  } satisfies PageCapture;
+  const layout: LayoutDocument = {
+    id: "snapshot-force-full-page-layout",
+    title: "Forced Full Page Snapshot Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 2,
+    sectionIds: ["page"],
+    semanticIndex: {},
+    detectedSections: [],
+    nodes: []
+  };
+
+  const result = await withForceFullPageSnapshot(() =>
+    createElementorNativeExport({
+      capture,
+      layout,
+      selectedMode: "editable",
+      outputDir
+    })
+  );
+
+  assert.equal(result.emittedMode, "snapshot");
+  assert.equal(result.snapshot?.renderStrategy, "full-page-snapshot");
+  assert.equal(result.snapshot?.visualValidationReport?.modeUsed, "full-page-snapshot");
+  assert.deepEqual(result.snapshot?.visualValidationReport?.viewportsTested, [
+    "desktop",
+    "tablet",
+    "mobile"
+  ]);
+  assert.equal(result.document.content.length, 1);
+  assert.equal(result.document.content[0]?.elType, "section");
+  assert.equal(result.document.content[0]?.elements?.[0]?.elType, "column");
+  assert.equal(result.document.content[0]?.elements?.[0]?.elements?.[0]?.widgetType, "html");
+  const snapshotWidgetHtml = String(
+    result.document.content[0]?.elements?.[0]?.elements?.[0]?.settings?.html ?? ""
+  );
+  assert.match(
+    snapshotWidgetHtml,
+    /converter-v3-snapshot-stage\{position:relative;display:block;width:100%;max-width:100%;margin:0;padding:0;line-height:0\}/
+  );
+  assert.equal(/converter-v3-snapshot-stage\{[^}]*width:\d+px/i.test(snapshotWidgetHtml), false);
+  assert.match(String(result.previewHtml), /converter-v3-snapshot-image-desktop/);
+  assert.match(String(result.previewHtml), /converter-v3-preview-page \{/);
+  assert.match(String(result.previewHtml), /width: max-content/);
+  assert.match(String(result.previewHtml), /aria-label="Open pricing"/);
+  assert.match(String(result.previewHtml), /target="_blank"/);
+  assert.match(String(result.previewHtml), /rel="noopener"/);
+}
+
+async function testV3ForceFullPageSnapshotFallsBackToPixelPerfectOnlyWhenSnapshotCannotBeCreated() {
+  const width = 160;
+  const sectionHeight = 100;
+  const outputDir = await ensureOutputDir("snapshot-force-full-page-pixel-perfect-tests");
+  const capture = {
+    id: "snapshot-force-full-page-missing",
+    sourceKind: "raw-html",
+    title: "Forced Full Page Snapshot Missing Source",
+    sourceHtml: "<body></body>",
+    renderedHtml:
+      '<!doctype html><html><body style="margin:0;"><section style="height:100px;background:#f2545b;"></section></body></html>',
+    renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height: sectionHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 1,
+      visibleNodes: 1,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {}
+    },
+    sections: []
+  } satisfies PageCapture;
+  const layout: LayoutDocument = {
+    id: "snapshot-force-full-page-missing-layout",
+    title: "Forced Full Page Snapshot Missing Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 1,
+    sectionIds: ["page"],
+    semanticIndex: {},
+    detectedSections: [],
+    nodes: []
+  };
+
+  const result = await withForceFullPageSnapshot(() =>
+    createElementorNativeExport({
+      capture,
+      layout,
+      selectedMode: "editable",
+      outputDir
+    })
+  );
+
+  assert.equal(result.emittedMode, "pixel-perfect");
+  assert.equal(result.exportStage, "pixel-perfect-emitter");
+  assert.equal(result.snapshot?.requiresPixelPerfect, true);
+  assert.match(String(result.snapshot?.pixelPerfectReason), /fallback emergencial para pixel-perfect/i);
+}
+
+async function testV3LovableLikeSitesAutomaticallyUseUniversalFullPageClone() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-lovable-universal-clone");
+  const result = await withSnapshotFlagsDisabled(() =>
+    runExportPipelineV3FromHtml(
+      `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="generator" content="Lovable" />
+    <title>Universal Lovable Clone</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #0f172a; color: #f8fafc; font-family: Inter, Arial, sans-serif; }
+      .container { width: min(1120px, calc(100% - 48px)); margin: 0 auto; }
+      .hero { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 32px; align-items: center; min-height: 420px; }
+      .panel { border-radius: 28px; padding: 32px; background: linear-gradient(135deg, rgba(15,23,42,0.92), rgba(37,99,235,0.7)); box-shadow: 0 20px 80px rgba(15,23,42,0.35); }
+      .badge { display: inline-flex; padding: 8px 14px; border-radius: 999px; background: rgba(148,163,184,0.18); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+      .cta { display: inline-block; margin-top: 20px; padding: 14px 20px; border-radius: 999px; background: #f8fafc; color: #0f172a; font-weight: 700; text-decoration: none; }
+      .visual { position: relative; min-height: 320px; }
+      .card { position: absolute; inset: 0; border-radius: 32px; background: linear-gradient(180deg, #38bdf8, #2563eb); }
+      .orb { position: absolute; width: 180px; height: 180px; right: 24px; bottom: 24px; border-radius: 999px; background: rgba(255,255,255,0.24); backdrop-filter: blur(6px); }
+      @media (max-width: 900px) {
+        .hero { grid-template-columns: 1fr; padding: 48px 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="container mx-auto px-6 md:grid lg:grid-cols-2">
+      <section class="hero">
+        <div class="panel">
+          <span class="badge">Lovable export</span>
+          <h1>Clone visual universal</h1>
+          <p>Quando um site chega com assinatura Lovable-like, o pipeline deve priorizar o snapshot full-page em vez de tentar reconstruir widgets editaveis.</p>
+          <a class="cta" href="#pricing">Ver planos</a>
+        </div>
+        <div class="visual">
+          <div class="card"></div>
+          <div class="orb"></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>`,
+      {
+        preferBrowser: true,
+        outputRoot
+      }
+    )
+  );
+
+  assert.equal(result.capture.renderer, "browser");
+  assert.equal(result.analysis.selectedMode, "snapshot");
+  assert.equal(result.emittedMode, "snapshot");
+  assert.equal(result.report.selectedMode, "snapshot");
+  assert.equal(result.snapshot?.renderStrategy, "full-page-snapshot");
+  assert.equal(result.snapshot?.visualValidationReport?.modeUsed, "full-page-snapshot");
+  assert.equal(result.snapshot?.visualValidationReport?.status, "passed");
+  assert.equal((result.capture.sections?.length ?? 0) >= 1, true);
+  assert.match(
+    result.analysis.reasons.join(" "),
+    /Politica visual .*Lovable-like|Complexidade visual alta detectada/i
+  );
+}
+
 async function testV3ForcedSnapshotReportIncludesViewportLogs() {
   const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-force-report-tests");
   const result = await withForceVisualSnapshot(() =>
@@ -5728,6 +6612,9 @@ async function testV3ForcedSnapshotReportIncludesViewportLogs() {
   assert.equal(result.emittedMode, "snapshot");
   assert.equal(result.snapshot?.visualValidationReport?.status, "passed");
   assert.equal(Array.isArray(result.report.visualLogs), true);
+  assert.equal(result.report.visualLogs[0], "[Visual Validation]");
+  assert.equal(result.report.visualLogs.some((line) => line.startsWith("[CAPTURE]")), true);
+  assert.equal(result.report.visualLogs.some((line) => line.startsWith("[SECTION]")), true);
   assert.equal(result.report.visualLogs.some((line) => line.startsWith("[VISUAL SNAPSHOT]")), true);
   assert.equal(result.report.visualLogs.some((line) => line.startsWith("[LINK OVERLAY]")), true);
   assert.equal(result.report.visualLogs.some((line) => line.startsWith("[VALIDATION] similaridade desktop:")), true);
@@ -5736,6 +6623,262 @@ async function testV3ForcedSnapshotReportIncludesViewportLogs() {
   assert.equal(typeof result.report.viewportSimilarities?.tablet, "number");
   assert.equal(typeof result.report.viewportSimilarities?.mobile, "number");
   assert.equal(Array.isArray(result.report.visualIssues), true);
+}
+
+function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
+  const capture = createMockCapture({
+    id: "friendly-visual-validation",
+    title: "Friendly Visual Validation",
+    sections: [
+      {
+        id: "hero-section-capture",
+        nodeId: "hero-section",
+        name: "hero-1",
+        type: "hero",
+        box: {
+          x: 0,
+          y: 0,
+          width: 1440,
+          height: 360
+        },
+        subtreeNodeIds: ["hero-section"],
+        originalHtml: "<section></section>",
+        htmlCandidate: "<section></section>",
+        complexity: createSectionCaptureComplexity({
+          imageNodes: 2
+        }),
+        viewports: {
+          desktop: {
+            viewport: "desktop",
+            width: 1440,
+            height: 360,
+            linkOverlays: []
+          }
+        },
+        debug: {
+          sectionBoundingBox: {
+            x: 0,
+            y: 0,
+            width: 1440,
+            height: 360
+          },
+          sectionWidth: 1440,
+          sectionHeight: 360,
+          originalImages: [
+            {
+              nodeId: "hero-image-1",
+              tag: "img",
+              src: "https://example.com/hero-1.png",
+              width: 320,
+              height: 240
+            },
+            {
+              nodeId: "hero-image-2",
+              tag: "img",
+              src: "https://example.com/hero-2.png",
+              width: 320,
+              height: 240
+            }
+          ],
+          cssBackgrounds: [],
+          loadedFonts: [],
+          interactiveElements: [],
+          positionedElements: []
+        }
+      },
+      {
+        id: "cards-section-capture",
+        nodeId: "cards-section",
+        name: "cards-2",
+        type: "grid",
+        box: {
+          x: 0,
+          y: 420,
+          width: 1440,
+          height: 320
+        },
+        subtreeNodeIds: ["cards-section"],
+        originalHtml: "<section></section>",
+        htmlCandidate: "<section></section>",
+        complexity: createSectionCaptureComplexity({
+          gridContainers: 1
+        }),
+        viewports: {
+          mobile: {
+            viewport: "mobile",
+            width: 390,
+            height: 320,
+            linkOverlays: []
+          }
+        },
+        debug: {
+          sectionBoundingBox: {
+            x: 0,
+            y: 420,
+            width: 1440,
+            height: 320
+          },
+          sectionWidth: 1440,
+          sectionHeight: 320,
+          originalImages: [],
+          cssBackgrounds: [],
+          loadedFonts: [],
+          interactiveElements: [],
+          positionedElements: []
+        }
+      }
+    ]
+  });
+  const layout: LayoutDocument = {
+    id: "friendly-visual-validation-layout",
+    title: "Friendly Visual Validation Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 3,
+    sectionIds: ["hero-section", "cards-section"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      },
+      {
+        id: "cards-section",
+        type: "grid",
+        confidence: 0.92,
+        childIds: [],
+        anchors: [],
+        contains: ["grid"]
+      }
+    ],
+    nodes: []
+  };
+  const report = buildExportReport({
+    capture,
+    layout,
+    analysis: {
+      score: 9,
+      overlappingGroups: 1,
+      gridContainers: 1,
+      flexContainers: 1,
+      absoluteNodes: 1,
+      decorativeNodes: 0,
+      interactiveNodes: 1,
+      selectedMode: "snapshot",
+      reasons: ["Snapshot visual preferido."]
+    },
+    emittedMode: "snapshot",
+    validation: {
+      passed: false,
+      mode: "snapshot",
+      issueCount: 2,
+      issues: [],
+      stats: {
+        expectedTexts: 0,
+        matchedTexts: 0,
+        expectedImages: 0,
+        matchedImages: 0,
+        expectedButtons: 0,
+        matchedButtons: 0,
+        expectedLinks: 0,
+        matchedLinks: 0,
+        expectedSections: 0,
+        matchedSections: 0,
+        expectedCards: 0,
+        matchedCards: 0,
+        expectedHeaders: 0,
+        matchedHeaders: 0,
+        expectedFooters: 0,
+        matchedFooters: 0,
+        expectedPositionedNodes: 0,
+        matchedPositionedNodes: 0
+      }
+    },
+    snapshotEnabled: true,
+    snapshotReason: "Snapshot visual validado.",
+    snapshot: {
+      renderStrategy: "section-snapshots",
+      overallSimilarity: 0.968,
+      threshold: 0.99,
+      viewportSimilarities: {
+        desktop: 0.984,
+        tablet: 0.991,
+        mobile: 0.968
+      },
+      sectionReports: [],
+      visualValidationReport: {
+        status: "blocked",
+        modeUsed: "section-snapshot",
+        viewportsTested: ["desktop", "tablet", "mobile"],
+        sectionsApproved: [],
+        sectionsWithFallback: [],
+        linksPreserved: 0,
+        totalLinks: 0,
+        similarityFinal: 0.968,
+        viewportResults: [
+          {
+            viewport: "desktop",
+            passed: false,
+            similarity: 0.984
+          },
+          {
+            viewport: "tablet",
+            passed: true,
+            similarity: 0.991
+          },
+          {
+            viewport: "mobile",
+            passed: false,
+            similarity: 0.968
+          }
+        ],
+        issues: [
+          {
+            viewport: "desktop",
+            sectionId: "hero-section",
+            sectionName: "hero-1",
+            sectionType: "hero",
+            similarity: 0.984,
+            lossType: "image",
+            fallbackStage: "section-snapshot",
+            fallbackUsed: "section-snapshot",
+            message: "Viewport desktop; secao hero-1 (hero-section); similaridade 98.40%; perda detectada: image; fallback usado: section-snapshot."
+          },
+          {
+            viewport: "mobile",
+            sectionId: "cards-section",
+            sectionName: "cards-2",
+            sectionType: "grid",
+            similarity: 0.968,
+            lossType: "position",
+            fallbackStage: "section-snapshot",
+            fallbackUsed: "section-snapshot",
+            message: "Viewport mobile; secao cards-2 (cards-section); similaridade 96.80%; perda detectada: position; fallback usado: section-snapshot."
+          }
+        ]
+      },
+      totals: {
+        htmlSections: 0,
+        snapshotSections: 2,
+        preservedLinks: 0,
+        totalLinks: 0
+      }
+    }
+  });
+
+  assert.deepEqual(report.visualLogs.slice(0, 7), [
+    "[Visual Validation]",
+    "Desktop: 98.4% - falhou",
+    "Problema: secao Hero perdeu 2 imagens",
+    "Tablet: 99.1% - ok",
+    "Mobile: 96.8% - falhou",
+    "Problema: cards ficaram desalinhados",
+    "Exportacao bloqueada"
+  ]);
 }
 
 async function testV3NativeExportFallsBackToSnapshotWhenStructuralSimilarityIsLow() {
@@ -6921,7 +8064,10 @@ async function testV3ForceVisualSnapshotPrefersFullPageSnapshotForComplexVisualP
   assert.equal(result.snapshot.renderStrategy, "full-page-snapshot");
   assert.equal(result.snapshot.visualValidationReport?.status, "passed");
   assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
-  assert.match(String(result.snapshot.fullPageFallbackReason), /Complexidade visual alta detectada/i);
+  assert.match(
+    String(result.snapshot.fullPageFallbackReason),
+    /Complexidade visual alta detectada|Politica universal Lovable-like|FORCE_FULL_PAGE_SNAPSHOT ativo/i
+  );
   assertContainsSnapshotLinkOverlay(result.document);
 }
 
@@ -7064,6 +8210,7 @@ async function testV3ForceVisualSnapshotBlocksOnlyAfterFullPageFallbackFails() {
 
 async function main() {
   await testForceVisualSnapshotDefaultsToTrue();
+  await testForceFullPageSnapshotDefaultsToFalse();
   await testV3HtmlCapturePipeline();
   await testV3ZipResolver();
   await testV3ZipResolverPrefersReactSourceWhenZipIncludesIndexHtml();
@@ -7092,19 +8239,26 @@ async function main() {
   await testV3HybridComposesTestimonialSectionOutroBlock();
   await testV3EditableFallsBackToHybridOnUnsupportedBlock();
   await testV3NativeExportPreservesBackgroundImages();
+  await testV3NativeExportPreservesNestedBackgroundImagesFromLocalAssets();
+  await testV3NativeExportPreservesRootBackgroundColorImageAndGradientOverlay();
   testResponsiveChildSettingsHelper();
   testResponsiveGridColumnReductionHelper();
   testResponsiveSplitPatternHelper();
   testPatternOrderedChildIdsHelper();
   testResponsivePresetDetectionHelper();
   testSectionClassifierDetectsSemanticSections();
+  testSectionClassifierDetectsFaqAndCtaSections();
   await testV3SnapshotEmitterKeepsSimpleSectionsAsHtmlAndFallsBackPerSection();
   await testV3SnapshotEmitterBlocksHtmlProfilesAfterHardFailure();
   await testV3SnapshotEmitterKeepsSnapshotOutputWhenSectionAlreadyMatchesVisually();
   await testV3ForceVisualSnapshotDisablesEditableAndHybridFallbacks();
   await testV3ForceVisualSnapshotFallsBackToPixelPerfectWhenSnapshotCannotBeValidated();
+  await testV3ForceFullPageSnapshotUsesSingleResponsivePageSnapshot();
+  await testV3ForceFullPageSnapshotFallsBackToPixelPerfectOnlyWhenSnapshotCannotBeCreated();
+  await testV3LovableLikeSitesAutomaticallyUseUniversalFullPageClone();
   await testV3ForcedSnapshotReportIncludesViewportLogs();
   await testV3NativeExportFallsBackToSnapshotWhenStructuralSimilarityIsLow();
+  testBuildExportReportFormatsFriendlyVisualValidationLogs();
   await testV3ForceVisualSnapshotUsesSectionFallbackBeforePassing();
   await testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUnsafe();
   await testV3ForceVisualSnapshotPrefersFullPageSnapshotForComplexVisualPages();

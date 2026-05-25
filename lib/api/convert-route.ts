@@ -99,6 +99,24 @@ function resolveVisualSimilarity(result: ExportPipelineResult) {
   return result.snapshot?.overallSimilarity ?? 0;
 }
 
+function resolveFinalPreviewHtml(result: ExportPipelineResult) {
+  return result.previewHtml ?? result.capture.renderedHtml;
+}
+
+function buildFailedViewportSummary(result: ExportPipelineResult) {
+  const failed = result.snapshot?.visualValidationReport?.viewportResults.filter(
+    (viewport) => !viewport.passed
+  );
+
+  if (!failed || failed.length === 0) {
+    return undefined;
+  }
+
+  return failed
+    .map((viewport) => `${viewport.viewport} (${(viewport.similarity * 100).toFixed(2)}%)`)
+    .join(", ");
+}
+
 function resolveDownloadEligibilityError(result: ExportPipelineResult) {
   if (result.capture.renderer !== "browser") {
     return BROWSER_CAPTURE_FAILURE_MESSAGE;
@@ -121,9 +139,15 @@ function resolveDownloadEligibilityError(result: ExportPipelineResult) {
   }
 
   if (resolveVisualSimilarity(result) < MIN_VISUAL_SIMILARITY) {
-    return `Conversao bloqueada: similaridade visual final ficou em ${(
-      resolveVisualSimilarity(result) * 100
-    ).toFixed(2)}%.`;
+    const failedViewportSummary = buildFailedViewportSummary(result);
+
+    return failedViewportSummary
+      ? `Conversao bloqueada: similaridade visual final ficou em ${(
+          resolveVisualSimilarity(result) * 100
+        ).toFixed(2)}% nos viewports ${failedViewportSummary}.`
+      : `Conversao bloqueada: similaridade visual final ficou em ${(
+          resolveVisualSimilarity(result) * 100
+        ).toFixed(2)}%.`;
   }
 
   return undefined;
@@ -162,7 +186,7 @@ function buildV3Success(result: ExportPipelineResult): PreparedConversion {
 
   return {
     kind: "success",
-    previewHtml: result.capture.renderedHtml,
+    previewHtml: resolveFinalPreviewHtml(result),
     elementorDocument: result.elementorDocument,
     body: {
       message:

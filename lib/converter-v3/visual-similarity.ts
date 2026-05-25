@@ -211,7 +211,8 @@ export async function renderHtmlToScreenshot(params: {
 
         return (await page.screenshot({
           type: "png",
-          fullPage: params.fullPage ?? true
+          fullPage: params.fullPage ?? true,
+          scale: "css"
         })) as Buffer;
       }
     );

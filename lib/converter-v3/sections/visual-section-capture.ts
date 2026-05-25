@@ -975,7 +975,7 @@ async function extractViewportSectionData(params: {
                 ? "viewport-clip"
                 : "expanded-clip";
 
-          const linkOverlays = Array.from(document.querySelectorAll("[href]"))
+          const linkOverlays = Array.from(document.querySelectorAll("[href],[data-href],[data-url]"))
             .filter((element) => {
               if (!isVisibleElement(element)) {
                 return false;
@@ -992,19 +992,41 @@ async function extractViewportSectionData(params: {
             .map((element) => {
               const rect = element.getBoundingClientRect();
               const absoluteRect = toAbsoluteRect(rect);
-              const href =
+              let href =
                 element instanceof HTMLAnchorElement
                   ? element.href
-                  : element.getAttribute("href") || "";
+                  : element.getAttribute("href") ||
+                    element.getAttribute("data-href") ||
+                    element.getAttribute("data-url") ||
+                    "";
 
               if (!href) {
                 return null;
               }
 
-              const width = Math.max(absoluteRect.width, 1);
-              const height = Math.max(absoluteRect.height, 1);
-              const relativeX = absoluteRect.x - captureBox.x;
-              const relativeY = absoluteRect.y - captureBox.y;
+              try {
+                href = new URL(href, window.location.href).href;
+              } catch {}
+
+              const clippedLeft = Math.max(absoluteRect.x, captureBox.x);
+              const clippedTop = Math.max(absoluteRect.y, captureBox.y);
+              const clippedRight = Math.min(
+                absoluteRect.x + absoluteRect.width,
+                captureBox.x + captureBox.width
+              );
+              const clippedBottom = Math.min(
+                absoluteRect.y + absoluteRect.height,
+                captureBox.y + captureBox.height
+              );
+
+              if (clippedRight <= clippedLeft || clippedBottom <= clippedTop) {
+                return null;
+              }
+
+              const width = Math.max(clippedRight - clippedLeft, 1);
+              const height = Math.max(clippedBottom - clippedTop, 1);
+              const relativeX = clippedLeft - captureBox.x;
+              const relativeY = clippedTop - captureBox.y;
               const nodeCaptureId = element.getAttribute("data-capture-id") || nodeId;
               const computed = window.getComputedStyle(element);
               const parsedZIndex = Number.parseInt(computed.zIndex || "0", 10);
@@ -1013,6 +1035,7 @@ async function extractViewportSectionData(params: {
                 nodeId: nodeCaptureId,
                 href,
                 text: (element.textContent || "").replace(/\\s+/g, " ").trim(),
+                ariaLabel: element.getAttribute("aria-label") || undefined,
                 title: element.getAttribute("title") || undefined,
                 target: element.getAttribute("target") || undefined,
                 rel: element.getAttribute("rel") || undefined,
@@ -1020,7 +1043,12 @@ async function extractViewportSectionData(params: {
                   element.tagName.toLowerCase() === "button" ||
                   element.getAttribute("role") === "button",
                 zIndex: Number.isFinite(parsedZIndex) ? parsedZIndex : undefined,
-                box: absoluteRect,
+                box: {
+                  x: clippedLeft,
+                  y: clippedTop,
+                  width,
+                  height
+                },
                 relativeBox: {
                   x: relativeX / Math.max(captureBox.width, 1),
                   y: relativeY / Math.max(captureBox.height, 1),
@@ -1261,6 +1289,7 @@ export async function buildVisualSectionCaptures(params: {
           try {
             pngBuffer = await session.page.screenshot({
               type: "png",
+              scale: "css",
               clip: {
                 x: extracted.captureBox.x,
                 y: extracted.captureBox.y,

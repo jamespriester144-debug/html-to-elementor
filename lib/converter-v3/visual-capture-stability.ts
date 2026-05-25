@@ -173,6 +173,181 @@ export async function preparePageForVisualCapture(
           );
         };
 
+        const inlineLocalAssetsAsDataUrls = async () => {
+          const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"]);
+
+          if (!localHosts.has(window.location.hostname)) {
+            return;
+          }
+
+          const pendingDataUrls = new Map<string, Promise<string | null>>();
+          const toAbsoluteUrl = (value: string) => {
+            try {
+              return new URL(value, window.location.href).href;
+            } catch {
+              return null;
+            }
+          };
+          const shouldInlineUrl = (value: string) => {
+            const absoluteUrl = toAbsoluteUrl(value);
+
+            if (!absoluteUrl || absoluteUrl.startsWith("data:") || absoluteUrl.startsWith("blob:")) {
+              return false;
+            }
+
+            try {
+              return new URL(absoluteUrl).origin === window.location.origin;
+            } catch {
+              return false;
+            }
+          };
+          const blobToDataUrl = (blob: Blob) =>
+            new Promise<string | null>((resolve) => {
+              const reader = new FileReader();
+              reader.onloadend = () =>
+                resolve(typeof reader.result === "string" ? reader.result : null);
+              reader.onerror = () => resolve(null);
+              reader.readAsDataURL(blob);
+            });
+          const fetchAsDataUrl = async (value: string) => {
+            const absoluteUrl = toAbsoluteUrl(value);
+
+            if (!absoluteUrl || !shouldInlineUrl(absoluteUrl)) {
+              return null;
+            }
+
+            const pending =
+              pendingDataUrls.get(absoluteUrl) ??
+              (async () => {
+                try {
+                  const response = await fetch(absoluteUrl, {
+                    credentials: "same-origin"
+                  });
+
+                  if (!response.ok) {
+                    return null;
+                  }
+
+                  return blobToDataUrl(await response.blob());
+                } catch {
+                  return null;
+                }
+              })();
+
+            pendingDataUrls.set(absoluteUrl, pending);
+            return pending;
+          };
+          const rewriteSrcset = async (srcset: string) => {
+            const entries = srcset
+              .split(",")
+              .map((entry) => entry.trim())
+              .filter(Boolean);
+
+            if (entries.length === 0) {
+              return srcset;
+            }
+
+            let changed = false;
+            const rewrittenEntries = await Promise.all(
+              entries.map(async (entry) => {
+                const parts = entry.split(/\s+/).filter(Boolean);
+                const source = parts[0];
+
+                if (!source) {
+                  return entry;
+                }
+
+                const dataUrl = await fetchAsDataUrl(source);
+
+                if (!dataUrl) {
+                  return entry;
+                }
+
+                changed = true;
+                parts[0] = dataUrl;
+                return parts.join(" ");
+              })
+            );
+
+            return changed ? rewrittenEntries.join(", ") : srcset;
+          };
+
+          for (const element of Array.from(
+            document.querySelectorAll<HTMLImageElement | HTMLSourceElement | HTMLVideoElement>(
+              "img,source,video"
+            )
+          )) {
+            if (element instanceof HTMLVideoElement) {
+              const poster = element.getAttribute("poster");
+
+              if (poster) {
+                const dataUrl = await fetchAsDataUrl(poster);
+
+                if (dataUrl) {
+                  element.setAttribute("poster", dataUrl);
+                }
+              }
+
+              continue;
+            }
+
+            const src = element.getAttribute("src");
+            const srcset = element.getAttribute("srcset");
+
+            if (src) {
+              const dataUrl = await fetchAsDataUrl(src);
+
+              if (dataUrl) {
+                element.setAttribute("src", dataUrl);
+              }
+            }
+
+            if (srcset) {
+              const rewrittenSrcset = await rewriteSrcset(srcset);
+
+              if (rewrittenSrcset !== srcset) {
+                element.setAttribute("srcset", rewrittenSrcset);
+              }
+            }
+          }
+
+          for (const element of Array.from(document.querySelectorAll<HTMLElement>("*"))) {
+            const computed = window.getComputedStyle(element);
+            const backgroundImage = computed.backgroundImage || "";
+
+            if (!backgroundImage || backgroundImage === "none" || !/url\(/i.test(backgroundImage)) {
+              continue;
+            }
+
+            let rewrittenBackgroundImage = backgroundImage;
+            let changed = false;
+
+            for (const match of backgroundImage.matchAll(/url\((['"]?)(.*?)\1\)/gi)) {
+              const assetUrl = match[2];
+
+              if (!assetUrl) {
+                continue;
+              }
+
+              const dataUrl = await fetchAsDataUrl(assetUrl);
+
+              if (!dataUrl) {
+                continue;
+              }
+
+              rewrittenBackgroundImage = rewrittenBackgroundImage.replace(
+                match[0],
+                `url("${dataUrl}")`
+              );
+              changed = true;
+            }
+
+            if (changed) {
+              element.style.setProperty("background-image", rewrittenBackgroundImage, "important");
+            }
+          }
+        };
+
         const scrollThroughPage = async () => {
           const root = document.documentElement;
           const totalHeight = Math.max(
@@ -262,6 +437,8 @@ export async function preparePageForVisualCapture(
         boostLazyAssets();
         freezeInteractiveMedia();
         await waitForFonts();
+        await waitForBackgroundImages();
+        await inlineLocalAssetsAsDataUrls();
         await waitForBackgroundImages();
 
         if (scrollEntirePage) {

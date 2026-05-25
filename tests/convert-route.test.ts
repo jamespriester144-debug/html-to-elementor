@@ -61,6 +61,7 @@ function createExportResult(params: {
   snapshotSimilarity?: number;
   warnings?: string[];
   fallbackReason?: string;
+  previewHtml?: string;
 } = {
   emittedMode: "snapshot",
   selectedMode: "snapshot",
@@ -272,6 +273,7 @@ function createExportResult(params: {
       errorsFound: []
     },
     snapshot,
+    previewHtml: params.previewHtml ?? "<html><body>converted preview</body></html>",
     artifacts: {
       elementorTemplatePath: "/tmp/export/elementor-template.json",
       reportPath: "/tmp/export/conversion-report.json",
@@ -330,7 +332,7 @@ async function testConvertRouteUsesV3ForRawHtmlAndForcesBrowserCapture() {
     };
   };
   deps.createConversion = async (html, elementorJson) => {
-    assert.equal(html, "<html><body>rendered primary</body></html>");
+    assert.equal(html, "<html><body>converted preview</body></html>");
     assert.equal(elementorJson.title, "Resolved HTML");
 
     return {
@@ -368,7 +370,7 @@ async function testConvertRouteUsesV3ForRawHtmlAndForcesBrowserCapture() {
     (payload.artifacts as { capture: { outputDir: string } }).capture.outputDir,
     "/tmp/capture"
   );
-  assert.equal(persistedHtml, "<html><body>rendered primary</body></html>");
+  assert.equal(persistedHtml, "<html><body>converted preview</body></html>");
   assert.equal(calls.resolveHtml, 1);
   assert.equal(calls.runV3, 1);
 }

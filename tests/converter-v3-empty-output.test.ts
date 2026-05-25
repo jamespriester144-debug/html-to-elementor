@@ -22,6 +22,10 @@ import {
 } from "../lib/converter-v3/validate/content-integrity";
 import type { ElementorDocument } from "../types/conversion";
 
+if (typeof process.env.FORCE_FULL_PAGE_SNAPSHOT !== "string") {
+  process.env.FORCE_FULL_PAGE_SNAPSHOT = "false";
+}
+
 const FIXTURE_DIR = path.join(process.cwd(), "tests", "fixtures", "sites");
 
 function createMockInputAnalysis(

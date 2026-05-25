@@ -117,9 +117,52 @@ async function testPersistEmbeddedConversionAssetsKeepsOriginalDataUrlWhenUpload
   }
 }
 
+async function testPersistEmbeddedConversionAssetsHandlesDeeplyNestedDocuments() {
+  const pngDataUrl =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7ZQ1sAAAAASUVORK5CYII=";
+  const persistEmbeddedConversionAssets = createEmbeddedConversionAssetPersister(
+    {
+      uploadConversionAsset: async ({ sourcePath }) => `https://cdn.example.com/${sourcePath}`
+    }
+  );
+  const depth = 20000;
+  const elementorDocument: Record<string, unknown> = {
+    version: "1.0",
+    title: "Deep Snapshot Export",
+    type: "page",
+    content: []
+  };
+  let cursor = elementorDocument;
+
+  for (let index = 0; index < depth; index += 1) {
+    const next: Record<string, unknown> = { index };
+    cursor.child = next;
+    cursor = next;
+  }
+
+  cursor.snapshot = pngDataUrl;
+
+  const persisted = await persistEmbeddedConversionAssets(
+    "<html><body>deep tree</body></html>",
+    elementorDocument,
+    "conversion-key"
+  );
+  let probe = persisted.elementorJson as Record<string, unknown>;
+
+  for (let index = 0; index < depth; index += 1) {
+    probe = probe.child as Record<string, unknown>;
+  }
+
+  assert.equal(
+    probe.snapshot,
+    "https://cdn.example.com/embedded-1.png"
+  );
+}
+
 async function main() {
   await testPersistEmbeddedConversionAssetsReplacesSnapshotBase64Recursively();
   await testPersistEmbeddedConversionAssetsKeepsOriginalDataUrlWhenUploadFails();
+  await testPersistEmbeddedConversionAssetsHandlesDeeplyNestedDocuments();
   console.log("asset persistence tests passed");
 }
 
