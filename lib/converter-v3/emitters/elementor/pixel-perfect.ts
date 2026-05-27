@@ -1,6 +1,10 @@
 import * as cheerio from "cheerio";
 
 import type { OutputMode } from "@/lib/converter-v3/contracts/layout";
+import {
+  buildDetectedPageBackgroundCssVariables,
+  resolveStyleMapBackgroundValue
+} from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import type { ElementorDocument } from "@/types/conversion";
 
 function escapeHtmlAttribute(value: string) {
@@ -104,7 +108,16 @@ function createIframeOnloadScript() {
 })(this);`;
 }
 
-function injectFrameRuntime(html: string, frameToken: string) {
+function trimStyleValue(value?: string) {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function injectFrameRuntime(
+  html: string,
+  frameToken: string,
+  shellStyleMap?: Record<string, string>
+) {
   const $ = cheerio.load(
     html.replace(/\b100(?:d|s)?vh\b/g, "var(--converter-v3-fixed-vh, 100vh)")
   );
@@ -121,9 +134,60 @@ function injectFrameRuntime(html: string, frameToken: string) {
     $("html").append("<body></body>");
   }
 
+  const shellCssVariables = buildDetectedPageBackgroundCssVariables(shellStyleMap ?? {});
+  const shellStyles = [
+    "background:var(--detected-page-background, #ffffff) !important;",
+    "background-color:var(--detected-page-background-color, #ffffff) !important;",
+    shellStyleMap?.["background-image"] &&
+    shellStyleMap["background-image"].trim().toLowerCase() !== "none"
+      ? "background-image:var(--detected-page-background-image) !important;"
+      : "",
+    shellStyleMap?.["background-size"]
+      ? "background-size:var(--detected-page-background-size) !important;"
+      : "",
+    shellStyleMap?.["background-position"]
+      ? "background-position:var(--detected-page-background-position) !important;"
+      : "",
+    shellStyleMap?.["background-repeat"]
+      ? "background-repeat:var(--detected-page-background-repeat) !important;"
+      : "",
+    shellStyleMap?.["background-attachment"]
+      ? "background-attachment:var(--detected-page-background-attachment) !important;"
+      : "",
+    shellStyleMap?.["background-origin"]
+      ? "background-origin:var(--detected-page-background-origin) !important;"
+      : "",
+    shellStyleMap?.["background-clip"]
+      ? "background-clip:var(--detected-page-background-clip) !important;"
+      : "",
+    shellStyleMap?.["background-blend-mode"]
+      ? "background-blend-mode:var(--detected-page-background-blend-mode) !important;"
+      : "",
+    "color:var(--detected-page-foreground, inherit) !important;",
+    shellStyleMap?.["font-family"]
+      ? "font-family:var(--detected-page-font-family) !important;"
+      : ""
+  ]
+    .filter(Boolean)
+    .join("");
+
   $("head").append(`<style data-converter-v3-frame-runtime>
 :root {
   --converter-v3-fixed-vh: 100vh;
+  ${shellCssVariables}
+}
+
+html,
+body,
+body > main,
+body > #root,
+body > #__next,
+body > .elementor,
+body > .elementor-page,
+body > .site,
+body > .site-content,
+body > .elementor-section-wrap {
+  ${shellStyles}
 }
 
 html {
@@ -132,6 +196,7 @@ html {
 }
 
 body {
+  min-height: 100% !important;
   overflow-x: hidden !important;
   overflow-y: visible !important;
 }
@@ -263,13 +328,20 @@ export function createPixelPerfectElementorDocumentV3(
     title?: string;
     selectedMode: OutputMode;
     fallbackReason?: string;
+    shellStyleMap?: Record<string, string>;
   }
 ): ElementorDocument {
   const $ = cheerio.load(html);
   const documentTitle = $("title").first().text().trim() || options.title || "Elementor Page";
   const initialHeight = estimateInitialHeight($);
   const frameToken = createElementId("frame", 1);
-  const srcdoc = escapeHtmlAttribute(injectFrameRuntime(html, frameToken));
+  const detectedPageBackground =
+    resolveStyleMapBackgroundValue(options.shellStyleMap ?? {}) ??
+    trimStyleValue(options.shellStyleMap?.["background-color"]) ??
+    "#fff";
+  const srcdoc = escapeHtmlAttribute(
+    injectFrameRuntime(html, frameToken, options.shellStyleMap)
+  );
   const iframeOnload = escapeHtmlAttribute(createIframeOnloadScript());
   const widgetHtml = `<iframe
   class="converter-v3-frame"
@@ -279,7 +351,7 @@ export function createPixelPerfectElementorDocumentV3(
   onload="${iframeOnload}"
   scrolling="no"
   srcdoc="${srcdoc}"
-  style="display:block;width:100%;max-width:100%;height:${initialHeight}px;border:0;margin:0;padding:0;background:#fff;overflow:hidden;"
+  style="display:block;width:100%;max-width:100%;height:${initialHeight}px;border:0;margin:0;padding:0;background:${escapeHtmlAttribute(detectedPageBackground)};overflow:hidden;"
 ></iframe>
 <script>
 (function(){
@@ -357,9 +429,26 @@ export function createPixelPerfectElementorDocumentV3(
             left: 0,
             isLinked: true
           },
+          converter_v3_page_shell: true,
+          converter_v3_styles: options.shellStyleMap,
+          converter_v3_detected_page_background: detectedPageBackground,
           html_to_elementor_strategy: "pixel-perfect-iframe-v3",
           converter_v3_selected_mode: options.selectedMode,
-          converter_v3_fallback_reason: options.fallbackReason
+          converter_v3_fallback_reason: options.fallbackReason,
+          ...(options.shellStyleMap?.["background-color"]
+            ? {
+                background_background: "classic",
+                background_color: options.shellStyleMap["background-color"],
+                _background_color: options.shellStyleMap["background-color"]
+              }
+            : {}),
+          ...(options.shellStyleMap?.color
+            ? {
+                color: options.shellStyleMap.color,
+                text_color: options.shellStyleMap.color,
+                title_color: options.shellStyleMap.color
+              }
+            : {})
         },
         elements: [
           {

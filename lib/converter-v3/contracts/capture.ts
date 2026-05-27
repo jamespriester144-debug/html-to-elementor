@@ -28,12 +28,100 @@ export type CapturedViewportState = {
   isVisible: boolean;
 };
 
+export type CapturedBackgroundLayer = {
+  index: number;
+  type: "gradient" | "image" | "other";
+  value: string;
+  url?: string;
+};
+
 export type CapturedNodeAsset = {
   href?: string;
   src?: string;
+  currentSrc?: string;
+  srcsetCandidates?: string[];
+  pictureSources?: string[];
+  lazySources?: string[];
   alt?: string;
   poster?: string;
   backgroundImage?: string;
+  backgroundUrls?: string[];
+  backgroundLayers?: CapturedBackgroundLayer[];
+  hasGradientBackground?: boolean;
+};
+
+export type CapturedPseudoElement = {
+  pseudo: "::before" | "::after";
+  content?: string;
+  computedStyles: Record<string, string>;
+  box: CapturedBox | null;
+  isVisible: boolean;
+  asset: CapturedNodeAsset;
+};
+
+export type ThemeMode = "dark" | "light" | "mixed" | "unknown";
+
+export type ThemeColorSampleRole =
+  | "page"
+  | "body"
+  | "main"
+  | "section"
+  | "card"
+  | "header"
+  | "footer"
+  | "input"
+  | "button"
+  | "cta";
+
+export type ThemeColorSample = {
+  role: ThemeColorSampleRole;
+  color: string;
+  luminance: number;
+  contrastAgainstText?: number;
+  nodeId?: string;
+  weight?: number;
+};
+
+export type ThemeDesignTokens = {
+  globalBackground?: string;
+  foreground?: string;
+  cardBackground?: string;
+  borderColor?: string;
+  primaryButtonColor?: string;
+  secondaryButtonColor?: string;
+  accentColor?: string;
+  mutedColor?: string;
+  radius?: string;
+  shadow?: string;
+  fontFamily?: string;
+  headingSize?: string;
+  bodyTextSize?: string;
+  averageSectionVerticalSpacing?: number;
+};
+
+export type ThemeStyleSignals = {
+  hasStrongDarkTheme: boolean;
+  hasStyledButtons: boolean;
+  hasStyledInputs: boolean;
+  hasElevatedCards: boolean;
+};
+
+export type ThemeAnalysis = {
+  detectedTheme: ThemeMode;
+  dominantBackgroundLuminance?: number;
+  dominantContrast?: number;
+  colorSamples: ThemeColorSample[];
+  designTokens: ThemeDesignTokens;
+  styleSignals?: ThemeStyleSignals;
+  roleCounts: {
+    cards: number;
+    buttons: number;
+    inputs: number;
+    headers: number;
+    footers: number;
+    sections: number;
+  };
+  messages: string[];
 };
 
 export type CapturedNode = {
@@ -49,6 +137,7 @@ export type CapturedNode = {
   visualOrder: number;
   isVisible: boolean;
   asset: CapturedNodeAsset;
+  pseudoElements?: CapturedPseudoElement[];
 };
 
 export type DomSnapshotNode = Pick<
@@ -146,15 +235,24 @@ export type SectionCaptureImageAsset = {
   nodeId: string;
   tag: string;
   src: string;
+  currentSrc?: string;
+  srcsetCandidates?: string[];
   alt?: string;
   width: number;
   height: number;
+  lazy?: boolean;
+  status?: "loaded" | "failed" | "pending";
 };
 
 export type SectionCaptureBackgroundAsset = {
   nodeId: string;
   tag: string;
   backgroundImage: string;
+  backgroundUrls?: string[];
+  backgroundLayers?: CapturedBackgroundLayer[];
+  hasGradient?: boolean;
+  pseudo?: "::before" | "::after";
+  status?: "loaded" | "failed" | "pending";
 };
 
 export type SectionCaptureFontAsset = {
@@ -279,6 +377,7 @@ export type PageCapture = {
   responsiveSnapshot: ResponsiveSnapshotNode[];
   nodes: CapturedNode[];
   sections?: SectionCapture[];
+  themeAnalysis?: ThemeAnalysis;
   summary: CaptureSummary;
   artifacts: CaptureArtifacts;
 };

@@ -1,10 +1,15 @@
 import path from "node:path";
 
+import { auditThemeConsistency } from "@/lib/converter-v3/analyze/theme-detector";
 import { createEditableElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/editable";
 import { createGeometryElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/geometry";
 import { createHybridElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/hybrid";
 import { createPixelPerfectElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/pixel-perfect";
 import { createSnapshotElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/snapshot";
+import {
+  buildElementorStyleBridgeSettings,
+  resolvePageShellVisualContext
+} from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import type { PageCapture } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode, OutputMode } from "@/lib/converter-v3/contracts/layout";
 import type {
@@ -20,7 +25,14 @@ import {
   compareImagesPixelByPixel,
   renderHtmlToScreenshot
 } from "@/lib/converter-v3/visual-similarity";
-import { shouldForceUniversalFullPageSnapshot } from "@/lib/converter-v3/visual-clone-policy";
+import {
+  VISUAL_REASON_DARK_THEME,
+  VISUAL_REASON_FALLBACK_PIXEL_PERFECT,
+  VISUAL_REASON_FALLBACK_SNAPSHOT,
+  VISUAL_REASON_HERO_BACKGROUND,
+  VISUAL_REASON_STRUCTURAL_AUDIT,
+  shouldForceUniversalFullPageSnapshot
+} from "@/lib/converter-v3/visual-clone-policy";
 import { isForceFullPageSnapshotEnabled, isForceVisualSnapshotEnabled } from "@/lib/env";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
@@ -52,6 +64,11 @@ type StructuralVisualAssessment = {
   previewHtml: string;
   convertedScreenshotPath?: string;
   diffScreenshotPath?: string;
+};
+
+type StructuralVisualAudit = {
+  passed: boolean;
+  reasons: string[];
 };
 
 type ParsedGradient = {
@@ -420,39 +437,115 @@ function applyGradientSettings(
 
 function applySourceNodeMetadata(
   element: ElementorElement,
-  nodeById: Map<string, LayoutNode>
+  nodeById: Map<string, LayoutNode>,
+  captureById: Map<string, PageCapture["nodes"][number]>
 ): ElementorElement {
   const sourceNodeId =
     typeof element.settings.converter_v3_source_node_id === "string"
       ? element.settings.converter_v3_source_node_id
       : undefined;
+  const pageShellCaptureNodeId =
+    typeof element.settings.converter_v3_page_shell_capture_node_id === "string"
+      ? element.settings.converter_v3_page_shell_capture_node_id
+      : undefined;
   const node = sourceNodeId ? nodeById.get(sourceNodeId) : undefined;
-  const backgroundStyle = parseBackgroundStyle(node?.style.backgroundImage);
-  const backgroundImageUrl = backgroundStyle.imageUrl;
-
+  const captureNode = sourceNodeId ? captureById.get(sourceNodeId) : undefined;
+  const pageShellCaptureNode = pageShellCaptureNodeId
+    ? captureById.get(pageShellCaptureNodeId)
+    : undefined;
+  const styleBridge =
+    (element.settings.converter_v3_styles as Record<string, string> | undefined) ?? {};
   const nextElement = {
     ...element,
     settings: {
       ...element.settings
     },
-    elements: element.elements.map((child) => applySourceNodeMetadata(child, nodeById))
+    elements: element.elements.map((child) => applySourceNodeMetadata(child, nodeById, captureById))
   };
+  const isPageShell = nextElement.settings.converter_v3_page_shell === true;
 
   if (!node) {
     return nextElement;
   }
+
+  const sourceBackgroundImage = isPageShell
+    ? styleBridge["background-image"] ??
+      pageShellCaptureNode?.asset.backgroundImage ??
+      pageShellCaptureNode?.computedStyles["background-image"] ??
+      node?.style.backgroundImage ??
+      captureNode?.asset.backgroundImage ??
+      captureNode?.computedStyles["background-image"]
+    : node?.style.backgroundImage ??
+      captureNode?.asset.backgroundImage ??
+      captureNode?.computedStyles["background-image"] ??
+      pageShellCaptureNode?.asset.backgroundImage ??
+      pageShellCaptureNode?.computedStyles["background-image"] ??
+      styleBridge["background-image"];
+  const backgroundStyle = parseBackgroundStyle(sourceBackgroundImage);
+  const backgroundImageUrl = backgroundStyle.imageUrl;
+
+  const bridgeSettings = buildElementorStyleBridgeSettings({
+    node,
+    captureNode,
+    isButton: nextElement.widgetType === "button"
+  });
+
+  Object.entries(bridgeSettings).forEach(([key, value]) => {
+    if (value === undefined || nextElement.settings[key] !== undefined) {
+      return;
+    }
+
+    nextElement.settings[key] = value;
+  });
 
   nextElement.settings.converter_v3_semantic_role = node.detection?.semanticRole;
   nextElement.settings.converter_v3_visual_layer = node.visual?.layer;
   nextElement.settings.converter_v3_overlap_ids = node.visual?.overlapIds;
   nextElement.settings.converter_v3_z_index = node.visual?.effectiveZIndex;
 
+  const existingBackgroundColor = hasMeaningfulBackgroundColor(
+    String(nextElement.settings.background_color ?? "")
+  )
+    ? String(nextElement.settings.background_color)
+    : undefined;
+  const sourceBackgroundColor =
+    (hasMeaningfulBackgroundColor(node.style.backgroundColor)
+      ? node.style.backgroundColor
+      : undefined) ??
+    (hasMeaningfulBackgroundColor(captureNode?.computedStyles["background-color"])
+      ? captureNode?.computedStyles["background-color"]
+      : undefined);
+  const shellBackgroundColor =
+    (hasMeaningfulBackgroundColor(pageShellCaptureNode?.computedStyles["background-color"])
+      ? pageShellCaptureNode?.computedStyles["background-color"]
+      : undefined) ??
+    (hasMeaningfulBackgroundColor(styleBridge["background-color"])
+      ? styleBridge["background-color"]
+      : undefined);
+  const resolvedBackgroundColor = isPageShell
+    ? existingBackgroundColor ?? shellBackgroundColor ?? sourceBackgroundColor
+    : sourceBackgroundColor ?? shellBackgroundColor ?? existingBackgroundColor;
+  const existingTextColor =
+    typeof nextElement.settings.color === "string" && nextElement.settings.color.trim()
+      ? nextElement.settings.color.trim()
+      : typeof nextElement.settings.text_color === "string" && nextElement.settings.text_color.trim()
+        ? nextElement.settings.text_color.trim()
+        : typeof nextElement.settings.title_color === "string" &&
+            nextElement.settings.title_color.trim()
+          ? nextElement.settings.title_color.trim()
+          : undefined;
+  const sourceTextColor = node.style.color || captureNode?.computedStyles.color;
+  const shellTextColor = pageShellCaptureNode?.computedStyles.color || styleBridge.color;
+  const resolvedTextColor = isPageShell
+    ? existingTextColor ?? shellTextColor ?? sourceTextColor
+    : sourceTextColor ?? shellTextColor ?? existingTextColor;
+
   if (typeof node.visual?.effectiveZIndex === "number" && node.visual.effectiveZIndex > 0) {
     nextElement.settings.z_index = node.visual.effectiveZIndex;
   }
 
-  if ((nextElement.elType === "container" || nextElement.elType === "section") && hasMeaningfulBackgroundColor(node.style.backgroundColor)) {
-    setMirroredSetting(nextElement.settings, "background_color", node.style.backgroundColor);
+  if ((nextElement.elType === "container" || nextElement.elType === "section") && resolvedBackgroundColor) {
+    setMirroredSetting(nextElement.settings, "background_color", resolvedBackgroundColor);
     setMirroredSetting(
       nextElement.settings,
       "background_background",
@@ -460,13 +553,25 @@ function applySourceNodeMetadata(
     );
   }
 
+  if (resolvedTextColor) {
+    setMirroredSetting(nextElement.settings, "color", resolvedTextColor);
+    setMirroredSetting(nextElement.settings, "text_color", resolvedTextColor);
+    setMirroredSetting(nextElement.settings, "title_color", resolvedTextColor);
+  }
+
   if (backgroundImageUrl && (nextElement.elType === "container" || nextElement.elType === "section")) {
     const backgroundPosition = pickCssLayerValue(
-      node.style.backgroundPosition,
+      node.style.backgroundPosition ||
+        captureNode?.computedStyles["background-position"] ||
+        pageShellCaptureNode?.computedStyles["background-position"] ||
+        styleBridge["background-position"],
       backgroundStyle.imageLayerIndex
     );
     const backgroundSize = pickCssLayerValue(
-      node.style.backgroundSize,
+      node.style.backgroundSize ||
+        captureNode?.computedStyles["background-size"] ||
+        pageShellCaptureNode?.computedStyles["background-size"] ||
+        styleBridge["background-size"],
       backgroundStyle.imageLayerIndex
     );
 
@@ -504,12 +609,17 @@ function applySourceNodeMetadata(
   return nextElement;
 }
 
-function enrichDocument(document: ElementorDocument, layout: LayoutDocument): ElementorDocument {
+function enrichDocument(
+  document: ElementorDocument,
+  layout: LayoutDocument,
+  capture: PageCapture
+): ElementorDocument {
   const nodeById = buildNodeMap(layout);
+  const captureById = new Map(capture.nodes.map((node) => [node.id, node]));
 
   return {
     ...document,
-    content: document.content.map((element) => applySourceNodeMetadata(element, nodeById))
+    content: document.content.map((element) => applySourceNodeMetadata(element, nodeById, captureById))
   };
 }
 
@@ -597,14 +707,21 @@ async function buildSnapshotCandidate(params: {
 
 function buildPixelPerfectCandidate(params: {
   capture: PageCapture;
+  layout: LayoutDocument;
   selectedMode: OutputMode;
   fallbackReason?: string;
 }): EmittedCandidate {
+  const pageShell = resolvePageShellVisualContext({
+    capture: params.capture,
+    layout: params.layout
+  });
+
   return {
     document: createPixelPerfectElementorDocumentV3(params.capture.renderedHtml, {
       title: params.capture.title,
       selectedMode: params.selectedMode,
-      fallbackReason: params.fallbackReason
+      fallbackReason: params.fallbackReason,
+      shellStyleMap: pageShell.styleMap
     }),
     emittedMode: "pixel-perfect",
     exportStage: "pixel-perfect-emitter",
@@ -621,8 +738,12 @@ function getCandidateModes(params: {
 }): InternalCandidateMode[] {
   const { selectedMode, forceFullPageSnapshot, forceVisualSnapshot, renderer } = params;
 
+  if (renderer !== "browser" && (selectedMode === "pixel-perfect" || selectedMode === "snapshot")) {
+    return ["pixel-perfect"];
+  }
+
   if (forceFullPageSnapshot) {
-    return ["snapshot"];
+    return ["snapshot", "pixel-perfect"];
   }
 
   if (forceVisualSnapshot) {
@@ -630,7 +751,7 @@ function getCandidateModes(params: {
   }
 
   if (selectedMode === "snapshot") {
-    return ["snapshot"];
+    return ["snapshot", "pixel-perfect"];
   }
 
   if (renderer !== "browser") {
@@ -660,11 +781,26 @@ function getCandidateModes(params: {
   return ["hybrid", "geometry", "snapshot", "pixel-perfect"];
 }
 
+function appendFallbackContinuationWarning(
+  warnings: string[],
+  attemptedModes: InternalCandidateMode[],
+  index: number
+) {
+  const nextMode = attemptedModes[index + 1];
+
+  if (nextMode === "snapshot") {
+    warnings.push(VISUAL_REASON_FALLBACK_SNAPSHOT);
+  } else if (nextMode === "pixel-perfect") {
+    warnings.push(VISUAL_REASON_FALLBACK_PIXEL_PERFECT);
+  }
+}
+
 async function assessStructuralVisualFidelity(params: {
   capture: PageCapture;
   document: ElementorDocument;
   emittedMode: OutputMode;
   outputDir?: string;
+  previewHtml?: string;
 }): Promise<StructuralVisualAssessment | null> {
   const originalScreenshotPath = params.capture.artifacts.screenshots.desktop;
   const desktopViewport =
@@ -675,10 +811,12 @@ async function assessStructuralVisualFidelity(params: {
     return null;
   }
 
-  const previewHtml = buildConvertedPreviewHtml({
-    capture: params.capture,
-    document: params.document
-  });
+  const previewHtml =
+    params.previewHtml ??
+    buildConvertedPreviewHtml({
+      capture: params.capture,
+      document: params.document
+    });
   const outputBasePath = params.outputDir
     ? path.join(params.outputDir, `structural-visual-${params.emittedMode}`)
     : undefined;
@@ -707,8 +845,8 @@ async function assessStructuralVisualFidelity(params: {
     };
   } catch {
     return {
-      passed: true,
-      similarity: 1,
+      passed: false,
+      similarity: 0,
       previewHtml
     };
   }
@@ -719,17 +857,23 @@ function buildSnapshotValidationFailure(
   baseValidation: VisualValidationReport,
   snapshot: SnapshotVisualSummary
 ): VisualValidationReport {
-  const issues =
+  const issues: VisualValidationReport["issues"] =
     snapshot.visualValidationReport?.issues?.map((issue) => ({
       type: "missing-position" as const,
       nodeId: issue.sectionId ?? rootNodeId,
       message: issue.message,
+      severity: issue.severity === "critical" ? ("critical" as const) : ("warning" as const),
       sectionId: issue.sectionId,
       sectionName: issue.sectionName,
       sectionType: issue.sectionType,
+      sectionTypeLabel: issue.sectionTypeLabel,
       viewport: issue.viewport,
       similarity: issue.similarity,
+      similarityPercent: issue.similarityPercent,
       lossType: issue.lossType,
+      estimatedLossCount: issue.estimatedLossCount,
+      estimatedLosses: issue.estimatedLosses,
+      bbox: issue.bbox,
       originalScreenshotPath: issue.originalScreenshotPath,
       convertedScreenshotPath: issue.convertedScreenshotPath,
       diffScreenshotPath: issue.diffScreenshotPath
@@ -739,25 +883,42 @@ function buildSnapshotValidationFailure(
     `Similaridade visual final ficou em ${(
       snapshot.overallSimilarity * 100
     ).toFixed(2)}%, abaixo do minimo de ${(snapshot.threshold * 100).toFixed(2)}%.`;
+  const resolvedIssues =
+    issues.length > 0
+      ? issues
+      : [
+          {
+            type: "missing-position" as const,
+            nodeId: rootNodeId,
+            message: blockingReason,
+            severity: "critical" as const
+          }
+        ];
 
   return {
     ...baseValidation,
     passed: false,
-    issueCount: Math.max(issues.length, 1),
-    issues:
-      issues.length > 0
-        ? issues
-        : [
-            {
-              type: "missing-position",
-              nodeId: rootNodeId,
-              message: blockingReason
-            }
-      ]
+    issueCount: resolvedIssues.length,
+    severityCounts: {
+      warning: resolvedIssues.filter((issue) => issue.severity === "warning").length,
+      critical: resolvedIssues.filter((issue) => issue.severity === "critical").length,
+      blocking: 0
+    },
+    highestSeverity: resolvedIssues.some((issue) => issue.severity === "critical") ? "critical" : "warning",
+    blockingReason,
+    summaryMessages: [blockingReason],
+    issues: resolvedIssues
   };
 }
 
-function documentHasEmbeddedMediaAssets(document: ElementorDocument) {
+function readSourceNodeId(element: ElementorElement) {
+  const value = element.settings?.converter_v3_source_node_id;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function collectDocumentSourceIndex(document: ElementorDocument) {
+  const elementsBySourceNodeId = new Map<string, ElementorElement[]>();
+  const htmlPreservedNodeIds = new Set<string>();
   const queue = [...document.content];
 
   while (queue.length > 0) {
@@ -767,18 +928,266 @@ function documentHasEmbeddedMediaAssets(document: ElementorDocument) {
       continue;
     }
 
-    const mediaUrl =
-      (element.settings?.image as { url?: string } | undefined)?.url ??
-      (element.settings?.background_image as { url?: string } | undefined)?.url;
+    const sourceNodeId = readSourceNodeId(element);
 
-    if (typeof mediaUrl === "string" && mediaUrl.startsWith("data:image/")) {
-      return true;
+    if (sourceNodeId) {
+      const elements = elementsBySourceNodeId.get(sourceNodeId) ?? [];
+      elements.push(element);
+      elementsBySourceNodeId.set(sourceNodeId, elements);
+    }
+
+    if (element.widgetType === "html") {
+      const html = String(element.settings?.html ?? "");
+
+      [...html.matchAll(/data-capture-id="([^"]+)"/g)].forEach((match) => {
+        if (match[1]) {
+          htmlPreservedNodeIds.add(match[1]);
+        }
+      });
     }
 
     queue.push(...element.elements);
   }
 
+  return {
+    elementsBySourceNodeId,
+    htmlPreservedNodeIds
+  };
+}
+
+function collectLayoutSubtreeIds(layout: LayoutDocument, rootId: string) {
+  const childrenById = new Map(layout.nodes.map((node) => [node.id, node.children]));
+  const visited = new Set<string>();
+  const queue = [rootId];
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+
+    if (!currentId || visited.has(currentId)) {
+      continue;
+    }
+
+    visited.add(currentId);
+    queue.push(...(childrenById.get(currentId) ?? []));
+  }
+
+  return visited;
+}
+
+function hasBackgroundAsset(value: unknown) {
+  return typeof (value as { url?: string } | undefined)?.url === "string";
+}
+
+function hasGradientSetting(
+  settings: ElementorElement["settings"],
+  keyPrefix: "background" | "background_overlay"
+) {
+  return settings[`${keyPrefix}_background`] === "gradient";
+}
+
+function hasBackgroundSettings(element: ElementorElement) {
+  return (
+    hasMeaningfulBackgroundColor(String(element.settings?.background_color ?? "")) ||
+    hasBackgroundAsset(element.settings?.background_image) ||
+    hasGradientSetting(element.settings, "background") ||
+    hasGradientSetting(element.settings, "background_overlay") ||
+    hasMeaningfulBackgroundColor(String(element.settings?.background_overlay_color ?? ""))
+  );
+}
+
+function hasRadiusSettings(element: ElementorElement) {
+  const value = element.settings?.border_radius;
+
+  if (typeof value === "string") {
+    const numeric = Number.parseFloat(value);
+    return Number.isFinite(numeric) && numeric > 0;
+  }
+
+  if (typeof value === "number") {
+    return value > 0;
+  }
+
   return false;
+}
+
+function hasShadowSettings(element: ElementorElement) {
+  const value = String(element.settings?.box_shadow ?? "").trim().toLowerCase();
+  return Boolean(value && value !== "none");
+}
+
+function sourceNodeHasVisualBackground(node: LayoutNode) {
+  return (
+    hasMeaningfulBackgroundColor(node.style.backgroundColor) ||
+    Boolean(parseBackgroundStyle(node.style.backgroundImage).imageUrl) ||
+    Boolean(parseBackgroundStyle(node.style.backgroundImage).gradient)
+  );
+}
+
+function nodeSetHasMappedVisualShell(
+  nodeIds: Set<string>,
+  elementsBySourceNodeId: Map<string, ElementorElement[]>,
+  htmlPreservedNodeIds: Set<string>,
+  matcher: (element: ElementorElement) => boolean
+) {
+  for (const nodeId of nodeIds) {
+    if (htmlPreservedNodeIds.has(nodeId)) {
+      return true;
+    }
+
+    const elements = elementsBySourceNodeId.get(nodeId) ?? [];
+
+    if (elements.some(matcher)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function auditStructuralVisualFidelity(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+  document: ElementorDocument;
+  emittedMode: OutputMode;
+  previewHtml?: string;
+}): StructuralVisualAudit {
+  if (
+    params.emittedMode === "snapshot" ||
+    params.emittedMode === "pixel-perfect" ||
+    params.capture.renderer !== "browser"
+  ) {
+    return {
+      passed: true,
+      reasons: []
+    };
+  }
+
+  const { elementsBySourceNodeId, htmlPreservedNodeIds } = collectDocumentSourceIndex(params.document);
+  const nodeById = new Map(params.layout.nodes.map((node) => [node.id, node]));
+  const reasons: string[] = [];
+  const themeAudit = auditThemeConsistency({
+    sourceThemeAnalysis: params.capture.themeAnalysis,
+    previewHtml: params.previewHtml,
+    emittedMode: params.emittedMode
+  });
+
+  if (themeAudit?.issues.some((issue) => issue.type === "theme-mismatch")) {
+    reasons.push(VISUAL_REASON_DARK_THEME);
+  }
+
+  if (themeAudit?.issues.some((issue) => issue.type === "default-button-style-detected")) {
+    reasons.push("buttons default");
+  }
+
+  if (themeAudit?.issues.some((issue) => issue.type === "default-input-style-detected")) {
+    reasons.push("inputs default");
+  }
+
+  if (themeAudit?.issues.some((issue) => issue.type === "card-background-mismatch")) {
+    reasons.push("cards lost background/radius/shadow");
+  }
+
+  const heroSectionIds = [
+    ...new Set([
+      ...params.layout.detectedSections
+        .filter((section) => section.type === "hero")
+        .map((section) => section.id),
+      ...(params.layout.semanticIndex.hero ?? [])
+    ])
+  ];
+
+  const heroLostBackground = heroSectionIds.some((heroId) => {
+    const subtreeIds = collectLayoutSubtreeIds(params.layout, heroId);
+    const visualHeroNodeIds = new Set(
+      [...subtreeIds].filter((nodeId) => {
+        const node = nodeById.get(nodeId);
+        return Boolean(
+          node &&
+            (
+              sourceNodeHasVisualBackground(node) ||
+              node.detection?.semanticRole === "overlay" ||
+              node.visual?.layer === "overlay"
+            )
+        );
+      })
+    );
+
+    if (visualHeroNodeIds.size === 0) {
+      return false;
+    }
+
+    return !nodeSetHasMappedVisualShell(
+      visualHeroNodeIds,
+      elementsBySourceNodeId,
+      htmlPreservedNodeIds,
+      hasBackgroundSettings
+    );
+  });
+
+  if (heroLostBackground) {
+    reasons.push(VISUAL_REASON_HERO_BACKGROUND);
+  }
+
+  const cardNodes = params.layout.nodes.filter((node) => node.detection?.semanticRole === "card");
+  const cardsLostShell = cardNodes.some((cardNode) => {
+    const expectsBackground = sourceNodeHasVisualBackground(cardNode);
+    const expectsRadius = Boolean(cardNode.style.borderRadius?.trim()) && cardNode.style.borderRadius !== "0px";
+    const expectsShadow = Boolean(cardNode.style.boxShadow?.trim()) && cardNode.style.boxShadow !== "none";
+
+    if (!expectsBackground && !expectsRadius && !expectsShadow) {
+      return false;
+    }
+
+    const subtreeIds = collectLayoutSubtreeIds(params.layout, cardNode.id);
+
+    return !nodeSetHasMappedVisualShell(
+      subtreeIds,
+      elementsBySourceNodeId,
+      htmlPreservedNodeIds,
+      (element) =>
+        (!expectsBackground || hasBackgroundSettings(element)) &&
+        (!expectsRadius || hasRadiusSettings(element)) &&
+        (!expectsShadow || hasShadowSettings(element))
+    );
+  });
+
+  if (cardsLostShell) {
+    reasons.push("cards lost background/radius/shadow");
+  }
+
+  const headerFooterBackgroundLost = (["header", "footer"] as const).flatMap((role) => {
+    const roleNodeIds =
+      params.layout.semanticIndex[role] ??
+      params.layout.nodes
+        .filter((node) => node.detection?.semanticRole === role)
+        .map((node) => node.id);
+
+    return roleNodeIds.filter((nodeId) => {
+      const node = nodeById.get(nodeId);
+
+      if (!node || !sourceNodeHasVisualBackground(node)) {
+        return false;
+      }
+
+      const subtreeIds = collectLayoutSubtreeIds(params.layout, nodeId);
+
+      return !nodeSetHasMappedVisualShell(
+        subtreeIds,
+        elementsBySourceNodeId,
+        htmlPreservedNodeIds,
+        hasBackgroundSettings
+      );
+    });
+  });
+
+  if (headerFooterBackgroundLost.length > 0) {
+    reasons.push("header/footer background lost");
+  }
+
+  return {
+    passed: reasons.length === 0,
+    reasons: [...new Set(reasons)]
+  };
 }
 
 export async function createElementorNativeExport(params: {
@@ -817,19 +1226,34 @@ export async function createElementorNativeExport(params: {
             ? buildGeometryCandidate(params)
             : buildPixelPerfectCandidate({
                 capture: params.capture,
+                layout: params.layout,
                 selectedMode: params.selectedMode,
                 fallbackReason:
-                  "Fallback final em iframe por perda detectada nas exportacoes nativas."
+                  `${VISUAL_REASON_FALLBACK_PIXEL_PERFECT}: fallback final em iframe por perda detectada nas exportacoes nativas.`
               });
     const enrichedDocument =
       candidate.emittedMode === "pixel-perfect"
         ? candidate.document
-        : enrichDocument(candidate.document, params.layout);
+        : enrichDocument(candidate.document, params.layout, params.capture);
+    const structuralPreviewHtml =
+      candidate.emittedMode !== "snapshot" && candidate.emittedMode !== "pixel-perfect"
+        ? candidate.previewHtml ??
+          buildConvertedPreviewHtml({
+            capture: params.capture,
+            document: enrichedDocument
+          })
+        : candidate.previewHtml;
+
+    if (structuralPreviewHtml && !candidate.previewHtml) {
+      candidate.previewHtml = structuralPreviewHtml;
+    }
+
     const validation = validateElementorExport({
       capture: params.capture,
       layout: params.layout,
       document: enrichedDocument,
-      mode: candidate.emittedMode
+      mode: candidate.emittedMode,
+      previewHtml: candidate.previewHtml
     });
 
     warnings.push(...candidate.warnings);
@@ -853,13 +1277,68 @@ export async function createElementorNativeExport(params: {
             capture: params.capture,
             document: enrichedDocument,
             emittedMode: candidate.emittedMode,
-            outputDir: params.outputDir
+            outputDir: params.outputDir,
+            previewHtml: candidate.previewHtml
           })
         : null;
 
     if (structuralVisualAssessment?.previewHtml) {
       candidate.previewHtml = structuralVisualAssessment.previewHtml;
       lastAttempt.previewHtml = structuralVisualAssessment.previewHtml;
+    }
+
+    const structuralVisualAudit =
+      candidate.emittedMode !== "snapshot" && candidate.emittedMode !== "pixel-perfect"
+        ? auditStructuralVisualFidelity({
+            capture: params.capture,
+            layout: params.layout,
+            document: enrichedDocument,
+            emittedMode: candidate.emittedMode,
+            previewHtml: structuralPreviewHtml
+          })
+        : null;
+
+    if (structuralVisualAudit && !structuralVisualAudit.passed) {
+      warnings.push(VISUAL_REASON_STRUCTURAL_AUDIT, ...structuralVisualAudit.reasons);
+
+      if (hasMoreModes) {
+        appendFallbackContinuationWarning(warnings, attemptedModes, index);
+        continue;
+      }
+    }
+
+    if (
+      candidate.emittedMode === "snapshot" &&
+      candidate.snapshot?.visualValidationReport?.status === "blocked" &&
+      !candidate.snapshot.requiresPixelPerfect
+    ) {
+      lastValidation = buildSnapshotValidationFailure(
+        params.layout.rootNodeId,
+        validation,
+        candidate.snapshot
+      );
+      warnings.push(
+        candidate.snapshot.visualValidationReport.blockingReason ??
+          "Snapshot visual falhou na auditoria final; escalando para fallback mais seguro."
+      );
+
+      if (hasMoreModes) {
+        appendFallbackContinuationWarning(warnings, attemptedModes, index);
+        continue;
+      }
+
+      if (forceVisualSnapshot) {
+        return {
+          document: enrichedDocument,
+          emittedMode: candidate.emittedMode,
+          exportStage: candidate.exportStage,
+          fallbackReason: candidate.fallbackReason,
+          warnings,
+          validation: lastValidation,
+          previewHtml: candidate.previewHtml,
+          snapshot: candidate.snapshot
+        };
+      }
     }
 
     if (
@@ -869,11 +1348,12 @@ export async function createElementorNativeExport(params: {
     ) {
       const pixelPerfectReason =
         candidate.snapshot.pixelPerfectReason ??
-        "Snapshot da pagina inteira nao pode ser gerado; fallback emergencial para pixel-perfect.";
+        `${VISUAL_REASON_FALLBACK_PIXEL_PERFECT}: snapshot da pagina inteira nao pode ser gerado; fallback emergencial para pixel-perfect.`;
       warnings.push(pixelPerfectReason);
 
       const pixelPerfectCandidate = buildPixelPerfectCandidate({
         capture: params.capture,
+        layout: params.layout,
         selectedMode: params.selectedMode,
         fallbackReason: pixelPerfectReason
       });
@@ -907,6 +1387,7 @@ export async function createElementorNativeExport(params: {
       );
 
       if (hasMoreModes) {
+        appendFallbackContinuationWarning(warnings, attemptedModes, index);
         continue;
       }
     }
@@ -943,27 +1424,21 @@ export async function createElementorNativeExport(params: {
       }
 
       if (hasMoreModes) {
+        appendFallbackContinuationWarning(warnings, attemptedModes, index);
         continue;
       }
     }
 
     if (structuralVisualAssessment && !structuralVisualAssessment.passed) {
-      if (validation.passed && documentHasEmbeddedMediaAssets(enrichedDocument)) {
-        warnings.push(
-          `Modo ${candidate.emittedMode} preservou assets locais embutidos; mantendo a exportacao nativa apesar da previa estrutural ficar em ${(
-            structuralVisualAssessment.similarity * 100
-          ).toFixed(2)}%.`
-        );
-      } else {
-        warnings.push(
-          `Modo ${candidate.emittedMode} ficou em ${(
-            structuralVisualAssessment.similarity * 100
-          ).toFixed(2)}% de similaridade visual, abaixo do minimo de ${(
-            STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD * 100
-          ).toFixed(2)}%; escalando para fallback mais fiel.`
-        );
-        continue;
-      }
+      warnings.push(
+        `Modo ${candidate.emittedMode} ficou em ${(
+          structuralVisualAssessment.similarity * 100
+        ).toFixed(2)}% de similaridade visual, abaixo do minimo de ${(
+          STRUCTURAL_VISUAL_SIMILARITY_THRESHOLD * 100
+        ).toFixed(2)}%; escalando para fallback mais fiel.`
+      );
+      appendFallbackContinuationWarning(warnings, attemptedModes, index);
+      continue;
     }
 
     if (validation.passed) {
@@ -988,6 +1463,8 @@ export async function createElementorNativeExport(params: {
     warnings.push(
       `Modo ${candidate.emittedMode} reprovado na validacao visual (${validation.issueCount} perda(s)); escalando para fallback mais seguro.`
     );
+
+    appendFallbackContinuationWarning(warnings, attemptedModes, index);
 
     if (forceVisualSnapshot && candidate.emittedMode === "snapshot" && !hasMoreModes) {
       return {

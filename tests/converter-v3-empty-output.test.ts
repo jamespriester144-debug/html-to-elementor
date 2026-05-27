@@ -559,6 +559,86 @@ async function testValidateContentIntegrityThrowsClearFullPageSnapshotError() {
   });
 }
 
+async function testValidateContentIntegrityBlocksCriticalVisualAudit() {
+  const report = await validateContentIntegrity({
+    capture: createMockCapture(),
+    layout: createMockLayout(),
+    document: {
+      version: "1.0",
+      title: "Visual Audit Blocked Export",
+      type: "page",
+      content: [
+        {
+          id: "hero-container",
+          elType: "container",
+          settings: {
+            converter_v3_source_node_id: "hero-section"
+          },
+          elements: []
+        }
+      ]
+    },
+    validation: {
+      passed: false,
+      mode: "editable",
+      issueCount: 2,
+      issues: [
+        {
+          type: "body-white-on-dark",
+          nodeId: "hero-section",
+          severity: "blocking",
+          message: "dark theme lost"
+        },
+        {
+          type: "hero-overlay-missing",
+          nodeId: "hero-section",
+          severity: "critical",
+          message: "hero overlay missing"
+        }
+      ],
+      severityCounts: {
+        warning: 0,
+        critical: 1,
+        blocking: 1
+      },
+      highestSeverity: "blocking",
+      blockingReason:
+        "Conversao bloqueada pela auditoria visual: dark theme lost; hero overlay missing.",
+      summaryMessages: ["dark theme lost", "hero overlay missing"],
+      stats: {
+        expectedTexts: 1,
+        matchedTexts: 1,
+        expectedImages: 1,
+        matchedImages: 1,
+        expectedButtons: 1,
+        matchedButtons: 1,
+        expectedLinks: 1,
+        matchedLinks: 1,
+        expectedSections: 1,
+        matchedSections: 1,
+        expectedCards: 0,
+        matchedCards: 0,
+        expectedHeaders: 0,
+        matchedHeaders: 0,
+        expectedFooters: 0,
+        matchedFooters: 0,
+        expectedPositionedNodes: 3,
+        matchedPositionedNodes: 3
+      }
+    },
+    emittedMode: "editable",
+    outputFile: path.join(os.tmpdir(), "elementor-visual-audit-blocked.json"),
+    failureStage: "editable-emitter"
+  });
+
+  assert.equal(report.status, "blocked");
+  assert.equal(report.failureStage, "editable-emitter");
+  assert.equal(report.visualAuditPassed, false);
+  assert.equal(report.visualAuditHighestSeverity, "blocking");
+  assert.match(report.failureReason ?? "", /dark theme lost/i);
+  assert.match(report.recommendation, /tema escuro/i);
+}
+
 async function testGenericRecoveryEscalatesBlockedNativeOutput() {
   const capture = createMockCapture();
   const layout = createMockLayout();
@@ -858,6 +938,7 @@ async function testDebugConversionReportExplainsEmptyExport() {
 async function main() {
   await testValidateContentIntegrityBlocksEmptyOutput();
   await testValidateContentIntegrityThrowsClearFullPageSnapshotError();
+  await testValidateContentIntegrityBlocksCriticalVisualAudit();
   await testGenericRecoveryEscalatesBlockedNativeOutput();
   await testGenericRecoverySkipsWhenOriginalNeverRendered();
   await testVisualFallbackProducesNonEmptyOutputForRuntimeFixture();

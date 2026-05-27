@@ -301,8 +301,9 @@ async function resolveStaticHtmlArchive(
   const id = crypto.randomUUID();
   const targetDir = path.join(sourceRoot, id);
   const normalizedEntry = sanitizeRelativePath(entryFile);
+  const entryAbsolutePath = path.join(targetDir, normalizedEntry);
   await writeZipSnapshotToDirectory(snapshot, targetDir);
-  const html = await readFile(path.join(targetDir, normalizedEntry), "utf8");
+  const html = await readFile(entryAbsolutePath, "utf8");
 
   return buildResolvedSource({
     id,
@@ -310,7 +311,7 @@ async function resolveStaticHtmlArchive(
     html,
     entryFile: normalizedEntry,
     archiveFileCount: snapshot.fileNames.length,
-    sourcePath: normalizedEntry,
+    sourcePath: entryAbsolutePath,
     notes: [
       "ZIP detectado como site HTML exportado.",
       "Assets locais ficaram disponiveis para renderizacao universal via servidor local."
@@ -319,7 +320,7 @@ async function resolveStaticHtmlArchive(
       mode: "local-server",
       documentRoot: targetDir,
       entryPath: normalizedEntry,
-      sourcePath: normalizedEntry
+      sourcePath: entryAbsolutePath
     }
   });
 }

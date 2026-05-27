@@ -17,6 +17,10 @@ import type {
   ResolvedAssetLocation,
   SourceKind
 } from "@/lib/converter-v3/contracts/source";
+import {
+  extractCssUrls,
+  extractSrcsetCandidates
+} from "@/lib/converter-v3/visual-asset-utils";
 
 function normalizeWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -120,12 +124,6 @@ function matchesInlineStyle(
   return Object.entries(style).some(([property, value]) => predicate(property, value));
 }
 
-function extractUrlsFromStyleText(styleText: string) {
-  return [...styleText.matchAll(/url\((['"]?)(.*?)\1\)/gi)]
-    .map((match) => match[2]?.trim())
-    .filter((value): value is string => Boolean(value));
-}
-
 function buildAssetReference(params: {
   url: string;
   sourceTag: string;
@@ -204,10 +202,7 @@ function collectAssetReferences(html: string) {
     const srcset = node.attr("srcset") || node.attr("data-srcset") || node.attr("data-lazy-srcset");
 
     if (srcset) {
-      srcset
-        .split(",")
-        .map((item) => item.trim().split(/\s+/)[0])
-        .filter(Boolean)
+      extractSrcsetCandidates(srcset)
         .forEach((url) => {
           addAsset(
             buildAssetReference({
@@ -226,7 +221,7 @@ function collectAssetReferences(html: string) {
     const styleText = node.attr("style") || node.html() || "";
     const sourceTag = element.tagName.toLowerCase();
 
-    extractUrlsFromStyleText(styleText).forEach((url) => {
+    extractCssUrls(styleText).forEach((url) => {
       addAsset(
         buildAssetReference({
           url,
@@ -760,6 +755,17 @@ export function enrichInputPageAnalysis(
       sourceTag?: string;
       sourceAttribute?: string;
       lazy?: boolean;
+      nodeId?: string;
+      pseudo?: "::before" | "::after";
+      importance?: "hero" | "card" | "section" | "generic";
+      critical?: boolean;
+      diagnostic?:
+        | "inline image loaded"
+        | "background image loaded"
+        | "pseudo-element background loaded"
+        | "asset failed"
+        | "hero background missing"
+        | "card image missing";
     }>;
     warnings?: string[];
     errors?: string[];
@@ -773,7 +779,12 @@ export function enrichInputPageAnalysis(
     reason: resource.reason,
     sourceTag: resource.sourceTag,
     sourceAttribute: resource.sourceAttribute,
-    lazy: resource.lazy
+    lazy: resource.lazy,
+    nodeId: resource.nodeId,
+    pseudo: resource.pseudo,
+    importance: resource.importance,
+    critical: resource.critical,
+    diagnostic: resource.diagnostic
   }));
 
   return {

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 
-import { JSDOM } from "jsdom";
+import { JSDOM, type DOMWindow } from "jsdom";
 
 import type {
   BrowserPageSession
@@ -10,6 +10,7 @@ import type {
 import { installBrowserEvalShim } from "@/lib/converter-v3/browser-eval-shim";
 import {
   CAPTURED_STYLE_PROPERTIES,
+  CAPTURED_THEME_CUSTOM_PROPERTIES,
   extractRenderedDomNodes,
   extractViewportNodes
 } from "@/lib/converter-v3/bounding-box-extractor";
@@ -22,6 +23,13 @@ import type {
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
 import { startLocalRenderServer } from "@/lib/converter-v3/render/local-render-server";
 import { CAPTURE_VIEWPORTS } from "@/lib/converter-v3/render/viewport-profiles";
+import {
+  buildCapturedBackgroundLayers,
+  extractCssUrls,
+  extractSrcsetCandidates,
+  uniqueNonEmpty,
+  VISUAL_LAZY_SOURCE_ATTRIBUTES
+} from "@/lib/converter-v3/visual-asset-utils";
 import { preparePageForVisualCapture } from "@/lib/converter-v3/visual-capture-stability";
 import { getLovableBaseCss, inlineLovableStyles } from "@/lib/tailwind";
 
@@ -33,6 +41,17 @@ export type BrowserResourceStatus = {
   sourceTag?: string;
   sourceAttribute?: string;
   lazy?: boolean;
+  nodeId?: string;
+  pseudo?: "::before" | "::after";
+  importance?: "hero" | "card" | "section" | "generic";
+  critical?: boolean;
+  diagnostic?:
+    | "inline image loaded"
+    | "background image loaded"
+    | "pseudo-element background loaded"
+    | "asset failed"
+    | "hero background missing"
+    | "card image missing";
 };
 
 export type BrowserRenderDiagnostics = {
@@ -95,7 +114,132 @@ function parseInlineStyle(style: string | null): Record<string, string> {
       }
 
       return acc;
-    }, {});
+  }, {});
+}
+
+function trimStyleValue(value?: string | null) {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function isTransparentBackgroundColor(value?: string) {
+  const normalized = (value ?? "").replace(/\s+/g, "").toLowerCase();
+  return (
+    !normalized ||
+    normalized === "transparent" ||
+    normalized === "rgba(0,0,0,0)" ||
+    normalized === "rgb(0,0,0,0)" ||
+    normalized === "hsla(0,0%,0%,0)"
+  );
+}
+
+function isEmptyBackgroundImage(value?: string) {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return !normalized || normalized === "none";
+}
+
+function resolveCssVariableExpression(
+  value: string,
+  declarations: Array<Pick<CSSStyleDeclaration, "getPropertyValue">>
+) {
+  let resolved = value;
+
+  for (let attempt = 0; attempt < 5 && /var\(/i.test(resolved); attempt += 1) {
+    let didReplace = false;
+
+    resolved = resolved.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)/gi, (_, customProperty, fallback) => {
+      const replacement = declarations
+        .map((declaration) => trimStyleValue(declaration.getPropertyValue(customProperty)))
+        .find(Boolean);
+
+      if (replacement) {
+        didReplace = true;
+        return replacement;
+      }
+
+      const normalizedFallback = trimStyleValue(fallback);
+
+      if (normalizedFallback) {
+        didReplace = true;
+        return normalizedFallback;
+      }
+
+      return "";
+    });
+
+    if (!didReplace) {
+      break;
+    }
+  }
+
+  return trimStyleValue(resolved) ?? value;
+}
+
+function collectFallbackComputedStyles(params: {
+  element: Element;
+  documentElement: Element;
+  window: Pick<DOMWindow, "document" | "getComputedStyle">;
+}) {
+  const computed = params.window.getComputedStyle(params.element);
+  const rootComputed = params.window.getComputedStyle(params.documentElement);
+  const declarations = [computed, rootComputed];
+  const computedStyles: Record<string, string> = {};
+
+  for (const property of [...CAPTURED_STYLE_PROPERTIES, ...CAPTURED_THEME_CUSTOM_PROPERTIES]) {
+    const rawValue = trimStyleValue(computed.getPropertyValue(property));
+    const rootValue = trimStyleValue(rootComputed.getPropertyValue(property));
+    const value = rawValue ?? rootValue;
+
+    if (!value) {
+      continue;
+    }
+
+    computedStyles[property] = resolveCssVariableExpression(value, declarations);
+  }
+
+  if (
+    params.element === params.window.document.body &&
+    isTransparentBackgroundColor(computedStyles["background-color"]) &&
+    !isEmptyBackgroundImage(computedStyles["background-image"])
+  ) {
+    return computedStyles;
+  }
+
+  if (params.element === params.window.document.body) {
+    if (isTransparentBackgroundColor(computedStyles["background-color"])) {
+      const rootBackgroundColor = trimStyleValue(rootComputed.getPropertyValue("background-color"));
+
+      if (rootBackgroundColor && !isTransparentBackgroundColor(rootBackgroundColor)) {
+        computedStyles["background-color"] = resolveCssVariableExpression(rootBackgroundColor, declarations);
+      }
+    }
+
+    if (isEmptyBackgroundImage(computedStyles["background-image"])) {
+      const rootBackgroundImage = trimStyleValue(rootComputed.getPropertyValue("background-image"));
+
+      if (rootBackgroundImage && !isEmptyBackgroundImage(rootBackgroundImage)) {
+        computedStyles["background-image"] = resolveCssVariableExpression(rootBackgroundImage, declarations);
+
+        for (const property of [
+          "background-size",
+          "background-position",
+          "background-repeat",
+          "background-clip",
+          "background-blend-mode",
+          "background-origin",
+          "background-attachment"
+        ] as const) {
+          const rootPropertyValue = trimStyleValue(rootComputed.getPropertyValue(property));
+
+          if (rootPropertyValue && !computedStyles[property]) {
+            computedStyles[property] = resolveCssVariableExpression(rootPropertyValue, declarations);
+          }
+        }
+      }
+    }
+  }
+
+  return computedStyles;
 }
 
 function ensureRenderableDocument(html: string): string {
@@ -118,7 +262,15 @@ function ensureRenderableDocument(html: string): string {
   const style = document.createElement("style");
   style.setAttribute("data-converter-v3-base-css", "true");
   style.textContent = getLovableBaseCss().replace(/^<style>|<\/style>$/g, "");
-  document.head.append(style);
+  const firstNonMetaChild = Array.from(document.head.children).find(
+    (child) => child.tagName.toLowerCase() !== "meta"
+  );
+
+  if (firstNonMetaChild) {
+    document.head.insertBefore(style, firstNonMetaChild);
+  } else {
+    document.head.append(style);
+  }
 
   return dom.serialize();
 }
@@ -140,14 +292,26 @@ function createFallbackAsset(
   inlineStyles: Record<string, string>
 ) {
   const backgroundImage = inlineStyles["background-image"];
+  const lazySources = uniqueNonEmpty(
+    VISUAL_LAZY_SOURCE_ATTRIBUTES.map((attribute) => attributes[attribute])
+  );
+  const srcsetCandidates = extractSrcsetCandidates(attributes.srcset);
 
   return {
     href: attributes.href || attributes["data-href"] || attributes["data-url"],
-    src: attributes.src,
+    src: attributes.src || srcsetCandidates[0] || lazySources[0],
+    currentSrc: attributes.src || undefined,
+    srcsetCandidates,
+    lazySources,
     alt: attributes.alt,
     poster: attributes.poster,
     backgroundImage:
-      backgroundImage && backgroundImage !== "none" ? backgroundImage : undefined
+      backgroundImage && backgroundImage !== "none" ? backgroundImage : undefined,
+    backgroundUrls: extractCssUrls(backgroundImage),
+    backgroundLayers: buildCapturedBackgroundLayers(backgroundImage),
+    hasGradientBackground: buildCapturedBackgroundLayers(backgroundImage).some(
+      (layer) => layer.type === "gradient"
+    )
   };
 }
 
@@ -188,6 +352,11 @@ function collectFallbackNodes(html: string): Omit<BrowserRenderArtifact, "screen
       return acc;
     }, {});
     const inlineStyles = parseInlineStyle(element.getAttribute("style"));
+    const computedStyles = collectFallbackComputedStyles({
+      element,
+      documentElement: document.documentElement,
+      window: dom.window
+    });
     const childIds = Array.from(element.children).map((child) => {
       const childIndex = elements.indexOf(child as HTMLElement);
       return child.getAttribute("data-capture-id") || `capture-node-${childIndex + 1}`;
@@ -204,17 +373,24 @@ function collectFallbackNodes(html: string): Omit<BrowserRenderArtifact, "screen
         element.parentElement?.getAttribute("data-capture-id") ??
         (element === document.body ? null : null),
       childIds,
-      computedStyles: inlineStyles,
+      computedStyles: Object.keys(computedStyles).length > 0 ? computedStyles : inlineStyles,
       box: null,
       viewportStates: Object.fromEntries(
         CAPTURE_VIEWPORTS.map((viewport) => [
           viewport.name,
-          createViewportState(inlineStyles, null, true)
+          createViewportState(
+            Object.keys(computedStyles).length > 0 ? computedStyles : inlineStyles,
+            null,
+            true
+          )
         ])
       ),
       visualOrder: index + 1,
       isVisible: true,
-      asset: createFallbackAsset(attributes, inlineStyles)
+      asset: createFallbackAsset(
+        attributes,
+        Object.keys(computedStyles).length > 0 ? computedStyles : inlineStyles
+      )
     } satisfies CapturedNode;
   });
 
@@ -257,7 +433,7 @@ async function loadRenderTarget(
 async function collectBrowserResourceDiagnostics(
   page: BrowserPageSession["page"]
 ): Promise<BrowserRenderDiagnostics> {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const absolute = (value: string | null | undefined) => {
       const nextValue = (value || "").trim();
 
@@ -272,20 +448,206 @@ async function collectBrowserResourceDiagnostics(
       }
     };
 
+    const splitBackgroundLayers = (value: string) => {
+      const layers: string[] = [];
+      let current = "";
+      let depth = 0;
+      let quote: '"' | "'" | null = null;
+
+      for (let index = 0; index < value.length; index += 1) {
+        const char = value[index];
+        const previous = index > 0 ? value[index - 1] : "";
+
+        if (quote) {
+          current += char;
+
+          if (char === quote && previous !== "\\") {
+            quote = null;
+          }
+
+          continue;
+        }
+
+        if (char === '"' || char === "'") {
+          quote = char;
+          current += char;
+          continue;
+        }
+
+        if (char === "(") {
+          depth += 1;
+          current += char;
+          continue;
+        }
+
+        if (char === ")") {
+          depth = Math.max(depth - 1, 0);
+          current += char;
+          continue;
+        }
+
+        if (char === "," && depth === 0) {
+          const trimmed = current.trim();
+
+          if (trimmed) {
+            layers.push(trimmed);
+          }
+
+          current = "";
+          continue;
+        }
+
+        current += char;
+      }
+
+      const trimmed = current.trim();
+
+      if (trimmed) {
+        layers.push(trimmed);
+      }
+
+      return layers;
+    };
+
+    const extractSrcsetCandidates = (value: string | null | undefined) => {
+      if (!value) {
+        return [];
+      }
+
+      const candidates: string[] = [];
+      let index = 0;
+
+      while (index < value.length) {
+        while (index < value.length && /[\s,]/.test(value[index] || "")) {
+          index += 1;
+        }
+
+        if (index >= value.length) {
+          break;
+        }
+
+        const isDataUrl = value.slice(index, index + 5).toLowerCase() === "data:";
+        let candidate = "";
+
+        while (index < value.length) {
+          const char = value[index] || "";
+
+          if (/\s/.test(char) || (!isDataUrl && char === ",")) {
+            break;
+          }
+
+          candidate += char;
+          index += 1;
+        }
+
+        const normalizedCandidate = candidate.trim();
+
+        if (normalizedCandidate) {
+          candidates.push(normalizedCandidate);
+        }
+
+        while (index < value.length && value[index] !== ",") {
+          index += 1;
+        }
+
+        if (value[index] === ",") {
+          index += 1;
+        }
+      }
+
+      return candidates;
+    };
+
+    const extractCssUrls = (value: string | null | undefined) => {
+      if (!value || value === "none") {
+        return [];
+      }
+
+      return splitBackgroundLayers(value).flatMap((layer) =>
+        [...layer.matchAll(/url\((['"]?)(.*?)\1\)/gi)]
+          .map((match) => match[2]?.trim())
+          .filter((item): item is string => Boolean(item))
+      );
+    };
+
+    const uniqueValues = (values: Array<string | null | undefined>) => {
+      const seen = new Set<string>();
+      const result: string[] = [];
+
+      values.forEach((value) => {
+        const normalized = value?.trim();
+
+        if (!normalized || seen.has(normalized)) {
+          return;
+        }
+
+        seen.add(normalized);
+        result.push(normalized);
+      });
+
+      return result;
+    };
+
+    const getNodeId = (element: Element | null | undefined) =>
+      element?.getAttribute("data-capture-id") || undefined;
+
+    const getImportance = (element: Element) => {
+      const fingerprint = [
+        element.tagName.toLowerCase(),
+        element.getAttribute("class") || "",
+        element.getAttribute("id") || "",
+        element.getAttribute("role") || "",
+        element.getAttribute("aria-label") || "",
+        element.closest(
+          "[class*='hero' i],[id*='hero' i],[class*='banner' i],[id*='banner' i],[class*='masthead' i],[id*='masthead' i]"
+        )
+          ? "hero"
+          : "",
+        element.closest(
+          "[class*='card' i],[id*='card' i],[class*='tile' i],[class*='panel' i],[class*='feature' i],[class*='product' i],[class*='pricing' i],[class*='testimonial' i]"
+        )
+          ? "card"
+          : "",
+        element.closest("section,article,main,[role='region']")
+          ? "section"
+          : ""
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      if (/hero|banner|masthead|jumbotron|showcase|cover/.test(fingerprint)) {
+        return "hero" as const;
+      }
+
+      if (/card|tile|panel|feature|product|pricing|testimonial|article|item/.test(fingerprint)) {
+        return "card" as const;
+      }
+
+      if (/section|article|region|content|container|wrapper/.test(fingerprint)) {
+        return "section" as const;
+      }
+
+      return "generic" as const;
+    };
+
     const seen = new Set<string>();
     const resources: BrowserResourceStatus[] = [];
     const warnings: string[] = [];
     const errors: string[] = [];
+    const criticalMessages = new Set<string>();
     const performanceEntries = new Map(
       performance.getEntriesByType("resource").map((entry) => [entry.name, entry])
     );
+    const imageProbeCache = new Map<string, Promise<boolean>>();
 
     const pushResource = (resource: BrowserResourceStatus) => {
       const key = [
         resource.kind,
         resource.sourceTag,
         resource.sourceAttribute,
-        resource.url
+        resource.url,
+        resource.nodeId,
+        resource.pseudo
       ].join("|");
 
       if (!resource.url || seen.has(key)) {
@@ -294,6 +656,10 @@ async function collectBrowserResourceDiagnostics(
 
       seen.add(key);
       resources.push(resource);
+
+      if (resource.critical && resource.diagnostic) {
+        criticalMessages.add(resource.diagnostic);
+      }
     };
 
     const classifyUrl = (url: string) => {
@@ -322,14 +688,79 @@ async function collectBrowserResourceDiagnostics(
     };
 
     const findResourceEntry = (url: string) => performanceEntries.has(url);
+    const probeImageUrl = (url: string) => {
+      if (!url) {
+        return Promise.resolve(false);
+      }
+
+      if (url.startsWith("data:")) {
+        return Promise.resolve(true);
+      }
+
+      const pendingProbe =
+        imageProbeCache.get(url) ??
+        new Promise<boolean>((resolve) => {
+          const image = new Image();
+          let settled = false;
+          const finish = (loaded: boolean) => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+            clearTimeout(timer);
+            image.onload = null;
+            image.onerror = null;
+            resolve(loaded);
+          };
+          const timer = window.setTimeout(() => finish(false), 2000);
+
+          image.onload = () => finish(true);
+          image.onerror = () => finish(false);
+          image.src = url;
+        });
+
+      imageProbeCache.set(url, pendingProbe);
+      return pendingProbe;
+    };
+    const resolveFailureDiagnostic = (params: {
+      importance: "hero" | "card" | "section" | "generic";
+      sourceAttribute?: string;
+      pseudo?: "::before" | "::after";
+    }) => {
+      if (params.sourceAttribute === "background-image" && params.importance === "hero") {
+        return {
+          diagnostic: "hero background missing" as const,
+          critical: true
+        };
+      }
+
+      if (!params.pseudo && params.importance === "card") {
+        return {
+          diagnostic: "card image missing" as const,
+          critical: true
+        };
+      }
+
+      return {
+        diagnostic: "asset failed" as const,
+        critical: false
+      };
+    };
 
     Array.from(document.querySelectorAll<HTMLImageElement>("img")).forEach((image) => {
+      const lazySources = uniqueValues([
+        image.getAttribute("data-src"),
+        image.getAttribute("data-lazy-src"),
+        image.getAttribute("data-original"),
+        image.getAttribute("data-url")
+      ]);
       const url = absolute(
         image.currentSrc ||
           image.getAttribute("src") ||
-          image.getAttribute("data-src") ||
-          image.getAttribute("data-lazy-src") ||
-          image.getAttribute("data-original")
+          extractSrcsetCandidates(image.getAttribute("srcset"))[0] ||
+          extractSrcsetCandidates(image.getAttribute("data-srcset"))[0] ||
+          lazySources[0]
       );
 
       if (!url) {
@@ -339,6 +770,10 @@ async function collectBrowserResourceDiagnostics(
       const loaded = url.startsWith("data:") || (image.complete && image.naturalWidth > 0);
       const failed = image.complete && image.naturalWidth <= 0 && !url.startsWith("data:");
       const pending = !loaded && !failed;
+      const importance = getImportance(image);
+      const failure = resolveFailureDiagnostic({
+        importance
+      });
 
       pushResource({
         url,
@@ -346,14 +781,102 @@ async function collectBrowserResourceDiagnostics(
         status: loaded ? "loaded" : failed ? "failed" : pending ? "pending" : "skipped",
         reason: failed ? "img-naturalWidth-zero" : pending ? "img-not-complete" : undefined,
         sourceTag: "img",
-        sourceAttribute: image.getAttribute("src") ? "src" : "data-src",
+        sourceAttribute:
+          image.getAttribute("src") || image.currentSrc
+            ? "src"
+            : image.getAttribute("srcset")
+              ? "srcset"
+              : "data-src",
         lazy:
           image.loading === "lazy" ||
-          Boolean(
-            image.getAttribute("data-src") ||
-              image.getAttribute("data-lazy-src") ||
-              image.getAttribute("data-original")
-          )
+          lazySources.length > 0,
+        nodeId: getNodeId(image),
+        importance,
+        critical: failed ? failure.critical : false,
+        diagnostic: loaded ? "inline image loaded" : failed ? failure.diagnostic : undefined
+      });
+    });
+
+    Array.from(document.querySelectorAll<HTMLPictureElement>("picture")).forEach((picture) => {
+      const image = picture.querySelector("img");
+      const pictureSources = uniqueValues(
+        Array.from(picture.querySelectorAll("source")).flatMap((source) => [
+          ...extractSrcsetCandidates(source.getAttribute("srcset")),
+          ...extractSrcsetCandidates(source.getAttribute("data-srcset"))
+        ])
+      );
+      const currentSrc = image?.currentSrc || image?.getAttribute("src") || pictureSources[0];
+      const url = absolute(currentSrc);
+
+      if (!url) {
+        return;
+      }
+
+      const loaded =
+        url.startsWith("data:") ||
+        Boolean(image && image.complete && image.naturalWidth > 0);
+      const failed =
+        Boolean(image && image.complete && image.naturalWidth <= 0) && !url.startsWith("data:");
+      const importance = getImportance(picture);
+      const failure = resolveFailureDiagnostic({
+        importance
+      });
+
+      pushResource({
+        url,
+        kind: "image",
+        status: loaded ? "loaded" : failed ? "failed" : "pending",
+        reason: failed ? "picture-naturalWidth-zero" : loaded ? undefined : "picture-not-complete",
+        sourceTag: "picture",
+        sourceAttribute: image?.currentSrc ? "currentSrc" : image?.getAttribute("src") ? "src" : "srcset",
+        lazy:
+          Boolean(image?.loading === "lazy") ||
+          pictureSources.length > 0 &&
+            Array.from(picture.querySelectorAll("source")).some(
+              (source) => Boolean(source.getAttribute("data-srcset") || source.getAttribute("data-lazy-srcset"))
+            ),
+        nodeId: getNodeId(picture),
+        importance,
+        critical: failed ? failure.critical : false,
+        diagnostic: loaded ? "inline image loaded" : failed ? failure.diagnostic : undefined
+      });
+    });
+
+    Array.from(document.querySelectorAll<HTMLSourceElement>("source")).forEach((source) => {
+      const picture = source.closest("picture");
+      const selectedSrc = picture?.querySelector("img")?.currentSrc || "";
+      const importance = getImportance(source);
+
+      extractSrcsetCandidates(
+        source.getAttribute("srcset") ||
+          source.getAttribute("data-srcset") ||
+          source.getAttribute("data-lazy-srcset")
+      ).forEach((candidate) => {
+        const url = absolute(candidate);
+
+        if (!url) {
+          return;
+        }
+
+        const selected = selectedSrc ? absolute(selectedSrc) === url : false;
+        pushResource({
+          url,
+          kind: "image",
+          status: url.startsWith("data:") || selected || findResourceEntry(url) ? "loaded" : "skipped",
+          reason:
+            url.startsWith("data:") || selected || findResourceEntry(url)
+              ? undefined
+              : "srcset-candidate-not-selected",
+          sourceTag: "source",
+          sourceAttribute: "srcset",
+          lazy: Boolean(source.getAttribute("data-srcset") || source.getAttribute("data-lazy-srcset")),
+          nodeId: getNodeId(source),
+          importance,
+          diagnostic:
+            url.startsWith("data:") || selected || findResourceEntry(url)
+              ? "inline image loaded"
+              : undefined
+        });
       });
     });
 
@@ -417,27 +940,66 @@ async function collectBrowserResourceDiagnostics(
       });
     });
 
-    const backgroundUrls = Array.from(document.querySelectorAll<HTMLElement>("*")).flatMap(
-      (element) => {
-        const computed = window.getComputedStyle(element);
-        const backgroundImage = computed.backgroundImage || "";
+    for (const element of Array.from(document.querySelectorAll<HTMLElement>("*"))) {
+      const computed = window.getComputedStyle(element);
+      const importance = getImportance(element);
+      const nodeId = getNodeId(element);
 
-        return [...backgroundImage.matchAll(/url\((['"]?)(.*?)\1\)/gi)].map((match) => absolute(match[2]));
+      for (const entry of [
+          {
+            pseudo: undefined,
+            backgroundImage: computed.backgroundImage || "",
+            sourceTag: "style",
+            sourceAttribute: "background-image"
+          },
+          {
+            pseudo: "::before" as const,
+            backgroundImage: window.getComputedStyle(element, "::before").backgroundImage || "",
+            sourceTag: "style",
+            sourceAttribute: "background-image"
+          },
+          {
+            pseudo: "::after" as const,
+            backgroundImage: window.getComputedStyle(element, "::after").backgroundImage || "",
+            sourceTag: "style",
+            sourceAttribute: "background-image"
+          }
+        ] as const) {
+        const urls = uniqueValues(extractCssUrls(entry.backgroundImage).map((url) => absolute(url)));
+        const urlStatuses = await Promise.all(
+          urls.map(async (url) => ({
+            url,
+            loaded: await probeImageUrl(url)
+          }))
+        );
+
+        urlStatuses.forEach(({ url, loaded }) => {
+          const failure = resolveFailureDiagnostic({
+            importance,
+            sourceAttribute: entry.sourceAttribute,
+            pseudo: entry.pseudo
+          });
+
+          pushResource({
+            url,
+            kind: "background",
+            status: loaded ? "loaded" : "failed",
+            reason: loaded ? undefined : "background-not-fetched",
+            sourceTag: entry.sourceTag,
+            sourceAttribute: entry.sourceAttribute,
+            nodeId,
+            pseudo: entry.pseudo,
+            importance,
+            critical: !loaded ? failure.critical : false,
+            diagnostic: loaded
+              ? entry.pseudo
+                ? "pseudo-element background loaded"
+                : "background image loaded"
+              : failure.diagnostic
+          });
+        });
       }
-    );
-
-    [...new Set(backgroundUrls)].forEach((url) => {
-      const loaded = url.startsWith("data:") || findResourceEntry(url);
-
-      pushResource({
-        url,
-        kind: "background",
-        status: loaded ? "loaded" : "failed",
-        reason: loaded ? undefined : "background-not-fetched",
-        sourceTag: "style",
-        sourceAttribute: "background-image"
-      });
-    });
+    }
 
     performanceEntries.forEach((_, url) => {
       pushResource({
@@ -517,6 +1079,10 @@ async function collectBrowserResourceDiagnostics(
     if (!relativeAssetsResolved && localResources.length > 0) {
       warnings.push("Um ou mais assets relativos quebraram durante a renderizacao.");
     }
+
+    criticalMessages.forEach((message) => {
+      errors.push(message);
+    });
 
     return {
       htmlRendered,

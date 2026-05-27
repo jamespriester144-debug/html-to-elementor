@@ -7,7 +7,8 @@ import type { LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/la
 import type {
   ContentIntegrityReport,
   SnapshotVisualSummary,
-  UniversalVisualMode
+  UniversalVisualMode,
+  VisualValidationReport
 } from "@/lib/converter-v3/contracts/output";
 import { isForceVisualSnapshotEnabled } from "@/lib/env";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
@@ -43,6 +44,7 @@ type ValidateContentIntegrityParams = {
   layout: LayoutDocument;
   document: ElementorDocument;
   emittedMode: OutputMode;
+  validation?: VisualValidationReport;
   previewHtml?: string;
   snapshot?: SnapshotVisualSummary;
   outputFile: string;
@@ -371,10 +373,62 @@ function buildRecommendation(params: {
   capture: PageCapture;
   modeUsed: UniversalVisualMode;
   converted: ConvertedMetrics;
+  validation?: VisualValidationReport;
   snapshotRequired: boolean;
   fullPageSnapshotFailed: boolean;
   snapshotGenerated: boolean;
 }) {
+  const visualMessages = params.validation?.summaryMessages ?? [];
+
+  if (visualMessages.some((message) => /dark theme lost/i.test(message))) {
+    return "Preserve o tema escuro original antes de exportar: mantenha body, surfaces e contrastes principais.";
+  }
+
+  if (
+    visualMessages.some(
+      (message) => /theme mismatch|dominant color mismatch/i.test(message)
+    )
+  ) {
+    return "Preserve o body/background global e as cores dominantes do original antes de aceitar a exportacao estrutural.";
+  }
+
+  if (visualMessages.some((message) => /hero overlay missing/i.test(message))) {
+    return "Preserve o background-image e o overlay/gradient da hero antes de aceitar uma exportacao estrutural.";
+  }
+
+  if (visualMessages.some((message) => /hero background missing/i.test(message))) {
+    return "Preserve a imagem principal da hero antes de aceitar qualquer saida editavel ou hibrida.";
+  }
+
+  if (
+    visualMessages.some(
+      (message) => /important visual asset missing|background asset missing/i.test(message)
+    )
+  ) {
+    return "Garanta que backgrounds criticos e imagens principais sejam mapeados para background_image ou preservados por snapshot.";
+  }
+
+  if (visualMessages.some((message) => /page height mismatch/i.test(message))) {
+    return "Compare a altura total original vs convertida e force snapshot/pixel-perfect quando a estrutura editavel encurtar a pagina.";
+  }
+
+  if (
+    visualMessages.some(
+      (message) =>
+        /card background mismatch|header\/footer background mismatch/i.test(message)
+    )
+  ) {
+    return "Preserve shells visuais escuros, radius, sombras e contraste de header/footer e cards antes de aceitar a exportacao estrutural.";
+  }
+
+  if (visualMessages.some((message) => /default button style detected/i.test(message))) {
+    return "Quando botoes estilizados virarem botoes padrao, use fallback visual em vez de aceitar a degradacao.";
+  }
+
+  if (visualMessages.some((message) => /default input style detected/i.test(message))) {
+    return "Quando inputs ou search fields perderem shell visual, prefira snapshot/pixel-perfect antes de liberar o output.";
+  }
+
   if (!params.capture.inputAnalysis.diagnostics.htmlRendered) {
     return "Renderize a pagina em browser/headless, aguarde scripts e extraia o DOM final antes da conversao.";
   }
@@ -389,6 +443,29 @@ function buildRecommendation(params: {
 
   if (!params.capture.inputAnalysis.diagnostics.relativeAssetsResolved) {
     return "Corrija assets relativos e /assets para que a pagina renderizada nao perca imagens, CSS e fontes.";
+  }
+
+  const criticalAssetFailures = params.capture.inputAnalysis.diagnostics.resources.filter(
+    (resource) => resource.status === "failed" && resource.critical
+  );
+
+  if (criticalAssetFailures.length > 0 && params.modeUsed !== "pixel-perfect") {
+    const diagnostics = [
+      ...new Set(
+        criticalAssetFailures
+          .map((resource) => resource.diagnostic)
+          .filter(
+            (
+              diagnostic
+            ): diagnostic is NonNullable<(typeof criticalAssetFailures)[number]["diagnostic"]> =>
+              Boolean(diagnostic)
+          )
+      )
+    ];
+
+    return `Ative snapshot visual ou pixel-perfect para preservar assets criticos (${diagnostics.join(
+      ", "
+    )}) antes de tentar uma reconstrucao estrutural editavel.`;
   }
 
   if (params.fullPageSnapshotFailed || (params.modeUsed === "full-page-snapshot" && !params.snapshotGenerated)) {
@@ -415,6 +492,7 @@ function resolveFailureStage(params: {
   modeUsed: UniversalVisualMode;
   failureStage?: string;
   converted: ConvertedMetrics;
+  validation?: VisualValidationReport;
   snapshotRequired: boolean;
 }) {
   if (
@@ -427,6 +505,10 @@ function resolveFailureStage(params: {
 
   if (!params.capture.inputAnalysis.diagnostics.htmlRendered) {
     return "browser-render";
+  }
+
+  if (params.validation && !params.validation.passed) {
+    return params.failureStage ?? "visual-audit";
   }
 
   if (!params.converted.hasRealWidgets) {
@@ -450,6 +532,7 @@ function buildFailureReasons(params: {
   original: OriginalMetrics;
   converted: ConvertedMetrics;
   outputSize: number;
+  validation?: VisualValidationReport;
   snapshotRequired: boolean;
 }) {
   const reasons: string[] = [];
@@ -507,6 +590,14 @@ function buildFailureReasons(params: {
     reasons.push("O tamanho total do output gerado ficou pequeno demais para conter conteudo real.");
   }
 
+  if (params.validation && !params.validation.passed) {
+    reasons.push(
+      params.validation.blockingReason ??
+        params.validation.summaryMessages?.join(" ") ??
+        "A auditoria visual encontrou perdas criticas no output final."
+    );
+  }
+
   return reasons;
 }
 
@@ -547,6 +638,7 @@ export async function validateContentIntegrity(
     modeUsed,
     failureStage: params.failureStage,
     converted,
+    validation: params.validation,
     snapshotRequired
   });
   const failureReasons = buildFailureReasons({
@@ -558,6 +650,7 @@ export async function validateContentIntegrity(
       visibleHeight: convertedVisibleHeight
     },
     outputSize,
+    validation: params.validation,
     snapshotRequired
   });
   const blocked = failureReasons.length > 0;
@@ -565,6 +658,7 @@ export async function validateContentIntegrity(
     capture: params.capture,
     modeUsed,
     converted,
+    validation: params.validation,
     snapshotRequired,
     fullPageSnapshotFailed: failureStage === "full-page-snapshot",
     snapshotGenerated: converted.snapshotGenerated
@@ -601,6 +695,30 @@ export async function validateContentIntegrity(
     snapshotGenerated: converted.snapshotGenerated,
     overlaysGenerated: converted.overlaysGenerated,
     modeUsed,
+    visualAuditPassed: params.validation?.passed ?? true,
+    visualAuditHighestSeverity: params.validation?.highestSeverity,
+    visualAuditIssues: params.validation?.issues.map((issue) => ({
+      type: issue.type,
+      nodeId: issue.nodeId,
+      sectionId: issue.sectionId,
+      sectionName: issue.sectionName,
+      sectionType: issue.sectionType,
+      sectionTypeLabel: issue.sectionTypeLabel,
+      viewport: issue.viewport,
+      severity: issue.severity,
+      similarity: issue.similarity,
+      similarityPercent: issue.similarityPercent,
+      lossType: issue.lossType,
+      estimatedLossCount: issue.estimatedLossCount,
+      estimatedLosses: issue.estimatedLosses,
+      bbox: issue.bbox,
+      originalScreenshotPath: issue.originalScreenshotPath,
+      convertedScreenshotPath: issue.convertedScreenshotPath,
+      diffScreenshotPath: issue.diffScreenshotPath,
+      originalValue: issue.originalValue,
+      convertedValue: issue.convertedValue,
+      message: issue.message
+    })),
     failureStage,
     failureReason: blocked ? failureReasons.join(" ") : undefined,
     recommendation,

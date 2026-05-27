@@ -7,6 +7,7 @@ import type {
   ContentIntegrityReport,
   UniversalVisualValidationReport
 } from "../lib/converter-v3/contracts/output";
+import { buildUniversalVisualValidationReport } from "../lib/converter-v3/reports/visual-validation-report";
 import {
   runCapturePipelineV3
 } from "../lib/converter-v3/orchestration/pipeline-v3";
@@ -44,6 +45,625 @@ function isForceVisualSnapshotEnabled() {
 }
 
 const FIXTURES = CONVERTER_V3_UNIVERSAL_FIXTURES;
+
+function testUniversalVisualValidationReportIncludesRichIssueMetadata() {
+  const report = buildUniversalVisualValidationReport({
+    resolvedSource: {
+      id: "resolved-source",
+      sourceKind: "raw-html",
+      title: "Mock Visual Report"
+    },
+    capture: {
+      id: "capture-id",
+      sourceKind: "raw-html",
+      title: "Mock Capture",
+      sourceHtml: "<html></html>",
+      renderedHtml: "<html></html>",
+      renderer: "browser",
+      inputAnalysis: {
+        fileName: "mock-visual-report.html",
+        sourceKind: "raw-html",
+        layoutTypes: ["static-html"],
+        frameworkHints: [],
+        structure: {
+          totalElements: 1,
+          realSectionCount: 1,
+          headers: 1,
+          navbars: 0,
+          heroSections: 1,
+          cards: 0,
+          grids: 0,
+          buttons: 1,
+          images: 2,
+          backgrounds: 1,
+          absoluteFixedSticky: 0,
+          zIndexNodes: 0,
+          iframes: 0,
+          scripts: 0,
+          lazyLoadElements: 0,
+          externalAssets: 0,
+          externalFonts: 0,
+          links: 1,
+          forms: 0,
+          carousels: 0,
+          transformedElements: 0,
+          overflowHiddenElements: 0,
+          outOfFlowElements: 0
+        },
+        sectionCandidates: [],
+        assets: {
+          found: [],
+          total: 0,
+          local: 0,
+          external: 0,
+          embedded: 0,
+          images: 0,
+          backgrounds: 0,
+          stylesheets: 0,
+          fonts: 0,
+          scripts: 0,
+          iframes: 0,
+          lazy: 0,
+          loaded: 0,
+          failed: 0
+        },
+        renderStrategy: {
+          requiresBrowserRender: true,
+          preferVisualSnapshot: true,
+          preferFullPageSnapshot: false,
+          safeSectionExtraction: true,
+          reasons: ["Mock visual report."]
+        },
+        diagnostics: {
+          errors: [],
+          warnings: [],
+          rendererUsed: "browser",
+          htmlRendered: true,
+          cssLoaded: true,
+          imagesLoaded: true,
+          relativeAssetsResolved: true,
+          viewportMatched: true,
+          sectionCroppingRisk: false,
+          fullPageSnapshotFailed: false,
+          resources: []
+        }
+      },
+      viewports: [
+        {
+          name: "desktop",
+          width: 1440,
+          height: 900
+        }
+      ],
+      domSnapshot: [],
+      styleSnapshot: [],
+      boxSnapshot: [],
+      responsiveSnapshot: [],
+      nodes: [],
+      themeAnalysis: {
+        detectedTheme: "dark",
+        dominantBackgroundLuminance: 0.021,
+        dominantContrast: 15.6,
+        colorSamples: [],
+        designTokens: {
+          globalBackground: "rgb(15, 23, 42)",
+          foreground: "rgb(248, 250, 252)",
+          cardBackground: "rgb(30, 41, 59)"
+        },
+        roleCounts: {
+          cards: 1,
+          buttons: 1,
+          inputs: 0,
+          headers: 1,
+          footers: 0,
+          sections: 1
+        },
+        messages: ["dark theme detected"]
+      },
+      summary: {
+        totalNodes: 1,
+        visibleNodes: 1,
+        links: 1,
+        images: 2,
+        buttons: 1,
+        textBlocks: 2,
+        sections: 1
+      },
+      artifacts: {
+        outputDir: "/tmp/capture",
+        resolvedSourcePath: "/tmp/source.html",
+        renderedHtmlPath: "/tmp/rendered.html",
+        domSnapshotPath: "/tmp/dom.json",
+        styleSnapshotPath: "/tmp/style.json",
+        boxSnapshotPath: "/tmp/box.json",
+        responsiveSnapshotPath: "/tmp/responsive.json",
+        layoutPath: "/tmp/layout.json",
+        analysisPath: "/tmp/analysis.json",
+        pageCapturePath: "/tmp/capture.json",
+        sectionArtifactsPath: "/tmp/sections.json",
+        screenshots: {
+          desktop: "/tmp/capture/desktop.png"
+        }
+      }
+    },
+    layout: {
+      id: "layout-id",
+      title: "Mock Layout",
+      sourceKind: "raw-html",
+      rootNodeId: "page",
+      nodeCount: 1,
+      sectionIds: ["hero-section"],
+      semanticIndex: {},
+      detectedSections: [
+        {
+          id: "hero-section",
+          type: "hero",
+          confidence: 0.99,
+          childIds: [],
+          anchors: [],
+          contains: ["hero"]
+        }
+      ],
+      nodes: [
+        {
+          id: "hero-section",
+          kind: "section",
+          parentId: null,
+          children: [],
+          box: {
+            x: 12,
+            y: 24,
+            width: 320,
+            height: 180
+          },
+          visualOrder: 0,
+          layout: {},
+          spacing: {},
+          style: {},
+          content: {},
+          flags: {},
+          responsive: {}
+        }
+      ]
+    },
+    analysis: {
+      score: 1,
+      overlappingGroups: 0,
+      gridContainers: 0,
+      flexContainers: 1,
+      absoluteNodes: 0,
+      decorativeNodes: 0,
+      interactiveNodes: 1,
+      selectedMode: "snapshot",
+      reasons: ["Mock analysis."]
+    },
+    emittedMode: "snapshot",
+    fallbackReason: "Mock fallback reason.",
+    previewHtml: "<html><body>preview</body></html>",
+    elementorDocument: {
+      version: "1.0",
+      title: "Mock Visual Report",
+      type: "page",
+      content: []
+    },
+    validation: {
+      passed: false,
+      mode: "snapshot",
+      issueCount: 1,
+      issues: [],
+      stats: {
+        expectedTexts: 2,
+        matchedTexts: 1,
+        expectedImages: 2,
+        matchedImages: 0,
+        expectedButtons: 1,
+        matchedButtons: 1,
+        expectedLinks: 1,
+        matchedLinks: 1,
+        expectedSections: 1,
+        matchedSections: 1,
+        expectedCards: 0,
+        matchedCards: 0,
+        expectedHeaders: 1,
+        matchedHeaders: 1,
+        expectedFooters: 0,
+        matchedFooters: 0,
+        expectedPositionedNodes: 2,
+        matchedPositionedNodes: 1
+      }
+    },
+    report: {
+      id: "report-id",
+      title: "Mock Visual Report",
+      sourceKind: "raw-html",
+      renderer: "browser",
+      snapshotEnabled: true,
+      snapshotReason: "Mock snapshot reason.",
+      selectedMode: "snapshot",
+      emittedMode: "snapshot",
+      fallbackReason: "Mock fallback reason.",
+      summary: {
+        totalNodes: 1,
+        visibleNodes: 1,
+        links: 1,
+        images: 2,
+        buttons: 1,
+        textBlocks: 2,
+        sections: 1
+      },
+      layout: {
+        rootNodeId: "page",
+        nodeCount: 1,
+        sectionCount: 1
+      },
+      analysis: {
+        score: 1,
+        overlappingGroups: 0,
+        gridContainers: 0,
+        flexContainers: 1,
+        absoluteNodes: 0,
+        decorativeNodes: 0,
+        interactiveNodes: 1,
+        selectedMode: "snapshot",
+        reasons: ["Mock analysis."]
+      },
+      validation: {
+        passed: false,
+        mode: "snapshot",
+        issueCount: 1,
+        issues: [],
+        stats: {
+          expectedTexts: 2,
+          matchedTexts: 1,
+          expectedImages: 2,
+          matchedImages: 0,
+          expectedButtons: 1,
+          matchedButtons: 1,
+          expectedLinks: 1,
+          matchedLinks: 1,
+          expectedSections: 1,
+          matchedSections: 1,
+          expectedCards: 0,
+          matchedCards: 0,
+          expectedHeaders: 1,
+          matchedHeaders: 1,
+          expectedFooters: 0,
+          matchedFooters: 0,
+          expectedPositionedNodes: 2,
+          matchedPositionedNodes: 1
+        }
+      },
+      warnings: [],
+      contentMetrics: {
+        detectedTexts: 2,
+        detectedImages: 2,
+        detectedButtons: 1,
+        detectedLinks: 1,
+        detectedVisualContainers: 0,
+        detectedGeometryGroups: 0,
+        createdSections: 1
+      },
+      viewportSimilarities: {
+        desktop: 0.984
+      },
+      visualIssues: [
+        {
+          sectionId: "hero-section",
+          sectionName: "hero-1",
+          sectionType: "hero",
+          sectionTypeLabel: "Hero",
+          severity: "critical",
+          viewport: "desktop",
+          similarity: 0.984,
+          similarityPercent: "98.40%",
+          lossType: "image",
+          estimatedLossCount: 2,
+          estimatedLosses: {
+            total: 2,
+            images: 2,
+            texts: 0,
+            buttons: 0,
+            links: 0,
+            backgrounds: 0
+          },
+          bbox: {
+            x: 24,
+            y: 32,
+            width: 180,
+            height: 120
+          },
+          originalScreenshotPath: "/tmp/capture/desktop.png",
+          convertedScreenshotPath: "/tmp/export/desktop.png",
+          diffScreenshotPath: "/tmp/export/desktop-diff.png",
+          fallbackStage: "full-page-snapshot",
+          message: "Hero perdeu 2 imagens."
+        }
+      ],
+      visualValidationSummary: [
+        "[Visual Validation]",
+        "Desktop: 98.4% - falhou",
+        "Problema: secao Hero perdeu 2 imagens",
+        "Exportacao bloqueada"
+      ],
+      visualLogs: [
+        "[Visual Validation]",
+        "Desktop: 98.4% - falhou",
+        "Problema: secao Hero perdeu 2 imagens",
+        "Exportacao bloqueada",
+        "[THEME] dark theme detected",
+        "[THEME] light theme detected",
+        "[THEME] dark theme lost"
+      ],
+      themeAnalysis: {
+        detectedTheme: "dark",
+        dominantBackgroundLuminance: 0.021,
+        dominantContrast: 15.6,
+        colorSamples: [],
+        designTokens: {
+          globalBackground: "rgb(15, 23, 42)",
+          foreground: "rgb(248, 250, 252)",
+          cardBackground: "rgb(30, 41, 59)"
+        },
+        roleCounts: {
+          cards: 1,
+          buttons: 1,
+          inputs: 0,
+          headers: 1,
+          footers: 0,
+          sections: 1
+        },
+        messages: ["dark theme detected"]
+      },
+      themeAudit: {
+        passed: false,
+        sourceTheme: "dark",
+        convertedTheme: "light",
+        sourceTokens: {
+          globalBackground: "rgb(15, 23, 42)"
+        },
+        convertedTokens: {
+          globalBackground: "rgb(255, 255, 255)"
+        },
+        issues: [
+          {
+            type: "theme-mismatch",
+            severity: "critical",
+            message: "dark theme lost",
+            originalValue: "rgb(15, 23, 42)",
+            convertedValue: "rgb(255, 255, 255)"
+          }
+        ],
+        messages: ["dark theme detected", "light theme detected", "dark theme lost"]
+      },
+      themeLogs: [
+        "[THEME] dark theme detected",
+        "[THEME] light theme detected",
+        "[THEME] dark theme lost"
+      ],
+      learningNotes: [],
+      fallbackTrail: [],
+      snapshot: {
+        renderStrategy: "full-page-snapshot",
+        overallSimilarity: 0.984,
+        threshold: 0.99,
+        convertedScreenshotPath: "/tmp/export/desktop.png",
+        originalScreenshotPath: "/tmp/capture/desktop.png",
+        viewportSimilarities: {
+          desktop: 0.984
+        },
+        sectionReports: [],
+        visualValidationReport: {
+          status: "blocked",
+          modeUsed: "full-page-snapshot",
+          viewportsTested: ["desktop"],
+          sectionsApproved: [],
+          sectionsWithFallback: [],
+          linksPreserved: 1,
+          totalLinks: 1,
+          similarityFinal: 0.984,
+          similarityFinalPercent: "98.40%",
+          viewportResults: [
+            {
+              viewport: "desktop",
+              passed: false,
+              similarity: 0.984,
+              similarityPercent: "98.40%",
+              bbox: {
+                x: 24,
+                y: 32,
+                width: 180,
+                height: 120
+              },
+              originalScreenshotPath: "/tmp/capture/desktop.png",
+              convertedScreenshotPath: "/tmp/export/desktop.png",
+              diffScreenshotPath: "/tmp/export/desktop-diff.png"
+            }
+          ],
+          issues: [
+            {
+              viewport: "desktop",
+              sectionId: "hero-section",
+              sectionName: "hero-1",
+              sectionType: "hero",
+              sectionTypeLabel: "Hero",
+              severity: "critical",
+              similarity: 0.984,
+              similarityPercent: "98.40%",
+              lossType: "image",
+              estimatedLossCount: 2,
+              estimatedLosses: {
+                total: 2,
+                images: 2,
+                texts: 0,
+                buttons: 0,
+                links: 0,
+                backgrounds: 0
+              },
+              bbox: {
+                x: 24,
+                y: 32,
+                width: 180,
+                height: 120
+              },
+              fallbackStage: "full-page-snapshot",
+              fallbackUsed: "full-page-snapshot",
+              originalScreenshotPath: "/tmp/capture/desktop.png",
+              convertedScreenshotPath: "/tmp/export/desktop.png",
+              diffScreenshotPath: "/tmp/export/desktop-diff.png",
+              message: "Hero perdeu 2 imagens."
+            }
+          ],
+          blockingReason: "Conversao bloqueada: secao Hero perdeu 2 imagens."
+        },
+        totals: {
+          htmlSections: 0,
+          snapshotSections: 1,
+          preservedLinks: 1,
+          totalLinks: 1
+        }
+      }
+    },
+    snapshot: {
+      renderStrategy: "full-page-snapshot",
+      overallSimilarity: 0.984,
+      threshold: 0.99,
+      convertedScreenshotPath: "/tmp/export/desktop.png",
+      originalScreenshotPath: "/tmp/capture/desktop.png",
+      viewportSimilarities: {
+        desktop: 0.984
+      },
+      sectionReports: [],
+      visualValidationReport: {
+        status: "blocked",
+        modeUsed: "full-page-snapshot",
+        viewportsTested: ["desktop"],
+        sectionsApproved: [],
+        sectionsWithFallback: [],
+        linksPreserved: 1,
+        totalLinks: 1,
+        similarityFinal: 0.984,
+        similarityFinalPercent: "98.40%",
+        viewportResults: [
+          {
+            viewport: "desktop",
+            passed: false,
+            similarity: 0.984,
+            similarityPercent: "98.40%",
+            bbox: {
+              x: 24,
+              y: 32,
+              width: 180,
+              height: 120
+            },
+            originalScreenshotPath: "/tmp/capture/desktop.png",
+            convertedScreenshotPath: "/tmp/export/desktop.png",
+            diffScreenshotPath: "/tmp/export/desktop-diff.png"
+          }
+        ],
+        issues: [
+          {
+            viewport: "desktop",
+            sectionId: "hero-section",
+            sectionName: "hero-1",
+            sectionType: "hero",
+            sectionTypeLabel: "Hero",
+            severity: "critical",
+            similarity: 0.984,
+            similarityPercent: "98.40%",
+            lossType: "image",
+            estimatedLossCount: 2,
+            estimatedLosses: {
+              total: 2,
+              images: 2,
+              texts: 0,
+              buttons: 0,
+              links: 0,
+              backgrounds: 0
+            },
+            bbox: {
+              x: 24,
+              y: 32,
+              width: 180,
+              height: 120
+            },
+            fallbackStage: "full-page-snapshot",
+            fallbackUsed: "full-page-snapshot",
+            originalScreenshotPath: "/tmp/capture/desktop.png",
+            convertedScreenshotPath: "/tmp/export/desktop.png",
+            diffScreenshotPath: "/tmp/export/desktop-diff.png",
+            message: "Hero perdeu 2 imagens."
+          }
+        ],
+        blockingReason: "Conversao bloqueada: secao Hero perdeu 2 imagens."
+      },
+      totals: {
+        htmlSections: 0,
+        snapshotSections: 1,
+        preservedLinks: 1,
+        totalLinks: 1
+      }
+    },
+    contentIntegrity: {
+      status: "passed",
+      inputFile: "/tmp/source.html",
+      outputFile: "/tmp/export.json",
+      sourceHtmlSize: 10,
+      originalHtmlSize: 10,
+      renderedHtmlSize: 10,
+      outputSize: 10,
+      elementorJsonSize: 10,
+      previewHtmlSize: 10,
+      originalTextCount: 2,
+      outputTextCount: 2,
+      originalImageCount: 2,
+      outputImageCount: 2,
+      originalButtonCount: 1,
+      outputButtonCount: 1,
+      originalLinkCount: 1,
+      outputLinkCount: 1,
+      originalSectionCount: 1,
+      outputSectionCount: 1,
+      originalVisibleHeight: 180,
+      convertedVisibleHeight: 180,
+      visibleContentDetected: true,
+      convertedBodyEmpty: false,
+      hasRealWidgets: true,
+      snapshotGenerated: true,
+      overlaysGenerated: true,
+      modeUsed: "full-page-snapshot",
+      recommendation: "Mock content integrity.",
+      errorsFound: []
+    },
+    artifacts: {
+      elementorTemplatePath: "/tmp/export.json",
+      reportPath: "/tmp/report.json"
+    }
+  } as never);
+
+  assert.equal(report.modeUsed, "full-page-snapshot");
+  assert.equal(report.finalSimilarity, 0.984);
+  assert.equal(report.visualIssues.length, 1);
+  assert.equal(report.visualIssues[0]?.sectionTypeLabel, "Hero");
+  assert.equal(report.visualIssues[0]?.estimatedLossCount, 2);
+  assert.deepEqual(report.visualIssues[0]?.bbox, {
+    x: 24,
+    y: 32,
+    width: 180,
+    height: 120
+  });
+  assert.equal(report.logs[0], "[Visual Validation]");
+  assert.equal(report.themeDetected, "dark");
+  assert.equal(report.themeAudit?.passed, false);
+  assert.equal(report.logs.includes("[THEME] dark theme lost"), true);
+  assert.equal(
+    report.errors.includes("dark theme lost"),
+    true
+  );
+  assert.equal(
+    report.errors.includes("Conversao bloqueada: secao Hero perdeu 2 imagens."),
+    true
+  );
+}
 
 async function testUniversalFixtures() {
   const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-universal-tests");
@@ -212,6 +832,7 @@ async function testUniversalFixtures() {
 }
 
 async function main() {
+  testUniversalVisualValidationReportIncludesRichIssueMetadata();
   await testUniversalFixtures();
   console.log("converter v3 universal fixture tests passed");
 }

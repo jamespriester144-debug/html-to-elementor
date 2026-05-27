@@ -39,6 +39,16 @@ import {
   getVisualOrderChildIds,
   shouldUseUniversalNeutralLayoutMode
 } from "@/lib/converter-v3/emitters/elementor/universal-layout-mode";
+import {
+  buildInlineStyleFromComputedStyleMap,
+  buildElementorStyleBridgeSettings,
+  buildPreservedComputedStyleMap,
+  buildStyledHtmlFragment,
+  captureNodeHasVisiblePseudoStyles,
+  resolvePageShellVisualContext,
+  resolveStyleMapBackgroundColor,
+  shouldPreserveNodeAsHtmlWidget
+} from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import { applyPresetWidgetDefaults } from "@/lib/converter-v3/emitters/elementor/widget-defaults";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
@@ -59,24 +69,6 @@ function createElementId(prefix: string, index: number) {
 
 function sanitizeText(value: string | undefined) {
   return value?.replace(/\s+/g, " ").trim() || "";
-}
-
-function toSpacingObject(value?: string) {
-  if (!value) {
-    return undefined;
-  }
-
-  const parts = value.split(/\s+/).filter(Boolean);
-  const [top, right = top, bottom = top, left = right] = parts;
-
-  return {
-    unit: "px",
-    top: Number.parseFloat(top) || 0,
-    right: Number.parseFloat(right) || 0,
-    bottom: Number.parseFloat(bottom) || 0,
-    left: Number.parseFloat(left) || 0,
-    isLinked: parts.length === 1
-  };
 }
 
 function buildNodeMaps(capture: PageCapture, layout: LayoutDocument): NodeMaps {
@@ -335,6 +327,33 @@ function isNodeSimpleEnough(rootId: string, maps: NodeMaps, neutralLayoutMode = 
     (node) => node.kind === "section" && node.id !== rootId
   ).length;
   const overlaps = countSubtreeOverlaps(rootId, maps.layoutById);
+  const requiresPreservedHtml = subtreeNodes.some((node) => {
+    const captureNode = maps.captureById.get(node.id);
+    const styles = buildPreservedComputedStyleMap({
+      node,
+      captureNode
+    });
+    const hasNonDefaultEffect = (value: string | undefined, defaults: string[]) =>
+      typeof value === "string" && !defaults.includes(value.trim().toLowerCase());
+    const overflow = `${styles.overflow ?? ""} ${styles["overflow-x"] ?? ""} ${styles["overflow-y"] ?? ""}`
+      .toLowerCase()
+      .trim();
+
+    return (
+      captureNodeHasVisiblePseudoStyles(captureNode) ||
+      shouldPreserveNodeAsHtmlWidget({
+        node,
+        captureNode
+      }) ||
+      hasNonDefaultEffect(styles["backdrop-filter"], ["none"]) ||
+      hasNonDefaultEffect(styles["mask-image"], ["none"]) ||
+      hasNonDefaultEffect(styles["-webkit-mask-image"], ["none"]) ||
+      hasNonDefaultEffect(styles["mix-blend-mode"], ["normal"]) ||
+      hasNonDefaultEffect(styles.opacity, ["1"]) ||
+      overflow.includes("hidden") ||
+      overflow.includes("clip")
+    );
+  });
 
   if (neutralLayoutMode) {
     return (
@@ -343,7 +362,8 @@ function isNodeSimpleEnough(rootId: string, maps: NodeMaps, neutralLayoutMode = 
       decorativeCount === 0 &&
       responsiveVariants === 0 &&
       nestedSections <= 4 &&
-      overlaps === 0
+      overlaps === 0 &&
+      !requiresPreservedHtml
     );
   }
 
@@ -378,7 +398,8 @@ function isNodeSimpleEnough(rootId: string, maps: NodeMaps, neutralLayoutMode = 
       decorativeCount === 0 &&
       responsiveVariants === 0 &&
       nestedSections <= (isCardGridPattern || hasRecognizedPreset ? 20 : 10) &&
-      overlaps === 0
+      overlaps === 0 &&
+      !requiresPreservedHtml
     );
   }
 
@@ -388,7 +409,8 @@ function isNodeSimpleEnough(rootId: string, maps: NodeMaps, neutralLayoutMode = 
     decorativeCount === 0 &&
     responsiveVariants === 0 &&
     nestedSections <= 6 &&
-    overlaps === 0
+    overlaps === 0 &&
+    !requiresPreservedHtml
   );
 }
 
@@ -401,6 +423,20 @@ function hasVisibleBackground(value?: string) {
   return normalized !== "transparent" && normalized !== "rgba(0,0,0,0)" && normalized !== "none";
 }
 
+function isDefaultCanvasBackground(value?: string) {
+  const normalized = (value ?? "").trim().toLowerCase();
+  const compact = normalized.replace(/\s+/g, "");
+
+  return (
+    compact === "#fff" ||
+    compact === "#ffffff" ||
+    compact === "rgb(255,255,255)" ||
+    compact === "rgba(255,255,255,1)" ||
+    compact === "hsl(0,0%,100%)" ||
+    /^hsl\(\s*0(?:deg)?(?:\s+|,\s*)0%\s*(?:,|\s)\s*100%\s*\)$/i.test(normalized)
+  );
+}
+
 function shouldExportRootNode(layout: LayoutDocument) {
   const rootNode = layout.nodes.find((node) => node.id === layout.rootNodeId);
 
@@ -408,7 +444,11 @@ function shouldExportRootNode(layout: LayoutDocument) {
     return false;
   }
 
-  return hasVisibleBackground(rootNode.style.backgroundColor) || Boolean(rootNode.style.backgroundImage);
+  return (
+    (hasVisibleBackground(rootNode.style.backgroundColor) &&
+      !isDefaultCanvasBackground(rootNode.style.backgroundColor)) ||
+    Boolean(rootNode.style.backgroundImage)
+  );
 }
 
 function buildWidgetFromNode(
@@ -422,35 +462,15 @@ function buildWidgetFromNode(
     return null;
   }
 
-  const styles = {
-    backgroundColor: node.style.backgroundColor,
-    color: node.style.color,
-    fontSize: node.style.fontSize,
-    fontFamily: node.style.fontFamily,
-    fontWeight: node.style.fontWeight,
-    lineHeight: node.style.lineHeight,
-    textAlign: node.style.textAlign,
-    borderRadius: node.style.borderRadius,
-    boxShadow: node.style.boxShadow
-  };
   const commonSettings = {
     converter_v3_source_node_id: node.id,
     converter_v3_responsive: serializeResponsiveElement(node),
     ...createElementorResponsiveSettings(node),
-    _padding: toSpacingObject(node.spacing.padding),
-    _margin: toSpacingObject(node.spacing.margin),
-    width: node.box.width ? `${Math.round(node.box.width)}px` : undefined,
-    background_color: node.style.backgroundColor,
-    color: node.style.color,
-    font_size: node.style.fontSize,
-    font_family: node.style.fontFamily,
-    font_weight: node.style.fontWeight,
-    line_height: node.style.lineHeight,
-    align: node.style.textAlign,
-    border_radius: node.style.borderRadius,
-    box_shadow: node.style.boxShadow,
-    converter_v3_styles: styles,
-    converter_v3_visual_order: node.visualOrder
+    ...buildElementorStyleBridgeSettings({
+      node,
+      captureNode,
+      isButton: node.kind === "button"
+    })
   };
   const tag = captureNode?.tag ?? "";
   const presetContext = neutralLayoutMode ? undefined : getPresetContext(node, maps);
@@ -648,6 +668,60 @@ function buildWidgetFromNode(
   return null;
 }
 
+function wrapContentWithPageShell(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+  content: ElementorElement[];
+  counter: { value: number };
+}) {
+  const pageShell = resolvePageShellVisualContext({
+    capture: params.capture,
+    layout: params.layout
+  });
+
+  if (!pageShell.shouldWrap || params.content.length === 0) {
+    return params.content;
+  }
+
+  params.counter.value += 1;
+  const backgroundColor = resolveStyleMapBackgroundColor(pageShell.styleMap);
+
+  return [
+    {
+      id: createElementId("page-shell", params.counter.value),
+      elType: "container" as const,
+      settings: {
+        content_width: "full",
+        width: "100%",
+        max_width: undefined,
+        min_height: pageShell.minHeight,
+        flex_direction: "column",
+        justify_content: "flex-start",
+        align_items: "stretch",
+        gap: "0px",
+        html_tag: "main",
+        converter_v3_page_shell: true,
+        converter_v3_source_node_id: pageShell.sourceNodeId,
+        converter_v3_page_shell_capture_node_id: pageShell.captureNodeId,
+        converter_v3_styles: pageShell.styleMap,
+        converter_v3_inline_style: buildInlineStyleFromComputedStyleMap(pageShell.styleMap, {
+          width: "100%",
+          minHeight: pageShell.minHeight
+        }),
+        background_background:
+          backgroundColor || pageShell.styleMap["background-image"] ? "classic" : undefined,
+        background_color: backgroundColor,
+        _background_color: backgroundColor,
+        color: pageShell.styleMap.color,
+        text_color: pageShell.styleMap.color,
+        title_color: pageShell.styleMap.color,
+        font_family: pageShell.styleMap["font-family"]
+      },
+      elements: params.content
+    }
+  ];
+}
+
 function buildContainerFromNode(
   node: LayoutNode,
   maps: NodeMaps,
@@ -750,6 +824,7 @@ function buildContainerFromNode(
     maps.layoutById,
     sectionStructureDefaults.max_width
   );
+  const captureNode = maps.captureById.get(node.id);
 
   return {
     id: createElementId(node.kind === "section" ? "section" : "container", index),
@@ -766,11 +841,10 @@ function buildContainerFromNode(
       gap,
       grid_template_columns: node.layout.gridTemplateColumns,
       grid_template_rows: node.layout.gridTemplateRows,
-      background_color: node.style.backgroundColor,
-      border_radius: node.style.borderRadius,
-      box_shadow: node.style.boxShadow,
-      _padding: toSpacingObject(node.spacing.padding),
-      _margin: toSpacingObject(node.spacing.margin),
+      ...buildElementorStyleBridgeSettings({
+        node,
+        captureNode
+      }),
       converter_v3_tag: node.kind,
       converter_v3_responsive: serializeResponsiveContainer(node, maps.layoutById),
       ...createElementorResponsiveSettings(node, maps.layoutById),
@@ -839,6 +913,7 @@ function buildContainerFromNode(
 
 function buildHtmlWidgetFromNode(
   nodeId: string,
+  maps: NodeMaps,
   $: cheerio.CheerioAPI,
   index: number
 ): ElementorElement | null {
@@ -853,7 +928,11 @@ function buildHtmlWidgetFromNode(
     elType: "widget",
     widgetType: "html",
     settings: {
-      html: element.toString(),
+      html: buildStyledHtmlFragment({
+        html: element.toString(),
+        captureById: maps.captureById,
+        layoutById: maps.layoutById
+      }),
       converter_v3_html_fallback: true,
       converter_v3_source_node_id: nodeId
     },
@@ -871,7 +950,12 @@ function buildHtmlFallbackElementFromNode(params: {
 }): ElementorElement | null {
   params.htmlFallbacks.add(params.node.id);
   params.counter.value += 1;
-  const htmlWidget = buildHtmlWidgetFromNode(params.node.id, params.$, params.counter.value);
+  const htmlWidget = buildHtmlWidgetFromNode(
+    params.node.id,
+    params.maps,
+    params.$,
+    params.counter.value
+  );
 
   if (!htmlWidget) {
     return null;
@@ -916,6 +1000,17 @@ function buildElementFromNode(params: {
   }
 
   const captureNode = params.maps.captureById.get(node.id);
+
+  if (
+    shouldPreserveNodeAsHtmlWidget({
+      node,
+      captureNode
+    })
+  ) {
+    params.counter.value += 1;
+    params.htmlFallbacks.add(node.id);
+    return buildHtmlWidgetFromNode(node.id, params.maps, params.$, params.counter.value);
+  }
 
   if (node.kind === "text" || node.kind === "badge" || node.kind === "image" || node.kind === "button") {
     params.counter.value += 1;
@@ -997,6 +1092,12 @@ export function createHybridElementorDocumentV3(params: {
       })
     )
     .filter((element): element is ElementorElement => Boolean(element));
+  const wrappedContent = wrapContentWithPageShell({
+    capture: params.capture,
+    layout: params.layout,
+    content,
+    counter
+  });
   const warnings = [...htmlFallbacks].map(
     (nodeId) => `No ${nodeId} exportado como HTML preservado por complexidade local.`
   );
@@ -1006,7 +1107,7 @@ export function createHybridElementorDocumentV3(params: {
       version: "1.0",
       title: params.capture.title,
       type: "page",
-      content
+      content: wrappedContent
     },
     usedHtmlFallbackNodeIds: [...htmlFallbacks],
     warnings

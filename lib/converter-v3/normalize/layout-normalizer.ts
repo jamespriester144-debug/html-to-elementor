@@ -19,7 +19,7 @@ function pickStyle(
 
 function getLayoutNodeKind(node: CapturedNode): LayoutNodeKind {
   if (node.tag === "body") return "page";
-  if (node.tag === "img") return "image";
+  if (["img", "svg", "picture", "canvas"].includes(node.tag)) return "image";
   if (node.tag === "button" || (node.tag === "a" && Boolean(node.attributes.href))) {
     return "button";
   }
@@ -97,6 +97,7 @@ function buildLayoutNode(
       display: pickStyle(node.computedStyles, "display"),
       position: pickStyle(node.computedStyles, "position"),
       flexDirection: pickStyle(node.computedStyles, "flex-direction"),
+      flexWrap: pickStyle(node.computedStyles, "flex-wrap"),
       justifyContent: pickStyle(node.computedStyles, "justify-content"),
       alignItems: pickStyle(node.computedStyles, "align-items"),
       gap: pickStyle(node.computedStyles, "gap"),
@@ -108,30 +109,76 @@ function buildLayoutNode(
       padding: pickStyle(node.computedStyles, "padding")
     },
     style: {
+      background: pickStyle(node.computedStyles, "background"),
       backgroundColor: pickStyle(node.computedStyles, "background-color"),
       backgroundImage: pickStyle(node.computedStyles, "background-image"),
       backgroundSize: pickStyle(node.computedStyles, "background-size"),
       backgroundPosition: pickStyle(node.computedStyles, "background-position"),
+      backgroundRepeat: pickStyle(node.computedStyles, "background-repeat"),
+      backgroundClip: pickStyle(node.computedStyles, "background-clip"),
+      backgroundBlendMode: pickStyle(node.computedStyles, "background-blend-mode"),
+      backgroundOrigin: pickStyle(node.computedStyles, "background-origin"),
+      backgroundAttachment: pickStyle(node.computedStyles, "background-attachment"),
       color: pickStyle(node.computedStyles, "color"),
       fontSize: pickStyle(node.computedStyles, "font-size"),
       fontFamily: pickStyle(node.computedStyles, "font-family"),
+      fontStyle: pickStyle(node.computedStyles, "font-style"),
       fontWeight: pickStyle(node.computedStyles, "font-weight"),
       lineHeight: pickStyle(node.computedStyles, "line-height"),
+      letterSpacing: pickStyle(node.computedStyles, "letter-spacing"),
+      textTransform: pickStyle(node.computedStyles, "text-transform"),
+      textDecoration: pickStyle(node.computedStyles, "text-decoration"),
+      whiteSpace: pickStyle(node.computedStyles, "white-space"),
       textAlign: pickStyle(node.computedStyles, "text-align"),
+      border: pickStyle(node.computedStyles, "border"),
+      borderColor: pickStyle(node.computedStyles, "border-color"),
+      borderWidth: pickStyle(node.computedStyles, "border-width"),
+      borderStyle: pickStyle(node.computedStyles, "border-style"),
       borderRadius: pickStyle(node.computedStyles, "border-radius"),
       boxShadow: pickStyle(node.computedStyles, "box-shadow"),
+      textShadow: pickStyle(node.computedStyles, "text-shadow"),
+      width: pickStyle(node.computedStyles, "width"),
+      height: pickStyle(node.computedStyles, "height"),
+      minWidth: pickStyle(node.computedStyles, "min-width"),
+      maxWidth: pickStyle(node.computedStyles, "max-width"),
+      minHeight: pickStyle(node.computedStyles, "min-height"),
+      maxHeight: pickStyle(node.computedStyles, "max-height"),
+      top: pickStyle(node.computedStyles, "top"),
+      right: pickStyle(node.computedStyles, "right"),
+      bottom: pickStyle(node.computedStyles, "bottom"),
+      left: pickStyle(node.computedStyles, "left"),
+      inset: pickStyle(node.computedStyles, "inset"),
+      overflow: pickStyle(node.computedStyles, "overflow"),
+      overflowX: pickStyle(node.computedStyles, "overflow-x"),
+      overflowY: pickStyle(node.computedStyles, "overflow-y"),
       objectFit: pickStyle(node.computedStyles, "object-fit"),
       objectPosition: pickStyle(node.computedStyles, "object-position"),
-      zIndex: pickStyle(node.computedStyles, "z-index")
+      opacity: pickStyle(node.computedStyles, "opacity"),
+      filter: pickStyle(node.computedStyles, "filter"),
+      backdropFilter: pickStyle(node.computedStyles, "backdrop-filter"),
+      mixBlendMode: pickStyle(node.computedStyles, "mix-blend-mode"),
+      isolation: pickStyle(node.computedStyles, "isolation"),
+      maskImage: pickStyle(node.computedStyles, "mask-image"),
+      webkitMaskImage: pickStyle(node.computedStyles, "-webkit-mask-image"),
+      transform: pickStyle(node.computedStyles, "transform"),
+      zIndex: pickStyle(node.computedStyles, "z-index"),
+      pointerEvents: pickStyle(node.computedStyles, "pointer-events"),
+      cursor: pickStyle(node.computedStyles, "cursor")
     },
     content: {
       text,
-      src: node.tag === "img" ? node.asset.src ?? node.attributes.src : undefined,
+      src:
+        ["img", "svg", "picture", "canvas"].includes(node.tag)
+          ? node.asset.src ?? node.attributes.src
+          : undefined,
       href:
         node.tag === "a" || node.tag === "button"
           ? node.asset.href ?? node.attributes.href
           : undefined,
-      alt: node.tag === "img" ? node.asset.alt ?? node.attributes.alt : undefined
+      alt:
+        ["img", "svg", "picture", "canvas"].includes(node.tag)
+          ? node.asset.alt ?? node.attributes.alt
+          : undefined
     },
     flags: {
       decorative: isDecorativeNode(node, kind),
@@ -155,6 +202,7 @@ function buildLayoutNode(
             display: pickStyle(viewportState.computedStyles, "display"),
             position: pickStyle(viewportState.computedStyles, "position"),
             flexDirection: pickStyle(viewportState.computedStyles, "flex-direction"),
+            flexWrap: pickStyle(viewportState.computedStyles, "flex-wrap"),
             justifyContent: pickStyle(viewportState.computedStyles, "justify-content"),
             alignItems: pickStyle(viewportState.computedStyles, "align-items"),
             gap: pickStyle(viewportState.computedStyles, "gap"),
@@ -166,21 +214,61 @@ function buildLayoutNode(
             padding: pickStyle(viewportState.computedStyles, "padding")
           },
           style: {
+            background: pickStyle(viewportState.computedStyles, "background"),
             backgroundColor: pickStyle(viewportState.computedStyles, "background-color"),
             backgroundImage: pickStyle(viewportState.computedStyles, "background-image"),
             backgroundSize: pickStyle(viewportState.computedStyles, "background-size"),
             backgroundPosition: pickStyle(viewportState.computedStyles, "background-position"),
+            backgroundRepeat: pickStyle(viewportState.computedStyles, "background-repeat"),
+            backgroundClip: pickStyle(viewportState.computedStyles, "background-clip"),
+            backgroundBlendMode: pickStyle(viewportState.computedStyles, "background-blend-mode"),
+            backgroundOrigin: pickStyle(viewportState.computedStyles, "background-origin"),
+            backgroundAttachment: pickStyle(viewportState.computedStyles, "background-attachment"),
             color: pickStyle(viewportState.computedStyles, "color"),
             fontSize: pickStyle(viewportState.computedStyles, "font-size"),
             fontFamily: pickStyle(viewportState.computedStyles, "font-family"),
+            fontStyle: pickStyle(viewportState.computedStyles, "font-style"),
             fontWeight: pickStyle(viewportState.computedStyles, "font-weight"),
             lineHeight: pickStyle(viewportState.computedStyles, "line-height"),
+            letterSpacing: pickStyle(viewportState.computedStyles, "letter-spacing"),
+            textTransform: pickStyle(viewportState.computedStyles, "text-transform"),
+            textDecoration: pickStyle(viewportState.computedStyles, "text-decoration"),
+            whiteSpace: pickStyle(viewportState.computedStyles, "white-space"),
             textAlign: pickStyle(viewportState.computedStyles, "text-align"),
+            border: pickStyle(viewportState.computedStyles, "border"),
+            borderColor: pickStyle(viewportState.computedStyles, "border-color"),
+            borderWidth: pickStyle(viewportState.computedStyles, "border-width"),
+            borderStyle: pickStyle(viewportState.computedStyles, "border-style"),
             borderRadius: pickStyle(viewportState.computedStyles, "border-radius"),
             boxShadow: pickStyle(viewportState.computedStyles, "box-shadow"),
+            textShadow: pickStyle(viewportState.computedStyles, "text-shadow"),
+            width: pickStyle(viewportState.computedStyles, "width"),
+            height: pickStyle(viewportState.computedStyles, "height"),
+            minWidth: pickStyle(viewportState.computedStyles, "min-width"),
+            maxWidth: pickStyle(viewportState.computedStyles, "max-width"),
+            minHeight: pickStyle(viewportState.computedStyles, "min-height"),
+            maxHeight: pickStyle(viewportState.computedStyles, "max-height"),
+            top: pickStyle(viewportState.computedStyles, "top"),
+            right: pickStyle(viewportState.computedStyles, "right"),
+            bottom: pickStyle(viewportState.computedStyles, "bottom"),
+            left: pickStyle(viewportState.computedStyles, "left"),
+            inset: pickStyle(viewportState.computedStyles, "inset"),
+            overflow: pickStyle(viewportState.computedStyles, "overflow"),
+            overflowX: pickStyle(viewportState.computedStyles, "overflow-x"),
+            overflowY: pickStyle(viewportState.computedStyles, "overflow-y"),
             objectFit: pickStyle(viewportState.computedStyles, "object-fit"),
             objectPosition: pickStyle(viewportState.computedStyles, "object-position"),
-            zIndex: pickStyle(viewportState.computedStyles, "z-index")
+            opacity: pickStyle(viewportState.computedStyles, "opacity"),
+            filter: pickStyle(viewportState.computedStyles, "filter"),
+            backdropFilter: pickStyle(viewportState.computedStyles, "backdrop-filter"),
+            mixBlendMode: pickStyle(viewportState.computedStyles, "mix-blend-mode"),
+            isolation: pickStyle(viewportState.computedStyles, "isolation"),
+            maskImage: pickStyle(viewportState.computedStyles, "mask-image"),
+            webkitMaskImage: pickStyle(viewportState.computedStyles, "-webkit-mask-image"),
+            transform: pickStyle(viewportState.computedStyles, "transform"),
+            zIndex: pickStyle(viewportState.computedStyles, "z-index"),
+            pointerEvents: pickStyle(viewportState.computedStyles, "pointer-events"),
+            cursor: pickStyle(viewportState.computedStyles, "cursor")
           }
         }
       ])

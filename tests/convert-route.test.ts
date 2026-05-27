@@ -4,6 +4,7 @@ import {
   createConvertPostHandler,
   type ConvertRouteDependencies
 } from "../lib/api/convert-route";
+import type { ExportPipelineResult } from "../lib/converter-v3/contracts/output";
 import { ContentIntegrityError } from "../lib/converter-v3/validate/content-integrity";
 import { VisualValidationError } from "../lib/converter-v3/visual-regression-validator";
 
@@ -59,6 +60,13 @@ function createExportResult(params: {
   snapshotEnabled: boolean;
   snapshotReason: string;
   snapshotSimilarity?: number;
+  viewportResults?: Array<{
+    viewport: "desktop" | "tablet" | "mobile";
+    passed: boolean;
+    similarity: number;
+    similarityPercent?: string;
+  }>;
+  visualValidationStatus?: "passed" | "blocked";
   warnings?: string[];
   fallbackReason?: string;
   previewHtml?: string;
@@ -69,21 +77,84 @@ function createExportResult(params: {
   snapshotEnabled: true,
   snapshotReason: "Snapshot validado com similaridade 99.50%.",
   snapshotSimilarity: 0.995
-}) {
+}): ExportPipelineResult {
   const warnings = params.warnings ?? [];
+  const defaultSimilarity = params.snapshotSimilarity ?? 0.995;
+  const snapshotPassed =
+    params.snapshotSimilarity === undefined || params.snapshotSimilarity >= 0.99;
+  const viewportResults: Array<{
+    viewport: "desktop" | "tablet" | "mobile";
+    passed: boolean;
+    similarity: number;
+    similarityPercent?: string;
+  }> =
+    params.viewportResults ??
+    (params.snapshotSimilarity !== undefined
+      ? (["desktop", "tablet", "mobile"] as const).map((viewport) => ({
+          viewport,
+          passed: snapshotPassed,
+          similarity: defaultSimilarity,
+          similarityPercent: `${(defaultSimilarity * 100).toFixed(2)}%`
+        }))
+      : []);
+  const visualValidationStatus =
+    params.visualValidationStatus ??
+    (viewportResults.every((viewport) => viewport.passed) && snapshotPassed
+      ? "passed"
+      : "blocked");
+  const visualValidationSummary =
+    viewportResults.length > 0
+      ? [
+          "[Visual Validation]",
+          ...viewportResults.map((viewport) => {
+            const label =
+              viewport.viewport === "desktop"
+                ? "Desktop"
+                : viewport.viewport === "tablet"
+                  ? "Tablet"
+                  : "Mobile";
+
+            return `${label}: ${(viewport.similarity * 100).toFixed(1)}% - ${
+              viewport.passed ? "ok" : "falhou"
+            }`;
+          }),
+          visualValidationStatus === "passed"
+            ? "Exportacao liberada"
+            : "Exportacao bloqueada"
+        ]
+      : [];
   const snapshot =
     params.emittedMode === "snapshot" || params.snapshotSimilarity
       ? {
-          overallSimilarity: params.snapshotSimilarity ?? 0.995,
+          overallSimilarity: defaultSimilarity,
           threshold: 0.99,
           convertedScreenshotPath: "/tmp/export/snapshot-preview.png",
           originalScreenshotPath: "/tmp/capture/desktop.png",
           viewportSimilarities: {
-            desktop: params.snapshotSimilarity ?? 0.995,
-            tablet: params.snapshotSimilarity ?? 0.995,
-            mobile: params.snapshotSimilarity ?? 0.995
+            desktop: defaultSimilarity,
+            tablet: defaultSimilarity,
+            mobile: defaultSimilarity
           },
           sectionReports: [],
+          visualValidationReport: {
+            status: visualValidationStatus,
+            modeUsed: "section-snapshot",
+            viewportsTested: viewportResults.map((viewport) => viewport.viewport),
+            sectionsApproved: [],
+            sectionsWithFallback: [],
+            linksPreserved: 1,
+            totalLinks: 1,
+            similarityFinal: defaultSimilarity,
+            similarityFinalPercent: `${(defaultSimilarity * 100).toFixed(2)}%`,
+            viewportResults,
+            issues: [],
+            blockingReason:
+              visualValidationStatus === "blocked"
+                ? `Conversao bloqueada: similaridade visual final ficou em ${(
+                    defaultSimilarity * 100
+                  ).toFixed(2)}%.`
+                : undefined
+          },
           totals: {
             htmlSections: 1,
             snapshotSections: 1,
@@ -112,6 +183,17 @@ function createExportResult(params: {
     },
     emittedMode: params.emittedMode,
     fallbackReason: params.fallbackReason,
+    layout: {
+      id: "layout-id",
+      title: "Resolved HTML Layout",
+      sourceKind: "raw-html",
+      rootNodeId: "root",
+      nodeCount: 2,
+      sectionIds: ["root"],
+      semanticIndex: {},
+      detectedSections: [],
+      nodes: []
+    },
     report: {
       id: "report-id",
       title: "Resolved HTML",
@@ -146,7 +228,7 @@ function createExportResult(params: {
         reasons: ["test analysis"]
       },
       validation: {
-        passed: true,
+        passed: snapshotPassed,
         mode: params.emittedMode,
         issueCount: 0,
         issues: [],
@@ -180,14 +262,17 @@ function createExportResult(params: {
             }
           : undefined,
       visualIssues: [],
+      visualValidationSummary,
       visualLogs: [
+        ...visualValidationSummary,
         "[VISUAL SNAPSHOT] Secao 01 (mock-section) capturada com sucesso",
         "[LINK OVERLAY] 1 links preservados",
         ...(params.snapshotSimilarity !== undefined
           ? [`[VALIDATION] similaridade desktop: ${(params.snapshotSimilarity * 100).toFixed(2)}%`]
           : []),
-        "[EXPORT] aprovado"
+        snapshotPassed ? "[EXPORT] aprovado" : "[EXPORT] bloqueado: 1 perda(s) detectada(s)"
       ],
+      themeLogs: [],
       warnings,
       snapshot
     },
@@ -209,7 +294,7 @@ function createExportResult(params: {
       content: []
     },
     validation: {
-      passed: true,
+      passed: snapshotPassed,
       mode: params.emittedMode,
       issueCount: 0,
       issues: [],
@@ -281,7 +366,7 @@ function createExportResult(params: {
       convertedScreenshotPath: snapshot?.convertedScreenshotPath,
       contentIntegrityReportPath: "/tmp/export/content-integrity-report.json"
     }
-  } as never;
+  } as unknown as ExportPipelineResult;
 }
 
 async function testConvertRouteUsesV3ForRawHtmlAndForcesBrowserCapture() {
@@ -361,6 +446,17 @@ async function testConvertRouteUsesV3ForRawHtmlAndForcesBrowserCapture() {
   assert.equal(payload.emittedMode, "snapshot");
   assert.equal(payload.snapshotEnabled, true);
   assert.equal(payload.snapshotReason, "Snapshot validado com similaridade 99.50%.");
+  assert.deepEqual(payload.visualValidationSummary, [
+    "[Visual Validation]",
+    "Desktop: 99.5% - ok",
+    "Tablet: 99.5% - ok",
+    "Mobile: 99.5% - ok",
+    "Exportacao liberada"
+  ]);
+  assert.deepEqual(
+    (payload.report as { visualValidationSummary: string[] }).visualValidationSummary,
+    payload.visualValidationSummary
+  );
   assert.deepEqual(payload.screenshots, {
     desktop: "/tmp/capture/desktop.png",
     mobile: "/tmp/capture/mobile.png"
@@ -440,6 +536,7 @@ async function testConvertRouteUsesV3ResolverForUploadAndAllowsPixelPerfect() {
     payload.snapshotReason,
     "Captura do navegador concluida, mas nenhuma secao elegivel para snapshot foi detectada."
   );
+  assert.deepEqual(payload.visualValidationSummary, []);
   assert.equal(resolveUploadCalls, 1);
   assert.equal(runV3Calls, 1);
 }
@@ -492,6 +589,7 @@ async function testConvertRouteBlocksWhenBrowserCaptureFallsBackToServer() {
     payload.snapshotReason,
     "Captura visual do navegador falhou. Snapshot não pôde ser gerado."
   );
+  assert.deepEqual(payload.visualValidationSummary, []);
   assert.equal(createConversionCalls, 0);
 }
 
@@ -523,6 +621,222 @@ async function testConvertRouteBlocksWhenSimilarityFallsBelowThreshold() {
 
   assert.equal(response.status, 422);
   assert.match(String(payload.error), /similaridade visual final ficou em 98\.40%/);
+  assert.deepEqual(payload.visualValidationSummary, [
+    "[Visual Validation]",
+    "Desktop: 98.4% - falhou",
+    "Tablet: 98.4% - falhou",
+    "Mobile: 98.4% - falhou",
+    "Exportacao bloqueada"
+  ]);
+  assert.deepEqual(
+    (payload.report as { visualValidationSummary: string[] }).visualValidationSummary,
+    payload.visualValidationSummary
+  );
+}
+
+async function testConvertRouteBlocksWhenAnyViewportFailsAboveThreshold() {
+  const deps = createBaseDependencies();
+  deps.runExportPipelineV3 = async () => {
+    const result = createExportResult({
+      emittedMode: "snapshot",
+      selectedMode: "snapshot",
+      renderer: "browser",
+      snapshotEnabled: true,
+      snapshotReason: "Snapshot validado com similaridade 99.50%.",
+      snapshotSimilarity: 0.995,
+      viewportResults: [
+        {
+          viewport: "desktop",
+          passed: true,
+          similarity: 0.995,
+          similarityPercent: "99.50%"
+        },
+        {
+          viewport: "tablet",
+          passed: false,
+          similarity: 0.991,
+          similarityPercent: "99.10%"
+        },
+        {
+          viewport: "mobile",
+          passed: true,
+          similarity: 0.997,
+          similarityPercent: "99.70%"
+        }
+      ],
+      visualValidationStatus: "passed"
+    });
+
+    result.snapshot!.visualValidationReport!.viewportResults[1]!.passed = false;
+    result.report.visualValidationSummary = [
+      "[Visual Validation]",
+      "Desktop: 99.5% - ok",
+      "Tablet: 99.1% - falhou",
+      "Problema: cards ficaram desalinhados",
+      "Mobile: 99.7% - ok",
+      "Exportacao bloqueada"
+    ];
+
+    return result;
+  };
+
+  const handler = createConvertPostHandler(deps);
+  const response = await handler(
+    new Request("http://localhost/api/convert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        html: "<main>failed viewport</main>"
+      })
+    })
+  );
+  const payload = (await response.json()) as Record<string, unknown>;
+
+  assert.equal(response.status, 422);
+  assert.match(
+    String(payload.error),
+    /validacao visual falhou nos viewports tablet \(99\.10%\)/i
+  );
+  assert.deepEqual(payload.visualValidationSummary, [
+    "[Visual Validation]",
+    "Desktop: 99.5% - ok",
+    "Tablet: 99.1% - falhou",
+    "Problema: cards ficaram desalinhados",
+    "Mobile: 99.7% - ok",
+    "Exportacao bloqueada"
+  ]);
+}
+
+async function testConvertRouteBlocksWhenVisualValidationStatusIsBlocked() {
+  const deps = createBaseDependencies();
+  deps.runExportPipelineV3 = async () => {
+    const result = createExportResult({
+      emittedMode: "snapshot",
+      selectedMode: "snapshot",
+      renderer: "browser",
+      snapshotEnabled: true,
+      snapshotReason: "Snapshot visual bloqueado por perda na Hero.",
+      snapshotSimilarity: 0.995,
+      visualValidationStatus: "blocked"
+    });
+
+    result.snapshot!.visualValidationReport!.blockingReason =
+      "Conversao bloqueada: secao Hero perdeu 2 imagens no desktop.";
+    result.snapshot!.visualValidationReport!.issues = [
+      {
+        viewport: "desktop",
+        sectionId: "hero-section",
+        sectionName: "hero-1",
+        sectionType: "hero",
+        sectionTypeLabel: "Hero",
+        severity: "critical",
+        similarity: 0.984,
+        similarityPercent: "98.40%",
+        lossType: "image",
+        estimatedLossCount: 2,
+        estimatedLosses: {
+          total: 2,
+          images: 2,
+          texts: 0,
+          buttons: 0,
+          links: 0,
+          backgrounds: 0
+        },
+        bbox: {
+          x: 24,
+          y: 32,
+          width: 180,
+          height: 120
+        },
+        fallbackStage: "full-page-snapshot",
+        fallbackUsed: "full-page-snapshot",
+        originalScreenshotPath: "/tmp/capture/desktop.png",
+        convertedScreenshotPath: "/tmp/export/snapshot-preview.png",
+        diffScreenshotPath: "/tmp/export/full-page-diff.png",
+        message:
+          "Viewport desktop; secao hero-1 (hero-section) tipo Hero; similaridade 98.40%; perda detectada: image; fallback usado: full-page-snapshot."
+      }
+    ];
+    result.report.visualIssues = [
+      {
+        sectionId: "hero-section",
+        sectionName: "hero-1",
+        sectionType: "hero",
+        sectionTypeLabel: "Hero",
+        severity: "critical",
+        viewport: "desktop",
+        similarity: 0.984,
+        similarityPercent: "98.40%",
+        lossType: "image",
+        estimatedLossCount: 2,
+        estimatedLosses: {
+          total: 2,
+          images: 2,
+          texts: 0,
+          buttons: 0,
+          links: 0,
+          backgrounds: 0
+        },
+        bbox: {
+          x: 24,
+          y: 32,
+          width: 180,
+          height: 120
+        },
+        originalScreenshotPath: "/tmp/capture/desktop.png",
+        convertedScreenshotPath: "/tmp/export/snapshot-preview.png",
+        diffScreenshotPath: "/tmp/export/full-page-diff.png",
+        fallbackStage: "full-page-snapshot",
+        message: "Hero perdeu 2 imagens."
+      }
+    ];
+    result.report.visualValidationSummary = [
+      "[Visual Validation]",
+      "Desktop: 98.4% - falhou",
+      "Problema: secao Hero perdeu 2 imagens",
+      "Tablet: 99.5% - ok",
+      "Mobile: 99.5% - ok",
+      "Exportacao bloqueada"
+    ];
+
+    return result;
+  };
+
+  const handler = createConvertPostHandler(deps);
+  const response = await handler(
+    new Request("http://localhost/api/convert", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        html: "<main>blocked validation status</main>"
+      })
+    })
+  );
+  const payload = (await response.json()) as Record<string, unknown>;
+
+  assert.equal(response.status, 422);
+  assert.equal(
+    payload.error,
+    "Conversao bloqueada: secao Hero perdeu 2 imagens no desktop."
+  );
+  assert.equal(
+    (payload.report as { visualIssues: Array<{ sectionTypeLabel?: string }> }).visualIssues[0]
+      ?.sectionTypeLabel,
+    "Hero"
+  );
+  assert.deepEqual(
+    (payload.report as { visualIssues: Array<{ bbox?: { x: number; y: number; width: number; height: number } }> }).visualIssues[0]?.bbox,
+    {
+      x: 24,
+      y: 32,
+      width: 180,
+      height: 120
+    }
+  );
 }
 
 async function testConvertRouteReturns500WhenV3Fails() {
@@ -682,6 +996,8 @@ async function main() {
   await testConvertRouteUsesV3ResolverForUploadAndAllowsPixelPerfect();
   await testConvertRouteBlocksWhenBrowserCaptureFallsBackToServer();
   await testConvertRouteBlocksWhenSimilarityFallsBelowThreshold();
+  await testConvertRouteBlocksWhenAnyViewportFailsAboveThreshold();
+  await testConvertRouteBlocksWhenVisualValidationStatusIsBlocked();
   await testConvertRouteReturns500WhenV3Fails();
   await testConvertRouteBlocksWhenValidationFails();
   await testConvertRouteBlocksWhenContentIntegrityFails();

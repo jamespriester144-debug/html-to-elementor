@@ -32,6 +32,221 @@ export type PixelComparisonResult = {
   diffOutputPath?: string;
 };
 
+export type ParsedCssColor = {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+};
+
+export const VISUAL_DOMINANT_COLOR_CRITICAL_DISTANCE = 95;
+export const VISUAL_DOMINANT_COLOR_BLOCKING_DISTANCE = 150;
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function splitFunctionalColorArgs(value: string) {
+  return value
+    .replace(/\s*\/\s*/g, ",")
+    .replace(/\s*,\s*/g, ",")
+    .trim()
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function parsePercentChannel(value: string) {
+  const normalized = value.trim();
+
+  if (normalized.endsWith("%")) {
+    return clamp((Number.parseFloat(normalized) / 100) * 255, 0, 255);
+  }
+
+  return clamp(Number.parseFloat(normalized), 0, 255);
+}
+
+function hueToRgb(p: number, q: number, t: number) {
+  let nextT = t;
+
+  if (nextT < 0) nextT += 1;
+  if (nextT > 1) nextT -= 1;
+  if (nextT < 1 / 6) return p + (q - p) * 6 * nextT;
+  if (nextT < 1 / 2) return q;
+  if (nextT < 2 / 3) return p + (q - p) * (2 / 3 - nextT) * 6;
+  return p;
+}
+
+function hslToRgb(h: number, s: number, l: number) {
+  const hue = (((h % 360) + 360) % 360) / 360;
+  const saturation = clamp(s, 0, 100) / 100;
+  const lightness = clamp(l, 0, 100) / 100;
+
+  if (saturation === 0) {
+    const value = Math.round(lightness * 255);
+    return { r: value, g: value, b: value };
+  }
+
+  const q =
+    lightness < 0.5
+      ? lightness * (1 + saturation)
+      : lightness + saturation - lightness * saturation;
+  const p = 2 * lightness - q;
+
+  return {
+    r: Math.round(hueToRgb(p, q, hue + 1 / 3) * 255),
+    g: Math.round(hueToRgb(p, q, hue) * 255),
+    b: Math.round(hueToRgb(p, q, hue - 1 / 3) * 255)
+  };
+}
+
+export function parseCssColor(value?: string): ParsedCssColor | undefined {
+  const normalized = (value ?? "").trim().toLowerCase();
+
+  if (!normalized || normalized === "transparent" || normalized === "none") {
+    return undefined;
+  }
+
+  if (normalized.startsWith("#")) {
+    const hex = normalized.slice(1);
+
+    if (hex.length === 3 || hex.length === 4) {
+      const [r, g, b, a = "f"] = hex.split("");
+      return {
+        r: Number.parseInt(`${r}${r}`, 16),
+        g: Number.parseInt(`${g}${g}`, 16),
+        b: Number.parseInt(`${b}${b}`, 16),
+        a: Number.parseInt(`${a}${a}`, 16) / 255
+      };
+    }
+
+    if (hex.length === 6 || hex.length === 8) {
+      return {
+        r: Number.parseInt(hex.slice(0, 2), 16),
+        g: Number.parseInt(hex.slice(2, 4), 16),
+        b: Number.parseInt(hex.slice(4, 6), 16),
+        a: hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) / 255 : 1
+      };
+    }
+  }
+
+  const rgbMatch = normalized.match(/^rgba?\((.+)\)$/i);
+
+  if (rgbMatch) {
+    const parts = splitFunctionalColorArgs(rgbMatch[1]);
+
+    if (parts.length >= 3) {
+      return {
+        r: Math.round(parsePercentChannel(parts[0])),
+        g: Math.round(parsePercentChannel(parts[1])),
+        b: Math.round(parsePercentChannel(parts[2])),
+        a: parts[3] !== undefined ? clamp(Number.parseFloat(parts[3]), 0, 1) : 1
+      };
+    }
+  }
+
+  const hslMatch = normalized.match(/^hsla?\((.+)\)$/i);
+
+  if (hslMatch) {
+    const parts = splitFunctionalColorArgs(hslMatch[1]);
+
+    if (parts.length >= 3) {
+      const hue = Number.parseFloat(parts[0]);
+      const saturation = Number.parseFloat(parts[1]);
+      const lightness = Number.parseFloat(parts[2]);
+      const rgb = hslToRgb(hue, saturation, lightness);
+
+      return {
+        ...rgb,
+        a: parts[3] !== undefined ? clamp(Number.parseFloat(parts[3]), 0, 1) : 1
+      };
+    }
+  }
+
+  return undefined;
+}
+
+export function toCssColor(color?: ParsedCssColor) {
+  if (!color) {
+    return undefined;
+  }
+
+  return color.a < 1
+    ? `rgba(${color.r}, ${color.g}, ${color.b}, ${Number.parseFloat(color.a.toFixed(3))})`
+    : `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
+export function relativeLuminance(color: ParsedCssColor) {
+  const channels = [color.r, color.g, color.b].map((channel) => {
+    const normalized = channel / 255;
+    return normalized <= 0.03928
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function resolveColorValue(color?: string | ParsedCssColor) {
+  if (!color) {
+    return undefined;
+  }
+
+  return typeof color === "string" ? parseCssColor(color) : color;
+}
+
+export function colorDistance(
+  left?: string | ParsedCssColor,
+  right?: string | ParsedCssColor
+) {
+  const resolvedLeft = resolveColorValue(left);
+  const resolvedRight = resolveColorValue(right);
+
+  if (!resolvedLeft || !resolvedRight) {
+    return undefined;
+  }
+
+  const redDelta = resolvedLeft.r - resolvedRight.r;
+  const greenDelta = resolvedLeft.g - resolvedRight.g;
+  const blueDelta = resolvedLeft.b - resolvedRight.b;
+
+  return Number.parseFloat(
+    Math.sqrt(redDelta ** 2 + greenDelta ** 2 + blueDelta ** 2).toFixed(2)
+  );
+}
+
+export function resolveDominantColorMismatchSeverity(distance?: number) {
+  if (typeof distance !== "number") {
+    return undefined;
+  }
+
+  if (distance >= VISUAL_DOMINANT_COLOR_BLOCKING_DISTANCE) {
+    return "blocking" as const;
+  }
+
+  if (distance >= VISUAL_DOMINANT_COLOR_CRITICAL_DISTANCE) {
+    return "critical" as const;
+  }
+
+  return undefined;
+}
+
+export function isClearlyLightColor(
+  value?: string | ParsedCssColor,
+  threshold = 0.72
+) {
+  const color = resolveColorValue(value);
+  return Boolean(color && relativeLuminance(color) >= threshold);
+}
+
+export function isClearlyDarkColor(
+  value?: string | ParsedCssColor,
+  threshold = 0.32
+) {
+  const color = resolveColorValue(value);
+  return Boolean(color && relativeLuminance(color) <= threshold);
+}
+
 function toDataUrlFromBuffer(buffer: Uint8Array, contentType = "image/png") {
   return `data:${contentType};base64,${Buffer.from(buffer).toString("base64")}`;
 }

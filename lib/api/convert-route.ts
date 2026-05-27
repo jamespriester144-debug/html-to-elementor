@@ -96,7 +96,19 @@ function resolveVisualSimilarity(result: ExportPipelineResult) {
     return 1;
   }
 
-  return result.snapshot?.overallSimilarity ?? 0;
+  return (
+    result.snapshot?.visualValidationReport?.similarityFinal ??
+    result.snapshot?.overallSimilarity ??
+    0
+  );
+}
+
+function hasFailedSnapshotViewport(result: ExportPipelineResult) {
+  return (
+    result.snapshot?.visualValidationReport?.viewportResults.some(
+      (viewport) => !viewport.passed
+    ) ?? false
+  );
 }
 
 function resolveFinalPreviewHtml(result: ExportPipelineResult) {
@@ -138,6 +150,14 @@ function resolveDownloadEligibilityError(result: ExportPipelineResult) {
     );
   }
 
+  if (hasFailedSnapshotViewport(result)) {
+    const failedViewportSummary = buildFailedViewportSummary(result);
+
+    return failedViewportSummary
+      ? `Conversao bloqueada: validacao visual falhou nos viewports ${failedViewportSummary}.`
+      : "Conversao bloqueada: validacao visual marcou pelo menos um viewport como falho.";
+  }
+
   if (resolveVisualSimilarity(result) < MIN_VISUAL_SIMILARITY) {
     const failedViewportSummary = buildFailedViewportSummary(result);
 
@@ -169,6 +189,7 @@ function buildBlockedResponse(
       selectedMode: result.analysis.selectedMode,
       emittedMode: result.emittedMode,
       validation: result.validation,
+      visualValidationSummary: result.report.visualValidationSummary,
       report: result.report,
       snapshotEnabled: result.report.snapshotEnabled,
       snapshotReason: result.report.snapshotReason,
@@ -196,6 +217,7 @@ function buildV3Success(result: ExportPipelineResult): PreparedConversion {
       status,
       sourceKind: result.resolvedSource.sourceKind,
       renderer: result.capture.renderer,
+      visualValidationSummary: result.report.visualValidationSummary,
       report: result.report,
       validation: result.validation,
       selectedMode: result.analysis.selectedMode,

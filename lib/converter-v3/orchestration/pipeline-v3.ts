@@ -4,6 +4,7 @@ import path from "node:path";
 import type { CapturePipelineResult } from "@/lib/converter-v3/contracts/capture";
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
 import { analyzeLayoutComplexity } from "@/lib/converter-v3/analyze/complexity-analyzer";
+import { analyzeCaptureTheme } from "@/lib/converter-v3/analyze/theme-detector";
 import { buildPageCapture } from "@/lib/converter-v3/capture/page-capture";
 import { detectLayoutDocument } from "@/lib/converter-v3/layout-detector";
 import { classifySections } from "@/lib/converter-v3/section-classifier";
@@ -13,7 +14,8 @@ import {
   summarizeVisibleContent
 } from "@/lib/converter-v3/universal-content";
 import {
-  isLovableLikeSource,
+  assessVisualCloneRisk,
+  shouldPreferUniversalVisualSnapshot,
   shouldForceUniversalFullPageSnapshot
 } from "@/lib/converter-v3/visual-clone-policy";
 import { buildVisualHierarchy } from "@/lib/converter-v3/visual-hierarchy";
@@ -50,6 +52,7 @@ export async function runCapturePipelineV3(
   const detectedLayout = detectLayoutDocument(capture);
   const visualHierarchy = buildVisualHierarchy(detectedLayout);
   const layout = classifySections(visualHierarchy);
+  capture.themeAnalysis = analyzeCaptureTheme(capture, layout);
   const universalAnalysisEnabled = isUniversalInputAnalysisEnabled();
   const realSectionCount = layout.detectedSections.length || layout.sectionIds.length;
   capture.inputAnalysis = {
@@ -70,8 +73,8 @@ export async function runCapturePipelineV3(
   };
 
   const forceUniversalFullPageSnapshot = shouldForceUniversalFullPageSnapshot(capture, layout);
-  const preferUniversalVisualSnapshot =
-    capture.renderer === "browser" && isLovableLikeSource(capture);
+  const visualCloneRisk = assessVisualCloneRisk(capture, layout);
+  const preferUniversalVisualSnapshot = shouldPreferUniversalVisualSnapshot(capture, layout);
   let analysis = analyzeLayoutComplexity(layout);
 
   if (forceUniversalFullPageSnapshot) {
@@ -79,6 +82,7 @@ export async function runCapturePipelineV3(
       ...analysis,
       selectedMode: "snapshot",
       reasons: [
+        ...visualCloneRisk.reasons,
         "Politica universal para sites Lovable-like: clonagem visual full-page priorizada para preservar a aparencia e evitar conflitos de reconstrucao editavel.",
         ...analysis.reasons
       ]
@@ -88,6 +92,7 @@ export async function runCapturePipelineV3(
       ...analysis,
       selectedMode: "snapshot",
       reasons: [
+        ...visualCloneRisk.reasons,
         "Politica visual para sites Lovable-like: snapshots por secao/pagina inteira sao priorizados para maximizar a fidelidade.",
         ...analysis.reasons
       ]

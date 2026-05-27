@@ -12,8 +12,15 @@ import type {
   InputPageAnalysis
 } from "../lib/converter-v3/contracts/input-analysis";
 import type { LayoutDocument, LayoutNode } from "../lib/converter-v3/contracts/layout";
+import { auditThemeConsistency } from "../lib/converter-v3/analyze/theme-detector";
+import { CAPTURED_STYLE_PROPERTIES } from "../lib/converter-v3/bounding-box-extractor";
+import { buildConvertedPreviewHtml } from "../lib/converter-v3/debug/conversion-debug";
 import { createElementorNativeExport } from "../lib/converter-v3/elementor-native-exporter";
-import { createSnapshotElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/snapshot";
+import { createPixelPerfectElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/pixel-perfect";
+import {
+  createSnapshotElementorDocumentV3,
+  inferFullPageSnapshotLossType
+} from "../lib/converter-v3/emitters/elementor/snapshot";
 import {
   createElementorResponsiveSettings,
   createResponsiveChildSettings,
@@ -22,18 +29,36 @@ import {
   getOrderedChildIdsForPattern
 } from "../lib/converter-v3/emitters/elementor/responsive-layout";
 import { createEditableElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/editable";
+import { resolvePageShellVisualContext } from "../lib/converter-v3/emitters/elementor/style-preservation";
 import {
   runExportPipelineV3,
   runExportPipelineV3FromHtml
 } from "../lib/converter-v3/orchestration/export-pipeline-v3";
-import { runCapturePipelineV3FromHtml } from "../lib/converter-v3/orchestration/pipeline-v3";
+import {
+  runCapturePipelineV3,
+  runCapturePipelineV3FromHtml
+} from "../lib/converter-v3/orchestration/pipeline-v3";
 import { buildExportReport } from "../lib/converter-v3/reports/report-builder";
 import {
   resolveSourceFromLocalFile,
   resolveSourceFromUpload
 } from "../lib/converter-v3/resolve/source-resolver";
+import { buildVisualSectionCaptures } from "../lib/converter-v3/sections/visual-section-capture";
 import { classifySections } from "../lib/converter-v3/section-classifier";
+import {
+  assessVisualCloneRisk,
+  shouldForceUniversalFullPageSnapshot,
+  shouldPreferUniversalVisualSnapshot,
+  VISUAL_REASON_DARK_THEME,
+  VISUAL_REASON_FALLBACK_PIXEL_PERFECT,
+  VISUAL_REASON_FALLBACK_SNAPSHOT,
+  VISUAL_REASON_HERO_BACKGROUND,
+  VISUAL_REASON_HIGH_RISK,
+  VISUAL_REASON_STRUCTURAL_AUDIT
+} from "../lib/converter-v3/visual-clone-policy";
 import { buildVisualHierarchy } from "../lib/converter-v3/visual-hierarchy";
+import { validateElementorExport } from "../lib/converter-v3/visual-regression-validator";
+import type { ElementorDocument, ElementorElement } from "../types/conversion";
 import {
   isForceFullPageSnapshotEnabled as isForceFullPageSnapshotEnabledFromEnv,
   isForceVisualSnapshotEnabled as isForceVisualSnapshotEnabledFromEnv
@@ -245,6 +270,7 @@ function createMockCapture(overrides: Partial<PageCapture> = {}): PageCapture {
     responsiveSnapshot: overrides.responsiveSnapshot ?? [],
     nodes: overrides.nodes ?? [],
     sections: overrides.sections,
+    themeAnalysis: overrides.themeAnalysis,
     summary: overrides.summary ?? {
       totalNodes: 0,
       visibleNodes: 0,
@@ -271,6 +297,30 @@ function createMockCapture(overrides: Partial<PageCapture> = {}): PageCapture {
       screenshots: {}
     }
   };
+}
+
+function flattenElementTree(elements: ElementorElement[]): ElementorElement[] {
+  const flattened: ElementorElement[] = [];
+  const queue = [...elements];
+
+  while (queue.length > 0) {
+    const element = queue.shift();
+
+    if (!element) {
+      continue;
+    }
+
+    flattened.push(element);
+    queue.push(...element.elements);
+  }
+
+  return flattened;
+}
+
+function findFirstWidget(document: ElementorDocument, widgetType: string) {
+  return flattenElementTree(document.content).find(
+    (element) => element.widgetType === widgetType
+  );
 }
 
 function assertSnapshotModeWhenForced(
@@ -379,6 +429,438 @@ function assertContainsSnapshotLinkOverlay(value: unknown) {
   assert.equal(objectContainsPattern(value, /converter-v3-snapshot-link-1/), true);
 }
 
+function parseRgbChannels(value?: string) {
+  const match = value?.match(/^rgb\((\d+),\s*(\d+),\s*(\d+)\)$/i);
+
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    r: Number.parseInt(match[1], 10),
+    g: Number.parseInt(match[2], 10),
+    b: Number.parseInt(match[3], 10)
+  };
+}
+
+function createVisualAuditFixture() {
+  const width = 1200;
+  const height = 520;
+  const box = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: width,
+    bottom: height,
+    left: 0,
+    width,
+    height,
+    centerX: width / 2,
+    centerY: height / 2
+  };
+  const capture = createMockCapture({
+    id: "visual-audit-fixture",
+    title: "Visual Audit Fixture",
+    renderedHtml:
+      "<html><body><section><h1>Dark premium hero</h1><a href=\"#cta\">Start</a><input type=\"email\" /></section></body></html>",
+    inputAnalysis: createMockInputAnalysis({
+      structure: {
+        heroSections: 1,
+        cards: 1,
+        buttons: 1,
+        forms: 1,
+        links: 1,
+        backgrounds: 1
+      } as InputPageAnalysis["structure"],
+      diagnostics: {
+        errors: [],
+        warnings: [],
+        rendererUsed: "browser",
+        htmlRendered: true,
+        cssLoaded: true,
+        imagesLoaded: true,
+        relativeAssetsResolved: true,
+        viewportMatched: true,
+        sectionCroppingRisk: false,
+        fullPageSnapshotFailed: false,
+        resources: [
+          {
+            url: "hero-bg.png",
+            kind: "background",
+            status: "loaded",
+            sourceTag: "section",
+            sourceAttribute: "background-image",
+            nodeId: "hero-section",
+            importance: "hero",
+            critical: true,
+            diagnostic: "background image loaded"
+          }
+        ]
+      }
+    }),
+    nodes: [
+      {
+        id: "hero-section",
+        tag: "section",
+        text: "",
+        attributes: {},
+        parentId: null,
+        childIds: ["hero-title", "hero-button", "hero-card"],
+        computedStyles: {
+          color: "#f8fafc",
+          "background-color": "#020617"
+        },
+        box,
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              color: "#f8fafc",
+              "background-color": "#020617"
+            },
+            box,
+            isVisible: true
+          }
+        },
+        visualOrder: 0,
+        isVisible: true,
+        asset: {
+          backgroundImage: 'linear-gradient(180deg, rgba(2, 6, 23, 0.92), rgba(2, 6, 23, 0.55)), url("hero-bg.png")',
+          backgroundUrls: ["hero-bg.png"],
+          hasGradientBackground: true
+        }
+      }
+    ],
+    sections: [
+      {
+        id: "hero-capture",
+        nodeId: "hero-section",
+        name: "hero-1",
+        type: "hero",
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        subtreeNodeIds: ["hero-section", "hero-title", "hero-button", "hero-card"],
+        originalHtml: "<section></section>",
+        htmlCandidate: "<html><body><section></section></body></html>",
+        complexity: createSectionCaptureComplexity(),
+        viewports: {
+          desktop: {
+            viewport: "desktop",
+            width,
+            height,
+            linkOverlays: []
+          }
+        },
+        debug: {
+          sectionBoundingBox: {
+            x: 0,
+            y: 0,
+            width,
+            height
+          },
+          sectionWidth: width,
+          sectionHeight: height,
+          originalImages: [],
+          cssBackgrounds: [
+            {
+              nodeId: "hero-section",
+              tag: "section",
+              backgroundImage:
+                'linear-gradient(180deg, rgba(2, 6, 23, 0.92), rgba(2, 6, 23, 0.55)), url("hero-bg.png")',
+              backgroundUrls: ["hero-bg.png"],
+              hasGradient: true,
+              status: "loaded"
+            }
+          ],
+          loadedFonts: [],
+          interactiveElements: [],
+          positionedElements: []
+        }
+      }
+    ],
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.02,
+      dominantContrast: 15.4,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: "rgb(2, 6, 23)",
+        foreground: "rgb(248, 250, 252)",
+        cardBackground: "rgb(15, 23, 42)",
+        primaryButtonColor: "rgb(56, 189, 248)",
+        borderColor: "rgb(51, 65, 85)",
+        radius: "14px",
+        shadow: "0 18px 40px rgba(15, 23, 42, 0.2)"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: true,
+        hasStyledInputs: true,
+        hasElevatedCards: true
+      },
+      roleCounts: {
+        cards: 1,
+        buttons: 1,
+        inputs: 1,
+        headers: 0,
+        footers: 0,
+        sections: 1
+      },
+      messages: ["dark theme detected"]
+    },
+    summary: {
+      totalNodes: 4,
+      visibleNodes: 4,
+      links: 1,
+      images: 1,
+      buttons: 1,
+      textBlocks: 1,
+      visualContainers: 1,
+      geometryGroups: 1,
+      sections: 1
+    }
+  });
+  const layout: LayoutDocument = {
+    id: "visual-audit-layout",
+    title: "Visual Audit Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 5,
+    sectionIds: ["hero-section"],
+    semanticIndex: {
+      hero: ["hero-section"],
+      card: ["hero-card"],
+      button: ["hero-button"]
+    },
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: ["hero-title", "hero-button", "hero-card"],
+        anchors: [],
+        contains: ["hero", "button", "card", "text"]
+      }
+    ],
+    nodes: [
+      {
+        id: "page",
+        kind: "page",
+        parentId: null,
+        children: ["hero-section"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "#020617"
+        },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-section",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["hero-title", "hero-button", "hero-card"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "#020617",
+          backgroundImage:
+            'linear-gradient(180deg, rgba(2, 6, 23, 0.92), rgba(2, 6, 23, 0.55)), url("hero-bg.png")'
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.99
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-title",
+        tag: "h1",
+        kind: "text",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 48,
+          y: 40,
+          width: 480,
+          height: 72
+        },
+        visualOrder: 2,
+        layout: {},
+        spacing: {},
+        style: {
+          color: "#f8fafc"
+        },
+        content: {
+          text: "Dark premium hero"
+        },
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-button",
+        tag: "a",
+        kind: "button",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 48,
+          y: 140,
+          width: 160,
+          height: 48
+        },
+        visualOrder: 3,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "#38bdf8",
+          borderRadius: "999px",
+          boxShadow: "0 18px 40px rgba(56, 189, 248, 0.35)"
+        },
+        content: {
+          text: "Start",
+          href: "#cta"
+        },
+        flags: {},
+        detection: {
+          semanticRole: "button",
+          confidence: 0.96
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-card",
+        tag: "div",
+        kind: "container",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 720,
+          y: 80,
+          width: 360,
+          height: 240
+        },
+        visualOrder: 4,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "#0f172a",
+          borderRadius: "20px",
+          boxShadow: "0 24px 48px rgba(15, 23, 42, 0.28)"
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "card",
+          confidence: 0.95
+        },
+        responsive: {}
+      }
+    ]
+  };
+  const document = {
+    version: "1.0",
+    title: "Visual Audit Export",
+    type: "page" as const,
+    content: [
+      {
+        id: "hero-container",
+        elType: "container" as const,
+        settings: {
+          converter_v3_source_node_id: "hero-section"
+        },
+        elements: [
+          {
+            id: "hero-title-widget",
+            elType: "widget" as const,
+            widgetType: "heading",
+            settings: {
+              converter_v3_source_node_id: "hero-title",
+              title: "Dark premium hero"
+            },
+            elements: []
+          },
+          {
+            id: "hero-button-widget",
+            elType: "widget" as const,
+            widgetType: "button",
+            settings: {
+              converter_v3_source_node_id: "hero-button",
+              text: "Start",
+              link: {
+                url: "#cta"
+              }
+            },
+            elements: []
+          },
+          {
+            id: "hero-input-widget",
+            elType: "widget" as const,
+            widgetType: "html",
+            settings: {
+              converter_v3_source_node_id: "hero-input",
+              html: '<input data-capture-id="hero-input" type="email" placeholder="Email" />'
+            },
+            elements: []
+          },
+          {
+            id: "hero-card-container",
+            elType: "container" as const,
+            settings: {
+              converter_v3_source_node_id: "hero-card"
+            },
+            elements: []
+          }
+        ]
+      }
+    ]
+  };
+
+  return {
+    capture,
+    layout,
+    document
+  };
+}
+
+function createLightClonePreviewHtml() {
+  return `<!doctype html>
+<html>
+  <body style="margin:0;background:#ffffff;color:#111827;font-family:Arial,sans-serif;">
+    <main style="padding:48px 56px;">
+      <section style="padding:48px 56px;background:#ffffff;">
+        <h1>Dark premium hero</h1>
+        <a href="#cta" style="display:inline-flex;padding:12px 20px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:10px;">Start</a>
+        <input style="margin-top:20px;width:240px;padding:12px 16px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:10px;" placeholder="Email" />
+        <div class="card" style="margin-top:32px;padding:32px;background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;">Card</div>
+      </section>
+    </main>
+  </body>
+</html>`;
+}
+
 function unwrapSectionStrategyChildren<T extends { settings?: Record<string, unknown>; elements?: T[] }>(
   elements: T[] | undefined
 ) {
@@ -442,6 +924,2300 @@ async function testV3HtmlCapturePipeline() {
   await access(result.capture.artifacts.analysisPath);
   const renderedHtml = await readFile(result.capture.artifacts.renderedHtmlPath, "utf8");
   assert.match(renderedHtml, /Rendered Hero/);
+}
+
+async function testV3HtmlCaptureTreatsInlineSvgAsImageAsset() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Inline SVG Asset</title>
+  </head>
+  <body>
+    <header>
+      <svg width="140" height="42" viewBox="0 0 140 42" role="img" aria-label="Brand Logo">
+        <rect width="140" height="42" rx="12" fill="#102542" />
+        <circle cx="28" cy="21" r="10" fill="#ffd166" />
+        <text x="52" y="27" fill="#ffffff" font-size="16">Brand</text>
+      </svg>
+    </header>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const svgImageNode = result.layout.nodes.find(
+    (node) =>
+      node.kind === "image" &&
+      node.tag === "svg" &&
+      typeof node.content.src === "string" &&
+      node.content.src.startsWith("data:image/svg+xml;base64,")
+  );
+
+  assert.equal(result.capture.renderer, "browser");
+  assert.ok(svgImageNode);
+  assert.equal(svgImageNode?.content.alt, "Brand Logo");
+}
+
+async function testV3SectionCaptureExpandsForOverflowingHeaderMedia() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Overflow Header Media</title>
+    <style>
+      html, body { margin: 0; background: #102542; }
+      header {
+        position: relative;
+        width: 240px;
+        height: 92px;
+        margin: 32px;
+        border-radius: 18px;
+        background: #102542;
+        overflow: visible;
+      }
+      .brand-lockup {
+        position: absolute;
+        top: 18px;
+        left: 170px;
+        width: 120px;
+        height: 48px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img
+        class="brand-lockup"
+        alt="Brand Lockup"
+        src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCAxMjAgNDgiPjxyZWN0IHdpZHRoPSIxMjAiIGhlaWdodD0iNDgiIHJ4PSIxMiIgZmlsbD0iI2ZmZDE2NiIvPjx0ZXh0IHg9IjE4IiB5PSIzMSIgZm9udC1zaXplPSIxOCIgcG9wdWxhdGlvbj0iQXJpYWwiIGZpbGw9IiMxMDI1NDIiPkJyYW5kPC90ZXh0Pjwvc3ZnPg=="
+      />
+    </header>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const sections = await buildVisualSectionCaptures({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    outputDir: captureResult.capture.artifacts.outputDir
+  });
+  const headerSection =
+    sections.find((section) => section.type === "header") ??
+    sections.find((section) => section.name.startsWith("header-"));
+  const desktopViewport = headerSection?.viewports.desktop;
+
+  assert.equal(captureResult.capture.renderer, "browser");
+  assert.ok(headerSection);
+  assert.ok(desktopViewport?.captureBox);
+  assert.equal((desktopViewport?.captureBox?.width ?? 0) > (headerSection?.box.width ?? 0), true);
+  assert.equal((headerSection?.debug?.originalImages.length ?? 0) >= 1, true);
+}
+
+async function testV3HtmlCaptureCollectsExpandedComputedStyles() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Expanded Computed Styles</title>
+    <style>
+      .visual-shell {
+        position: relative;
+        display: grid;
+        place-items: center;
+        place-content: space-between;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(120px, 1fr);
+        grid-auto-rows: minmax(48px, auto);
+        min-width: 220px;
+        max-height: 320px;
+        aspect-ratio: 16 / 9;
+        background-origin: padding-box;
+        background-attachment: local;
+        background-blend-mode: multiply;
+        isolation: isolate;
+        border-width: 2px;
+        border-style: solid;
+        outline: 2px solid rgba(255, 209, 102, 0.5);
+        outline-offset: 3px;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+      }
+      .overlay {
+        position: absolute;
+        inset: 12px;
+        min-width: 80px;
+        max-height: 160px;
+        flex-wrap: wrap;
+        flex-grow: 1;
+        flex-shrink: 0;
+        flex-basis: 140px;
+        filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.35));
+        backdrop-filter: blur(8px);
+        mix-blend-mode: screen;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="visual-shell">
+      Styled card
+      <div class="overlay">Layered overlay</div>
+    </div>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const shellNode = result.capture.nodes.find(
+    (node) => node.tag === "div" && node.text.includes("Styled card")
+  );
+  const overlayNode = result.capture.nodes.find(
+    (node) => node.tag === "div" && node.text.includes("Layered overlay")
+  );
+
+  assert.ok(CAPTURED_STYLE_PROPERTIES.includes("background-origin"));
+  assert.ok(CAPTURED_STYLE_PROPERTIES.includes("background-attachment"));
+  assert.ok(CAPTURED_STYLE_PROPERTIES.includes("place-items"));
+  assert.ok(CAPTURED_STYLE_PROPERTIES.includes("grid-auto-flow"));
+  assert.ok(CAPTURED_STYLE_PROPERTIES.includes("outline-offset"));
+  assert.ok(CAPTURED_STYLE_PROPERTIES.includes("mix-blend-mode"));
+  assert.ok(shellNode);
+  assert.equal(shellNode?.computedStyles["background-origin"], "padding-box");
+  assert.equal(shellNode?.computedStyles["background-attachment"], "local");
+  assert.equal(shellNode?.computedStyles["background-blend-mode"], "multiply");
+  assert.equal(shellNode?.computedStyles.isolation, "isolate");
+  assert.ok(shellNode?.computedStyles["place-items"]);
+  assert.equal(shellNode?.computedStyles["grid-auto-flow"], "column");
+  assert.equal(shellNode?.computedStyles["border-style"], "solid");
+  assert.equal(shellNode?.computedStyles["outline-offset"], "3px");
+  assert.ok(shellNode?.computedStyles["text-shadow"]);
+  assert.ok(overlayNode);
+  assert.equal(overlayNode?.computedStyles.inset, "12px");
+  assert.equal(overlayNode?.computedStyles["min-width"], "80px");
+  assert.equal(overlayNode?.computedStyles["max-height"], "160px");
+  assert.equal(overlayNode?.computedStyles["flex-wrap"], "wrap");
+  assert.equal(overlayNode?.computedStyles["flex-grow"], "1");
+  assert.equal(overlayNode?.computedStyles["flex-shrink"], "0");
+  assert.equal(overlayNode?.computedStyles["flex-basis"], "140px");
+  assert.ok(overlayNode?.computedStyles.filter);
+  assert.ok(overlayNode?.computedStyles["backdrop-filter"]);
+  assert.equal(overlayNode?.computedStyles["mix-blend-mode"], "screen");
+}
+
+async function testV3HtmlCapturePreservesMultiLayerBackgroundImages() {
+  const heroImage =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0MDAiIGhlaWdodD0iMjIwIiB2aWV3Qm94PSIwIDAgNDAwIDIyMCI+PHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSIyMjAiIGZpbGw9IiMxMDI1NDIiLz48Y2lyY2xlIGN4PSIzMjAiIGN5PSI2MCIgcj0iNDQiIGZpbGw9IiNmZmQxNjYiLz48L3N2Zz4=";
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Layered Background</title>
+    <style>
+      .hero {
+        width: 420px;
+        height: 220px;
+        background-image:
+          linear-gradient(135deg, rgba(16, 37, 66, 0.92) 0%, rgba(16, 37, 66, 0.35) 100%),
+          url("${heroImage}");
+        background-size: cover, cover;
+        background-position: center, center;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="hero"></section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const heroNode = result.capture.nodes.find((node) => node.tag === "section");
+
+  assert.ok(heroNode);
+  assert.match(heroNode?.computedStyles["background-image"] ?? "", /linear-gradient/i);
+  assert.match(heroNode?.computedStyles["background-image"] ?? "", /url\(/i);
+  assert.equal(heroNode?.asset.backgroundImage, heroNode?.computedStyles["background-image"]);
+  assert.deepEqual(
+    heroNode?.asset.backgroundLayers?.map((layer) => layer.type),
+    ["gradient", "image"]
+  );
+  assert.equal(heroNode?.asset.backgroundUrls?.[0], heroImage);
+}
+
+async function testV3HtmlCaptureTracksPictureSourcesAndLazyImages() {
+  const pictureSource =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMzIwIDE4MCI+PHJlY3Qgd2lkdGg9IjMyMCIgaGVpZ2h0PSIxODAiIGZpbGw9IiMxMDI1NDIiLz48L3N2Zz4=";
+  const fallbackImage =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMjAiIGhlaWdodD0iMTgwIiB2aWV3Qm94PSIwIDAgMzIwIDE4MCI+PHJlY3Qgd2lkdGg9IjMyMCIgaGVpZ2h0PSIxODAiIGZpbGw9IiNmZmQxNjYiLz48L3N2Zz4=";
+  const lazyImage =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTQwIiB2aWV3Qm94PSIwIDAgMjQwIDE0MCI+PHJlY3Qgd2lkdGg9IjI0MCIgaGVpZ2h0PSIxNDAiIHJ4PSIyNCIgZmlsbD0iI2Y4NzA2MCIvPjwvc3ZnPg==";
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Picture And Lazy Assets</title>
+  </head>
+  <body>
+    <picture class="hero-picture">
+      <source media="(min-width: 300px)" srcset="${pictureSource} 1x" />
+      <img src="${fallbackImage}" alt="Responsive visual" />
+    </picture>
+    <img
+      class="lazy-card"
+      src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+      data-src="${lazyImage}"
+      alt="Lazy visual"
+      loading="lazy"
+    />
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const pictureNode = result.capture.nodes.find(
+    (node) => node.tag === "picture" && node.attributes.class === "hero-picture"
+  );
+  const lazyNode = result.capture.nodes.find(
+    (node) => node.tag === "img" && node.attributes.class === "lazy-card"
+  );
+
+  assert.ok(pictureNode);
+  assert.deepEqual(pictureNode?.asset.pictureSources, [pictureSource]);
+  assert.equal(pictureNode?.asset.currentSrc, pictureSource);
+  assert.equal(pictureNode?.asset.src, pictureSource);
+  assert.ok(lazyNode);
+  assert.deepEqual(lazyNode?.asset.lazySources, [lazyImage]);
+  assert.equal(lazyNode?.asset.currentSrc, lazyImage);
+  assert.equal(lazyNode?.asset.src, lazyImage);
+}
+
+async function testV3HtmlCaptureDetectsVisualPseudoElements() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Pseudo Capture</title>
+    <style>
+      .card {
+        position: relative;
+        width: 180px;
+        height: 96px;
+        background: #102542;
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        left: 12px;
+        top: 14px;
+        width: 44px;
+        height: 44px;
+        opacity: 0.95;
+        border: 1px solid rgba(255, 209, 102, 0.4);
+        box-shadow: 0 0 18px rgba(255, 209, 102, 0.25);
+        background-image: linear-gradient(135deg, rgba(255, 209, 102, 0.95), rgba(255, 209, 102, 0.35));
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card"></div>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const cardNode = result.capture.nodes.find(
+    (node) => node.tag === "div" && node.attributes.class === "card"
+  );
+  const beforePseudo = cardNode?.pseudoElements?.find((pseudo) => pseudo.pseudo === "::before");
+
+  assert.ok(cardNode);
+  assert.ok(beforePseudo);
+  assert.equal(beforePseudo?.isVisible, true);
+  assert.equal(beforePseudo?.box?.width, 44);
+  assert.equal(beforePseudo?.box?.height, 44);
+  assert.ok(beforePseudo?.computedStyles["background-image"]);
+  assert.ok(beforePseudo?.computedStyles["box-shadow"]);
+  assert.equal(beforePseudo?.asset.backgroundLayers?.[0]?.type, "gradient");
+  assert.equal(beforePseudo?.asset.hasGradientBackground, true);
+}
+
+async function testV3SectionCaptureTracksHeroOverlayCardImagesAndPseudoBackgrounds() {
+  const heroImage =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MjAiIGhlaWdodD0iMzYwIiB2aWV3Qm94PSIwIDAgNzIwIDM2MCI+PHJlY3Qgd2lkdGg9IjcyMCIgaGVpZ2h0PSIzNjAiIGZpbGw9IiMxMDI1NDIiLz48Y2lyY2xlIGN4PSI1NzAiIGN5PSI5MCIgcj0iNzIiIGZpbGw9IiNmZmQxNjYiLz48L3N2Zz4=";
+  const cardImage =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNDAiIGhlaWdodD0iMTYwIiB2aWV3Qm94PSIwIDAgMjQwIDE2MCI+PHJlY3Qgd2lkdGg9IjI0MCIgaGVpZ2h0PSIxNjAiIHJ4PSIyNCIgZmlsbD0iI2ZmZDE2NiIvPjwvc3ZnPg==";
+  const badgeImage =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MiIgaGVpZ2h0PSI3MiIgdmlld0JveD0iMCAwIDcyIDcyIj48Y2lyY2xlIGN4PSIzNiIgY3k9IjM2IiByPSIzNiIgZmlsbD0iI2ZmZDE2NiIvPjwvc3ZnPg==";
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Hero Overlay Cards</title>
+    <style>
+      html, body { margin: 0; background: #f4efe8; }
+      .hero {
+        position: relative;
+        min-height: 420px;
+        padding: 48px;
+        color: white;
+        background-image:
+          linear-gradient(135deg, rgba(16, 37, 66, 0.9), rgba(16, 37, 66, 0.28)),
+          url("${heroImage}");
+        background-size: cover, cover;
+        background-position: center, center;
+        overflow: hidden;
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: 24px;
+        border-radius: 28px;
+        background-image: linear-gradient(135deg, rgba(255, 209, 102, 0.18), rgba(255, 209, 102, 0));
+        pointer-events: none;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+        margin-top: 28px;
+      }
+      .card {
+        position: relative;
+        padding: 20px;
+        border-radius: 24px;
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        width: 36px;
+        height: 36px;
+        background-image: url("${badgeImage}");
+        background-size: cover;
+      }
+      .card img {
+        display: block;
+        width: 100%;
+        border-radius: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="hero">
+      <h1>Visual hero</h1>
+      <div class="cards">
+        <article class="card">
+          <img src="${cardImage}" alt="Card visual" />
+          <p>Card content</p>
+        </article>
+      </div>
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const sections = await buildVisualSectionCaptures({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    outputDir: captureResult.capture.artifacts.outputDir
+  });
+  const heroSection = sections.find((section) => /class="hero"/i.test(section.originalHtml));
+
+  assert.ok(heroSection);
+  assert.equal(heroSection?.complexity.hasPseudoElements, true);
+  assert.equal(
+    heroSection?.debug?.cssBackgrounds.some(
+      (background) =>
+        background.status === "loaded" &&
+        background.hasGradient &&
+        (background.backgroundUrls?.length ?? 0) === 1
+    ),
+    true
+  );
+  assert.equal(
+    heroSection?.debug?.cssBackgrounds.some(
+      (background) => background.pseudo === "::before" && background.status === "loaded"
+    ),
+    true
+  );
+  assert.equal(
+    heroSection?.debug?.originalImages.some(
+      (image) => image.alt === "Card visual" && image.status === "loaded"
+    ),
+    true
+  );
+}
+
+async function testV3BrowserDiagnosticsResolveRelativeHeroCardAndPseudoAssets() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const sourceRoot = path.join(outputRoot, "relative-asset-diagnostics");
+  const assetDir = path.join(sourceRoot, "assets");
+
+  await mkdir(assetDir, { recursive: true });
+  await writeFile(
+    path.join(assetDir, "hero.svg"),
+    `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="360" viewBox="0 0 720 360"><rect width="720" height="360" fill="#102542" /><circle cx="570" cy="90" r="72" fill="#ffd166" /></svg>`
+  );
+  await writeFile(
+    path.join(assetDir, "card.svg"),
+    `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160"><rect width="240" height="160" rx="24" fill="#ffd166" /></svg>`
+  );
+  await writeFile(
+    path.join(assetDir, "badge.svg"),
+    `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><circle cx="36" cy="36" r="36" fill="#ffd166" /></svg>`
+  );
+  await writeFile(
+    path.join(sourceRoot, "index.html"),
+    `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Relative Asset Diagnostics</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; }
+      .hero {
+        min-height: 320px;
+        padding: 32px;
+        background-image: linear-gradient(135deg, rgba(16, 37, 66, 0.88), rgba(16, 37, 66, 0.24)), url("./assets/hero.svg");
+        background-size: cover, cover;
+      }
+      .card {
+        position: relative;
+        width: 240px;
+        margin: 24px 32px;
+        padding: 16px;
+        border-radius: 20px;
+        background: #fff;
+      }
+      .card::before {
+        content: "";
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        width: 28px;
+        height: 28px;
+        background-image: url("./assets/badge.svg");
+        background-size: cover;
+      }
+      .card img { width: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <section class="hero"><h1>Relative hero</h1></section>
+    <article class="card"><img src="./assets/card.svg" alt="Card asset" /></article>
+  </body>
+</html>`
+  );
+
+  const resolvedSource = await resolveSourceFromLocalFile(path.join(sourceRoot, "index.html"));
+  const captureResult = await runCapturePipelineV3(resolvedSource, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const resources = captureResult.capture.inputAnalysis.diagnostics.resources;
+
+  assert.equal(captureResult.capture.inputAnalysis.diagnostics.relativeAssetsResolved, true);
+  assert.equal(
+    resources.some(
+      (resource) => resource.diagnostic === "background image loaded" && resource.status === "loaded"
+    ),
+    true
+  );
+  assert.equal(
+    resources.some(
+      (resource) => resource.diagnostic === "inline image loaded" && resource.status === "loaded"
+    ),
+    true
+  );
+  assert.equal(
+    resources.some(
+      (resource) =>
+        resource.diagnostic === "pseudo-element background loaded" && resource.status === "loaded"
+    ),
+    true
+  );
+}
+
+async function testV3CriticalAssetFailuresPromoteSnapshotFallback() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const sourceRoot = path.join(outputRoot, "critical-asset-failures");
+
+  await mkdir(sourceRoot, { recursive: true });
+  await writeFile(
+    path.join(sourceRoot, "index.html"),
+    `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Critical Asset Failures</title>
+    <style>
+      body { margin: 0; font-family: Arial, sans-serif; }
+      .hero {
+        min-height: 320px;
+        padding: 32px;
+        color: white;
+        background-image: linear-gradient(135deg, rgba(16, 37, 66, 0.88), rgba(16, 37, 66, 0.24)), url("./assets/missing-hero.svg");
+        background-size: cover, cover;
+      }
+      .card {
+        width: 240px;
+        margin: 24px 32px;
+        padding: 16px;
+        border-radius: 20px;
+        background: #fff;
+      }
+      .card img { width: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <section class="hero"><h1>Broken hero</h1></section>
+    <article class="card"><img src="./assets/missing-card.svg" alt="Missing card asset" /></article>
+  </body>
+</html>`
+  );
+
+  const result = await withSnapshotFlagsDisabled(async () => {
+    const resolvedSource = await resolveSourceFromLocalFile(path.join(sourceRoot, "index.html"));
+    return runExportPipelineV3(resolvedSource, {
+      preferBrowser: true,
+      outputRoot
+    });
+  });
+  const resources = result.capture.inputAnalysis.diagnostics.resources;
+
+  assert.equal(
+    resources.some(
+      (resource) =>
+        resource.diagnostic === "hero background missing" &&
+        resource.status === "failed" &&
+        resource.critical === true
+    ),
+    true
+  );
+  assert.equal(
+    resources.some(
+      (resource) =>
+        resource.diagnostic === "card image missing" &&
+        resource.status === "failed" &&
+        resource.critical === true
+    ),
+    true
+  );
+  assert.equal(result.analysis.selectedMode, "snapshot");
+  assert.equal(["snapshot", "pixel-perfect"].includes(result.emittedMode), true);
+}
+
+async function testV3HtmlCapturePreservesThemeCssVariables() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Theme Variables</title>
+    <style>
+      :root {
+        --background: 222 47% 11%;
+        --foreground: 210 40% 98%;
+        --card: 224 29% 14%;
+        --accent: 43 96% 56%;
+        --border: 217 33% 22%;
+        --radius: 1rem;
+      }
+      body {
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+      }
+      .card {
+        width: 260px;
+        padding: 24px;
+        background: hsl(var(--card));
+        border: 1px solid hsl(var(--border));
+        border-radius: var(--radius);
+      }
+    </style>
+  </head>
+  <body>
+    <section class="card">Premium card</section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const bodyNode = result.capture.nodes.find((node) => node.tag === "body");
+  const cardNode = result.capture.nodes.find(
+    (node) => node.tag === "section" && node.text.includes("Premium card")
+  );
+
+  assert.ok(bodyNode);
+  assert.ok(cardNode);
+  assert.equal(bodyNode?.computedStyles["--background"], "222 47% 11%");
+  assert.equal(bodyNode?.computedStyles["--foreground"], "210 40% 98%");
+  assert.equal(cardNode?.computedStyles["--card"], "224 29% 14%");
+  assert.equal(cardNode?.computedStyles["--border"], "217 33% 22%");
+  assert.equal(cardNode?.computedStyles["--radius"], "1rem");
+}
+
+async function testV3ThemeDetectorIdentifiesDarkFixtures() {
+  const html = `<!doctype html>
+<html style="background:#020617;">
+  <head>
+    <title>Dark Theme Fixture</title>
+    <style>
+      :root {
+        --background: 222 47% 11%;
+        --foreground: 210 40% 98%;
+        --card: 224 29% 14%;
+        --border: 217 33% 22%;
+        --primary: 43 96% 56%;
+      }
+      html, body {
+        margin: 0;
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        font-family: "Space Grotesk", sans-serif;
+      }
+      main {
+        padding: 32px;
+      }
+      header, footer, .card, input, .cta {
+        border-radius: 18px;
+        border: 1px solid hsl(var(--border));
+        background: hsl(var(--card));
+        box-shadow: 0 24px 60px rgba(2, 6, 23, 0.45);
+      }
+      h1 {
+        font-size: 56px;
+      }
+      p, input {
+        font-size: 18px;
+      }
+      .stack > * + * {
+        margin-top: 40px;
+      }
+      .cta {
+        display: inline-flex;
+        padding: 14px 24px;
+        color: hsl(var(--background));
+        background: hsl(var(--primary));
+      }
+      input {
+        width: 320px;
+        padding: 14px 18px;
+        color: hsl(var(--foreground));
+      }
+    </style>
+  </head>
+  <body>
+    <main class="stack">
+      <header>Premium Header</header>
+      <section class="card">
+        <h1>Dark premium hero</h1>
+        <p>Elegant contrast with layered surfaces.</p>
+        <a class="cta" href="#buy">Buy now</a>
+      </section>
+      <section class="card"><input placeholder="Email" /></section>
+      <footer>Footer</footer>
+    </main>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+
+  assert.equal(result.capture.themeAnalysis?.detectedTheme, "dark");
+  assert.equal(result.capture.themeAnalysis?.messages.includes("dark theme detected"), true);
+  const darkBackground = parseRgbChannels(result.capture.themeAnalysis?.designTokens.globalBackground);
+  const darkCard = parseRgbChannels(result.capture.themeAnalysis?.designTokens.cardBackground);
+  const darkButton = parseRgbChannels(result.capture.themeAnalysis?.designTokens.primaryButtonColor);
+
+  assert.ok(darkBackground);
+  assert.equal((darkBackground?.r ?? 255) <= 20, true);
+  assert.equal((darkBackground?.g ?? 255) <= 30, true);
+  assert.equal((darkBackground?.b ?? 255) <= 50, true);
+  assert.ok(darkCard);
+  assert.equal((darkCard?.r ?? 255) <= 40, true);
+  assert.equal((darkCard?.g ?? 255) <= 50, true);
+  assert.equal((darkCard?.b ?? 255) <= 60, true);
+  assert.ok(darkButton);
+  assert.equal((darkButton?.r ?? 0) >= 220, true);
+  assert.equal((darkButton?.g ?? 0) >= 150, true);
+  assert.equal((darkButton?.b ?? 255) <= 60, true);
+  assert.equal(result.capture.themeAnalysis?.designTokens.fontFamily, "Space Grotesk");
+  assert.equal(result.capture.themeAnalysis?.roleCounts.cards >= 2, true);
+}
+
+async function testV3ThemeDetectorIdentifiesLightFixtures() {
+  const html = `<!doctype html>
+<html style="background:#f8fafc;">
+  <head>
+    <title>Light Theme Fixture</title>
+    <style>
+      html, body {
+        margin: 0;
+        background: #f8fafc;
+        color: #0f172a;
+        font-family: "DM Sans", sans-serif;
+      }
+      header, footer, .card {
+        background: #ffffff;
+        border: 1px solid #dbe4f0;
+        border-radius: 16px;
+        box-shadow: 0 20px 45px rgba(148, 163, 184, 0.18);
+      }
+      main {
+        padding: 32px;
+      }
+      h1 {
+        font-size: 52px;
+      }
+      p {
+        font-size: 17px;
+      }
+      .card + .card {
+        margin-top: 36px;
+      }
+      .cta {
+        display: inline-flex;
+        padding: 14px 24px;
+        color: #ffffff;
+        background: #2563eb;
+        border-radius: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>Clean Header</header>
+      <section class="card">
+        <h1>Light hero</h1>
+        <p>Bright landing page.</p>
+        <a class="cta" href="#start">Start</a>
+      </section>
+      <section class="card">Card</section>
+      <footer>Footer</footer>
+    </main>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+
+  assert.equal(result.capture.themeAnalysis?.detectedTheme, "light");
+  assert.equal(result.capture.themeAnalysis?.messages.includes("light theme detected"), true);
+  const lightBackground = parseRgbChannels(result.capture.themeAnalysis?.designTokens.globalBackground);
+  const lightCard = parseRgbChannels(result.capture.themeAnalysis?.designTokens.cardBackground);
+  const lightButton = parseRgbChannels(result.capture.themeAnalysis?.designTokens.primaryButtonColor);
+
+  assert.ok(lightBackground);
+  assert.equal((lightBackground?.r ?? 0) >= 240, true);
+  assert.equal((lightBackground?.g ?? 0) >= 245, true);
+  assert.equal((lightBackground?.b ?? 0) >= 248, true);
+  assert.ok(lightCard);
+  assert.equal((lightCard?.r ?? 0) >= 250, true);
+  assert.equal((lightCard?.g ?? 0) >= 250, true);
+  assert.equal((lightCard?.b ?? 0) >= 250, true);
+  assert.ok(lightButton);
+  assert.equal((lightButton?.r ?? 255) <= 60, true);
+  assert.equal((lightButton?.g ?? 255) <= 120, true);
+  assert.equal((lightButton?.b ?? 0) >= 200, true);
+}
+
+async function testV3ThemeAuditFailsWhenDarkSourceTurnsIntoLightClone() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Dark Source Audit</title>
+    <style>
+      html, body {
+        margin: 0;
+        background: #020617;
+        color: #f8fafc;
+      }
+      .card {
+        margin: 32px;
+        padding: 24px;
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 18px;
+      }
+      .cta {
+        display: inline-flex;
+        padding: 12px 20px;
+        color: #020617;
+        background: #f59e0b;
+        border-radius: 14px;
+      }
+      input {
+        margin-top: 20px;
+        width: 240px;
+        padding: 12px 16px;
+        background: #111827;
+        color: #f8fafc;
+        border: 1px solid #334155;
+        border-radius: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <h1>Dark source</h1>
+        <a class="cta" href="#cta">Action</a>
+        <input placeholder="Email" />
+      </section>
+    </main>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const previewHtml = `<!doctype html>
+<html>
+  <body style="margin:0;background:#ffffff;color:#111827;font-family:Arial,sans-serif;">
+    <main style="padding:32px;">
+      <section class="card" style="padding:24px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;">
+        <h1>Dark source</h1>
+        <a href="#cta" style="display:inline-flex;padding:12px 20px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:10px;">Action</a>
+        <input style="margin-top:20px;width:240px;padding:12px 16px;background:#ffffff;color:#111827;border:1px solid #d1d5db;border-radius:10px;" />
+      </section>
+    </main>
+  </body>
+</html>`;
+  const audit = auditThemeConsistency({
+    sourceThemeAnalysis: result.capture.themeAnalysis,
+    previewHtml,
+    emittedMode: "editable"
+  });
+
+  assert.ok(audit);
+  assert.equal(audit?.passed, false);
+  assert.equal(audit?.sourceTheme, "dark");
+  assert.equal(audit?.convertedTheme, "light");
+  assert.equal(audit?.messages.includes("dark theme lost"), true);
+  assert.equal(audit?.messages.includes("card background mismatch"), true);
+  assert.equal(audit?.messages.includes("default button style detected"), true);
+  assert.equal(audit?.messages.includes("default input style detected"), true);
+}
+
+async function testV3ThemeAuditFlagsGlobalBackgroundMismatchInsideDarkTheme() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Dark Source Background Audit</title>
+    <style>
+      html, body {
+        margin: 0;
+        background: #020617;
+        color: #f8fafc;
+      }
+      .card {
+        margin: 32px;
+        padding: 24px;
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <h1>Dark source</h1>
+        <p>Premium shell</p>
+      </section>
+    </main>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const previewHtml = `<!doctype html>
+<html>
+  <body style="margin:0;background:#334155;color:#f8fafc;font-family:Arial,sans-serif;">
+    <main style="padding:32px;">
+      <section class="card" style="padding:24px;background:#475569;border:1px solid #64748b;border-radius:18px;">
+        <h1>Dark source</h1>
+        <p>Premium shell</p>
+      </section>
+    </main>
+  </body>
+</html>`;
+  const audit = auditThemeConsistency({
+    sourceThemeAnalysis: result.capture.themeAnalysis,
+    previewHtml,
+    emittedMode: "editable"
+  });
+
+  assert.ok(audit);
+  assert.equal(audit?.passed, false);
+  assert.equal(audit?.sourceTheme, "dark");
+  assert.equal(audit?.convertedTheme, "dark");
+  assert.equal(audit?.messages.includes("theme mismatch"), true);
+  assert.equal(
+    audit?.issues.some(
+      (issue) => issue.type === "theme-mismatch" && /theme mismatch/i.test(issue.message)
+    ),
+    true
+  );
+  assert.equal(audit?.messages.includes("dark theme lost"), false);
+}
+
+function testV3VisualAuditFlagsDarkCloneAndWhiteCards() {
+  const fixture = createVisualAuditFixture();
+  const report = validateElementorExport({
+    capture: fixture.capture,
+    layout: fixture.layout,
+    document: fixture.document,
+    mode: "editable",
+    previewHtml: createLightClonePreviewHtml()
+  });
+
+  assert.equal(report.passed, false);
+  assert.equal(report.highestSeverity, "blocking");
+  assert.equal(
+    report.issues.some((issue) => issue.type === "body-white-on-dark" && /dark theme lost/i.test(issue.message)),
+    true
+  );
+  assert.equal(
+    report.issues.some((issue) => issue.type === "card-background-mismatch" && /card background mismatch/i.test(issue.message)),
+    true
+  );
+  assert.equal(
+    report.issues.some((issue) => issue.type === "dominant-color-mismatch" && /dominant color mismatch/i.test(issue.message)),
+    true
+  );
+}
+
+function testV3VisualAuditFlagsDefaultButtonFixture() {
+  const fixture = createVisualAuditFixture();
+  const report = validateElementorExport({
+    capture: fixture.capture,
+    layout: fixture.layout,
+    document: fixture.document,
+    mode: "editable",
+    previewHtml: createLightClonePreviewHtml()
+  });
+
+  assert.equal(
+    report.issues.some(
+      (issue) =>
+        issue.type === "default-button-style-detected" &&
+        /default button style detected/i.test(issue.message)
+    ),
+    true
+  );
+}
+
+function testV3VisualAuditFlagsDefaultInputFixture() {
+  const fixture = createVisualAuditFixture();
+  const report = validateElementorExport({
+    capture: fixture.capture,
+    layout: fixture.layout,
+    document: fixture.document,
+    mode: "editable",
+    previewHtml: createLightClonePreviewHtml()
+  });
+
+  assert.equal(
+    report.issues.some(
+      (issue) =>
+        issue.type === "default-input-style-detected" &&
+        /default input style detected/i.test(issue.message)
+    ),
+    true
+  );
+}
+
+function testV3VisualAuditFlagsHeroOverlayMissingFixture() {
+  const fixture = createVisualAuditFixture();
+  const report = validateElementorExport({
+    capture: fixture.capture,
+    layout: fixture.layout,
+    document: fixture.document,
+    mode: "editable",
+    previewHtml: createLightClonePreviewHtml()
+  });
+
+  assert.equal(
+    report.issues.some(
+      (issue) =>
+        issue.type === "hero-overlay-missing" && /hero overlay missing/i.test(issue.message)
+    ),
+    true
+  );
+  assert.equal(
+    report.issues.some(
+      (issue) =>
+        issue.type === "hero-background-missing" && /hero background missing/i.test(issue.message)
+    ),
+    true
+  );
+}
+
+function testV3VisualAuditFlagsImportantVisualAssetMessage() {
+  const fixture = createVisualAuditFixture();
+  const report = validateElementorExport({
+    capture: fixture.capture,
+    layout: fixture.layout,
+    document: fixture.document,
+    mode: "editable",
+    previewHtml: createLightClonePreviewHtml()
+  });
+
+  assert.equal(
+    report.issues.some(
+      (issue) =>
+        issue.type === "background-mismatch" &&
+        /important visual asset missing/i.test(issue.message)
+    ),
+    true
+  );
+}
+
+function testV3VisualAuditFlagsWhiteCardsFixture() {
+  const fixture = createVisualAuditFixture();
+  const report = validateElementorExport({
+    capture: fixture.capture,
+    layout: fixture.layout,
+    document: fixture.document,
+    mode: "editable",
+    previewHtml: createLightClonePreviewHtml()
+  });
+
+  assert.equal(
+    report.issues.some(
+      (issue) =>
+        issue.type === "card-background-mismatch" &&
+        /card background mismatch/i.test(issue.message)
+    ),
+    true
+  );
+}
+
+function testV3VisualAuditFlagsHeaderFooterMismatchAndPageHeightDifference() {
+  const fixture = createVisualAuditFixture();
+  fixture.capture.summary.sections = 3;
+  fixture.capture.themeAnalysis = {
+    ...fixture.capture.themeAnalysis!,
+    roleCounts: {
+      ...fixture.capture.themeAnalysis!.roleCounts,
+      headers: 1,
+      footers: 1,
+      sections: 3
+    }
+  };
+  fixture.layout.sectionIds = ["header-shell", "hero-section", "footer-shell"];
+  fixture.layout.semanticIndex = {
+    ...fixture.layout.semanticIndex,
+    header: ["header-shell"],
+    footer: ["footer-shell"]
+  };
+  fixture.layout.nodes.unshift({
+    id: "header-shell",
+    tag: "header",
+    kind: "section",
+    parentId: "page",
+    children: ["header-title"],
+    box: {
+      x: 0,
+      y: 0,
+      width: 1200,
+      height: 96
+    },
+    visualOrder: -1,
+    layout: {},
+    spacing: {},
+    style: {
+      backgroundColor: "#020617"
+    },
+    content: {},
+    flags: {},
+    detection: {
+      semanticRole: "header",
+      confidence: 0.97
+    },
+    responsive: {}
+  });
+  fixture.layout.nodes.push(
+    {
+      id: "footer-shell",
+      tag: "footer",
+      kind: "section",
+      parentId: "page",
+      children: ["footer-text"],
+      box: {
+        x: 0,
+        y: 980,
+        width: 1200,
+        height: 160
+      },
+      visualOrder: 10,
+      layout: {},
+      spacing: {},
+      style: {
+        backgroundColor: "#020617"
+      },
+      content: {},
+      flags: {},
+      detection: {
+        semanticRole: "footer",
+        confidence: 0.96
+      },
+      responsive: {}
+    },
+    {
+      id: "footer-text",
+      tag: "p",
+      kind: "text",
+      parentId: "footer-shell",
+      children: [],
+      box: {
+        x: 48,
+        y: 1036,
+        width: 320,
+        height: 24
+      },
+      visualOrder: 11,
+      layout: {},
+      spacing: {},
+      style: {
+        color: "#f8fafc"
+      },
+      content: {
+        text: "Premium footer"
+      },
+      flags: {},
+      responsive: {}
+    }
+  );
+  fixture.layout.detectedSections = [
+    {
+      id: "header-shell",
+      type: "header",
+      confidence: 0.97,
+      childIds: ["header-title"],
+      anchors: [],
+      contains: ["header"]
+    },
+    ...fixture.layout.detectedSections,
+    {
+      id: "footer-shell",
+      type: "footer",
+      confidence: 0.96,
+      childIds: ["footer-text"],
+      anchors: [],
+      contains: ["footer"]
+    }
+  ];
+  fixture.document.content.unshift({
+    id: "header-shell-container",
+    elType: "container",
+    settings: {
+      converter_v3_source_node_id: "header-shell"
+    },
+    elements: [
+      {
+        id: "header-title-widget",
+        elType: "widget",
+        widgetType: "heading",
+        settings: {
+          converter_v3_source_node_id: "header-title",
+          title: "Header"
+        },
+        elements: []
+      }
+    ]
+  } as (typeof fixture.document.content)[number]);
+
+  const report = validateElementorExport({
+    capture: fixture.capture,
+    layout: fixture.layout,
+    document: fixture.document,
+    mode: "editable",
+    previewHtml: createLightClonePreviewHtml()
+  });
+
+  assert.equal(
+    report.issues.some(
+      (issue) =>
+        issue.type === "header-footer-background-mismatch" &&
+        /header\/footer background mismatch/i.test(issue.message)
+    ),
+    true
+  );
+  assert.equal(
+    report.issues.some(
+      (issue) => issue.type === "height-mismatch" && /page height mismatch/i.test(issue.message)
+    ),
+    true
+  );
+}
+
+function testV3VisualClonePolicyPromotesHighRiskLovableLayouts() {
+  const box = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: 1200,
+    bottom: 420,
+    left: 0,
+    width: 1200,
+    height: 420,
+    centerX: 600,
+    centerY: 210
+  };
+  const capture = createMockCapture({
+    sourceKind: "lovable-react-source",
+    inputAnalysis: createMockInputAnalysis({
+      layoutTypes: ["lovable-export", "tailwind", "react-runtime", "scripted"],
+      frameworkHints: ["lovable", "tailwind", "react"],
+      structure: {
+        heroSections: 1,
+        cards: 2,
+        buttons: 2,
+        images: 3,
+        backgrounds: 3,
+        forms: 1,
+        absoluteFixedSticky: 6,
+        zIndexNodes: 7,
+        transformedElements: 4,
+        outOfFlowElements: 9
+      } as InputPageAnalysis["structure"],
+      renderStrategy: {
+        requiresBrowserRender: true,
+        preferVisualSnapshot: true,
+        preferFullPageSnapshot: false,
+        safeSectionExtraction: false,
+        reasons: ["High risk Lovable visual policy test."]
+      }
+    }),
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.018,
+      dominantContrast: 14.8,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: "rgb(2, 6, 23)",
+        foreground: "rgb(248, 250, 252)",
+        cardBackground: "rgb(15, 23, 42)",
+        primaryButtonColor: "rgb(56, 189, 248)",
+        borderColor: "rgb(51, 65, 85)",
+        radius: "18px",
+        shadow: "0 20px 80px rgba(15, 23, 42, 0.45)"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: true,
+        hasStyledInputs: true,
+        hasElevatedCards: true
+      },
+      roleCounts: {
+        cards: 2,
+        buttons: 2,
+        inputs: 1,
+        headers: 1,
+        footers: 1,
+        sections: 2
+      },
+      messages: ["dark theme detected"]
+    },
+    nodes: [
+      {
+        id: "hero-section",
+        tag: "section",
+        text: "",
+        attributes: {
+          class:
+            "relative grid grid-cols-2 overflow-hidden rounded-3xl bg-background text-foreground"
+        },
+        parentId: "page",
+        childIds: ["hero-overlay", "hero-card", "cta-button", "email-input"],
+        computedStyles: {
+          position: "relative",
+          "background-color": "rgb(2, 6, 23)",
+          "background-image":
+            "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(37, 99, 235, 0.72)), url(hero-visual.png)",
+          "z-index": "0"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 0,
+        isVisible: true,
+        asset: {
+          backgroundImage:
+            "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(37, 99, 235, 0.72)), url(hero-visual.png)",
+          backgroundUrls: ["hero-visual.png"],
+          backgroundLayers: [
+            {
+              index: 0,
+              type: "gradient",
+              value: "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(37, 99, 235, 0.72))"
+            },
+            {
+              index: 1,
+              type: "image",
+              value: "url(hero-visual.png)",
+              url: "hero-visual.png"
+            }
+          ],
+          hasGradientBackground: true
+        },
+        pseudoElements: [
+          {
+            pseudo: "::before",
+            content: "\"\"",
+            computedStyles: {
+              "background-image": "linear-gradient(180deg, rgba(15,23,42,0.2), rgba(15,23,42,0.92))",
+              "background-color": "transparent"
+            },
+            box: null,
+            isVisible: true,
+            asset: {
+              backgroundImage:
+                "linear-gradient(180deg, rgba(15,23,42,0.2), rgba(15,23,42,0.92))",
+              hasGradientBackground: true,
+              backgroundLayers: [
+                {
+                  index: 0,
+                  type: "gradient",
+                  value: "linear-gradient(180deg, rgba(15,23,42,0.2), rgba(15,23,42,0.92))"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        id: "hero-overlay",
+        tag: "div",
+        text: "",
+        attributes: {
+          class:
+            "absolute inset-0 z-20 bg-background text-foreground backdrop-blur-xl data-[state=open]:opacity-100"
+        },
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          position: "absolute",
+          "background-color": "rgba(15, 23, 42, 0.45)",
+          "backdrop-filter": "blur(20px)",
+          "z-index": "20"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-card",
+        tag: "article",
+        text: "",
+        attributes: {
+          class: "rounded-3xl border border-border bg-background shadow-2xl"
+        },
+        parentId: "hero-section",
+        childIds: ["hero-card-image"],
+        computedStyles: {
+          "background-color": "rgb(15, 23, 42)",
+          "border-radius": "24px",
+          "box-shadow": "0 24px 64px rgba(15, 23, 42, 0.35)"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 2,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-card-image",
+        tag: "img",
+        text: "",
+        attributes: {
+          alt: "Feature card image"
+        },
+        parentId: "hero-card",
+        childIds: [],
+        computedStyles: {},
+        box,
+        viewportStates: {},
+        visualOrder: 3,
+        isVisible: true,
+        asset: {
+          src: "card-visual.png"
+        }
+      },
+      {
+        id: "cta-button",
+        tag: "a",
+        text: "Start now",
+        attributes: {
+          href: "#start",
+          class: "inline-flex rounded-full bg-sky-400 px-6 py-3 font-semibold shadow-xl"
+        },
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          "background-color": "rgb(56, 189, 248)",
+          "border-radius": "999px",
+          "box-shadow": "0 18px 40px rgba(56, 189, 248, 0.35)"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 4,
+        isVisible: true,
+        asset: {
+          href: "#start"
+        }
+      },
+      {
+        id: "email-input",
+        tag: "input",
+        text: "",
+        attributes: {
+          type: "email",
+          class: "rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100"
+        },
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          "background-color": "rgb(15, 23, 42)",
+          "border-radius": "14px",
+          "box-shadow": "0 12px 24px rgba(15, 23, 42, 0.22)"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 5,
+        isVisible: true,
+        asset: {}
+      }
+    ],
+    summary: {
+      totalNodes: 6,
+      visibleNodes: 6,
+      links: 1,
+      images: 2,
+      buttons: 2,
+      textBlocks: 2,
+      visualContainers: 3,
+      geometryGroups: 2,
+      sections: 1
+    }
+  });
+  const layout: LayoutDocument = {
+    id: "visual-policy-risk-layout",
+    title: "High Risk Lovable Layout",
+    sourceKind: "lovable-react-source",
+    rootNodeId: "page",
+    nodeCount: 6,
+    sectionIds: ["hero-section"],
+    semanticIndex: {
+      hero: ["hero-section"],
+      card: ["hero-card"],
+      button: ["cta-button"],
+      image: ["hero-card-image"]
+    },
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: ["hero-overlay", "hero-card", "cta-button", "email-input"],
+        anchors: [],
+        contains: ["hero", "card", "button", "image", "overlay"]
+      }
+    ],
+    nodes: [
+      {
+        id: "hero-section",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["hero-overlay", "hero-card", "cta-button", "email-input"],
+        box: {
+          x: 0,
+          y: 0,
+          width: 1200,
+          height: 420
+        },
+        visualOrder: 0,
+        layout: {
+          display: "grid",
+          gridTemplateColumns: "1.1fr 0.9fr"
+        },
+        spacing: {},
+        style: {
+          backgroundColor: "rgb(2, 6, 23)",
+          backgroundImage:
+            "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(37, 99, 235, 0.72)), url(hero-visual.png)"
+        },
+        content: {},
+        flags: {},
+        visual: {
+          layer: "background",
+          effectiveZIndex: 0
+        },
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.99,
+          containsInteractive: true,
+          containsMedia: true
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-overlay",
+        tag: "div",
+        kind: "container",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 0,
+          y: 0,
+          width: 1200,
+          height: 420
+        },
+        visualOrder: 1,
+        layout: {
+          position: "absolute"
+        },
+        spacing: {},
+        style: {
+          backgroundColor: "rgba(15, 23, 42, 0.45)",
+          zIndex: "20"
+        },
+        content: {},
+        flags: {
+          decorative: true
+        },
+        visual: {
+          layer: "overlay",
+          effectiveZIndex: 20,
+          overlapCount: 1
+        },
+        detection: {
+          semanticRole: "overlay",
+          confidence: 0.98
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-card",
+        tag: "article",
+        kind: "container",
+        parentId: "hero-section",
+        children: ["hero-card-image"],
+        box: {
+          x: 780,
+          y: 60,
+          width: 320,
+          height: 240
+        },
+        visualOrder: 2,
+        layout: {
+          display: "block"
+        },
+        spacing: {},
+        style: {
+          backgroundColor: "rgb(15, 23, 42)",
+          borderRadius: "24px",
+          boxShadow: "0 24px 64px rgba(15, 23, 42, 0.35)"
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "card",
+          confidence: 0.97,
+          containsMedia: true
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-card-image",
+        tag: "img",
+        kind: "image",
+        parentId: "hero-card",
+        children: [],
+        box: {
+          x: 820,
+          y: 96,
+          width: 240,
+          height: 160
+        },
+        visualOrder: 3,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {
+          src: "card-visual.png"
+        },
+        flags: {},
+        detection: {
+          semanticRole: "image",
+          confidence: 0.96
+        },
+        responsive: {}
+      },
+      {
+        id: "cta-button",
+        tag: "a",
+        kind: "button",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 120,
+          y: 300,
+          width: 180,
+          height: 48
+        },
+        visualOrder: 4,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "rgb(56, 189, 248)",
+          borderRadius: "999px",
+          boxShadow: "0 18px 40px rgba(56, 189, 248, 0.35)"
+        },
+        content: {
+          href: "#start"
+        },
+        flags: {},
+        detection: {
+          semanticRole: "button",
+          confidence: 0.95
+        },
+        responsive: {}
+      },
+      {
+        id: "email-input",
+        tag: "input",
+        kind: "container",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 120,
+          y: 360,
+          width: 260,
+          height: 48
+        },
+        visualOrder: 5,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "rgb(15, 23, 42)",
+          borderRadius: "14px",
+          boxShadow: "0 12px 24px rgba(15, 23, 42, 0.22)"
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "section",
+          confidence: 0.8
+        },
+        responsive: {}
+      }
+    ]
+  };
+
+  const risk = assessVisualCloneRisk(capture, layout);
+
+  assert.equal(risk.highRisk, true);
+  assert.equal(risk.preferSnapshot, true);
+  assert.equal(risk.preferFullPageSnapshot, true);
+  assert.equal(risk.reasons.includes(VISUAL_REASON_HIGH_RISK), true);
+  assert.equal(risk.reasons.includes(VISUAL_REASON_DARK_THEME), true);
+  assert.equal(risk.reasons.includes(VISUAL_REASON_HERO_BACKGROUND), true);
+  assert.equal(risk.signals.gradientNodes >= 1, true);
+  assert.equal(risk.signals.overlayNodes >= 1, true);
+  assert.equal(risk.signals.backgroundImageNodes >= 1, true);
+  assert.equal(risk.signals.cardMediaNodes >= 1, true);
+  assert.equal(risk.signals.shadcnPatternNodes >= 1, true);
+  assert.equal(risk.signals.tailwindUtilityNodes >= 1, true);
+  assert.equal(risk.signals.backdropBlurNodes >= 1, true);
+  assert.equal(risk.signals.highZIndexNodes >= 1, true);
+  assert.equal(risk.signals.pseudoVisualNodes >= 1, true);
+  assert.equal(risk.signals.styledButtons >= 1, true);
+  assert.equal(risk.signals.styledInputs >= 1, true);
+}
+
+function testV3VisualClonePolicyPromotesHighRiskDarkGenericLayouts() {
+  const box = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: 1200,
+    bottom: 420,
+    left: 0,
+    width: 1200,
+    height: 420,
+    centerX: 600,
+    centerY: 210
+  };
+  const capture = createMockCapture({
+    sourceKind: "raw-html",
+    inputAnalysis: createMockInputAnalysis({
+      layoutTypes: ["static-html", "tailwind"],
+      frameworkHints: ["tailwind"],
+      diagnostics: {
+        htmlRendered: true,
+        rendererUsed: "browser"
+      } as InputPageAnalysis["diagnostics"],
+      structure: {
+        heroSections: 1,
+        cards: 2,
+        buttons: 2,
+        backgrounds: 2,
+        forms: 1,
+        absoluteFixedSticky: 4,
+        zIndexNodes: 4,
+        transformedElements: 2,
+        outOfFlowElements: 6
+      } as InputPageAnalysis["structure"],
+      renderStrategy: {
+        requiresBrowserRender: true,
+        preferVisualSnapshot: false,
+        preferFullPageSnapshot: false,
+        safeSectionExtraction: false,
+        reasons: ["High risk generic dark visual policy test."]
+      }
+    }),
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.018,
+      dominantContrast: 14.8,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: "rgb(2, 6, 23)",
+        foreground: "rgb(248, 250, 252)",
+        cardBackground: "rgb(15, 23, 42)"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: true,
+        hasStyledInputs: true,
+        hasElevatedCards: true
+      },
+      roleCounts: {
+        cards: 2,
+        buttons: 2,
+        inputs: 1,
+        headers: 0,
+        footers: 0,
+        sections: 1
+      },
+      messages: ["dark theme detected"]
+    },
+    nodes: [
+      {
+        id: "hero-section",
+        tag: "section",
+        text: "",
+        attributes: {
+          class: "relative grid rounded-3xl bg-slate-950 text-slate-100"
+        },
+        parentId: "page",
+        childIds: ["hero-overlay", "cta-button", "email-input"],
+        computedStyles: {
+          position: "relative",
+          "background-color": "rgb(2, 6, 23)",
+          "background-image":
+            "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(37, 99, 235, 0.72)), url(hero-visual.png)"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 0,
+        isVisible: true,
+        asset: {
+          backgroundImage:
+            "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(37, 99, 235, 0.72)), url(hero-visual.png)",
+          backgroundUrls: ["hero-visual.png"],
+          hasGradientBackground: true
+        },
+        pseudoElements: [
+          {
+            pseudo: "::before",
+            content: "\"\"",
+            computedStyles: {
+              "background-image": "linear-gradient(180deg, rgba(15,23,42,0.2), rgba(15,23,42,0.92))"
+            },
+            box: null,
+            isVisible: true,
+            asset: {
+              hasGradientBackground: true
+            }
+          }
+        ]
+      },
+      {
+        id: "hero-overlay",
+        tag: "div",
+        text: "",
+        attributes: {
+          class: "absolute inset-0 z-20 backdrop-blur-xl"
+        },
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          position: "absolute",
+          "background-color": "rgba(15, 23, 42, 0.45)",
+          "backdrop-filter": "blur(20px)",
+          "z-index": "20"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "cta-button",
+        tag: "a",
+        text: "Start now",
+        attributes: {
+          href: "#start",
+          class: "inline-flex rounded-full bg-sky-400 px-6 py-3 font-semibold shadow-xl"
+        },
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          "background-color": "rgb(56, 189, 248)",
+          "border-radius": "999px",
+          "box-shadow": "0 18px 40px rgba(56, 189, 248, 0.35)"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 2,
+        isVisible: true,
+        asset: {
+          href: "#start"
+        }
+      },
+      {
+        id: "email-input",
+        tag: "input",
+        text: "",
+        attributes: {
+          type: "email",
+          class: "rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 text-slate-100"
+        },
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          "background-color": "rgb(15, 23, 42)",
+          "border-radius": "14px",
+          "box-shadow": "0 12px 24px rgba(15, 23, 42, 0.22)"
+        },
+        box,
+        viewportStates: {},
+        visualOrder: 3,
+        isVisible: true,
+        asset: {}
+      }
+    ]
+  });
+  const layout: LayoutDocument = {
+    id: "visual-policy-risk-generic-layout",
+    title: "High Risk Generic Dark Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 4,
+    sectionIds: ["hero-section"],
+    semanticIndex: {
+      hero: ["hero-section"]
+    },
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: ["hero-overlay", "cta-button", "email-input"],
+        anchors: [],
+        contains: ["hero", "button", "overlay"]
+      }
+    ],
+    nodes: [
+      {
+        id: "hero-section",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["hero-overlay", "cta-button", "email-input"],
+        box: {
+          x: 0,
+          y: 0,
+          width: 1200,
+          height: 420
+        },
+        visualOrder: 0,
+        layout: {
+          display: "grid"
+        },
+        spacing: {},
+        style: {
+          backgroundColor: "rgb(2, 6, 23)",
+          backgroundImage:
+            "linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(37, 99, 235, 0.72)), url(hero-visual.png)"
+        },
+        content: {},
+        flags: {},
+        visual: {
+          layer: "background",
+          effectiveZIndex: 0
+        },
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.99,
+          containsInteractive: true
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-overlay",
+        tag: "div",
+        kind: "container",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 0,
+          y: 0,
+          width: 1200,
+          height: 420
+        },
+        visualOrder: 1,
+        layout: {
+          position: "absolute"
+        },
+        spacing: {},
+        style: {
+          backgroundColor: "rgba(15, 23, 42, 0.45)",
+          zIndex: "20"
+        },
+        content: {},
+        flags: {
+          decorative: true
+        },
+        visual: {
+          layer: "overlay",
+          effectiveZIndex: 20,
+          overlapCount: 1
+        },
+        detection: {
+          semanticRole: "overlay",
+          confidence: 0.98
+        },
+        responsive: {}
+      },
+      {
+        id: "cta-button",
+        tag: "a",
+        kind: "button",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 48,
+          y: 280,
+          width: 180,
+          height: 52
+        },
+        visualOrder: 2,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "rgb(56, 189, 248)",
+          borderRadius: "999px",
+          boxShadow: "0 18px 40px rgba(56, 189, 248, 0.35)"
+        },
+        content: {
+          text: "Start now",
+          href: "#start"
+        },
+        flags: {},
+        detection: {
+          semanticRole: "button",
+          confidence: 0.96
+        },
+        responsive: {}
+      },
+      {
+        id: "email-input",
+        tag: "input",
+        kind: "container",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 260,
+          y: 280,
+          width: 280,
+          height: 52
+        },
+        visualOrder: 3,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "rgb(15, 23, 42)",
+          borderRadius: "14px",
+          boxShadow: "0 12px 24px rgba(15, 23, 42, 0.22)"
+        },
+        content: {},
+        flags: {},
+        responsive: {}
+      }
+    ]
+  };
+
+  assert.equal(shouldPreferUniversalVisualSnapshot(capture, layout), true);
+  assert.equal(shouldForceUniversalFullPageSnapshot(capture, layout), true);
+}
+
+async function testV3LovableLikeSitesKeepEditableWhenVisualRiskIsLow() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-lovable-low-risk");
+  const result = await withSnapshotFlagsDisabled(() =>
+    runExportPipelineV3FromHtml(
+      `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="generator" content="Lovable" />
+    <title>Low Risk Lovable</title>
+    <style>
+      html, body { margin: 0; background: #ffffff; color: #111827; font-family: Arial, sans-serif; }
+      section { padding: 48px 24px; }
+      a { display: inline-block; padding: 12px 18px; background: #2563eb; color: #ffffff; border-radius: 8px; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <section>
+      <h1>Simple editable page</h1>
+      <p>This Lovable export should stay editable when visual risk is low.</p>
+      <a href="#learn">Learn more</a>
+    </section>
+  </body>
+</html>`,
+      {
+        preferBrowser: true,
+        outputRoot
+      }
+    )
+  );
+
+  assert.notEqual(result.analysis.selectedMode, "snapshot");
+  assert.notEqual(result.report.selectedMode, "snapshot");
+  assert.equal(result.report.selectionReasons?.includes(VISUAL_REASON_HIGH_RISK) ?? false, false);
+}
+
+async function testV3ServerRenderedDarkHighRiskPagesJumpToPixelPerfect() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-server-dark-high-risk");
+  const result = await withSnapshotFlagsDisabled(() =>
+    runExportPipelineV3FromHtml(
+      `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Server Dark High Risk</title>
+    <style>
+      html, body {
+        margin: 0;
+        background: #020617;
+        color: #e2e8f0;
+        font-family: Arial, sans-serif;
+      }
+      .hero {
+        min-height: 100vh;
+        padding: 48px;
+        background:
+          radial-gradient(circle at top right, rgba(56, 189, 248, 0.34), transparent 35%),
+          linear-gradient(145deg, #0f172a, #111827 55%, #1d4ed8);
+      }
+      .cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 50px;
+        padding: 0 24px;
+        border-radius: 999px;
+        background: #f8fafc;
+        color: #0f172a;
+        text-decoration: none;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.35);
+      }
+      .email {
+        display: block;
+        margin-top: 18px;
+        width: 320px;
+        min-height: 50px;
+        padding: 0 18px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background: #0f172a;
+        color: #e2e8f0;
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.22);
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 20px;
+        margin-top: 28px;
+      }
+      .card {
+        padding: 24px;
+        border-radius: 24px;
+        background: rgba(15, 23, 42, 0.92);
+        box-shadow: 0 24px 64px rgba(15, 23, 42, 0.35);
+      }
+    </style>
+  </head>
+  <body>
+    <section class="hero">
+      <h1>Dark premium hero</h1>
+      <p>This page should not be accepted as a white generic structural clone.</p>
+      <a class="cta" href="#start">Start now</a>
+      <input class="email" type="email" placeholder="Email" />
+      <div class="cards">
+        <article class="card"><h2>Card one</h2></article>
+        <article class="card"><h2>Card two</h2></article>
+        <article class="card"><h2>Card three</h2></article>
+      </div>
+    </section>
+  </body>
+</html>`,
+      {
+        preferBrowser: false,
+        outputRoot
+      }
+    )
+  );
+
+  assert.equal(result.capture.renderer, "server");
+  assert.equal(result.analysis.selectedMode, "pixel-perfect");
+  assert.equal(result.emittedMode, "pixel-perfect");
+  assert.equal(
+    result.elementorDocument.content[0]?.settings?.background_color,
+    "rgb(2, 6, 23)"
+  );
+  assert.match(
+    String(
+      result.elementorDocument.content[0]?.elements?.[0]?.elements?.[0]?.settings?.html ?? ""
+    ),
+    /background:rgb\(2,\s*6,\s*23\)|background-color:rgb\(2,\s*6,\s*23\)/i
+  );
+  assert.match(result.report.warnings.join(" "), /pixel-perfect/i);
+}
+
+async function testV3ServerFallbackResolvesStylesheetDrivenDarkShell() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-server-stylesheet-dark-shell");
+  const result = await withSnapshotFlagsDisabled(() =>
+    runExportPipelineV3FromHtml(
+      `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Server Stylesheet Dark Shell</title>
+    <style>
+      :root {
+        --background: 222.2 47.4% 11.2%;
+        --foreground: 210 40% 98%;
+        --card: 222.2 47.4% 15%;
+        --card-foreground: 210 40% 98%;
+        --primary: 211 100% 50%;
+        --primary-foreground: 210 40% 98%;
+      }
+      html, body {
+        margin: 0;
+        background-color: hsl(var(--background));
+        color: hsl(var(--foreground));
+        font-family: Arial, sans-serif;
+      }
+      .hero {
+        min-height: 100vh;
+        padding: 48px;
+        background:
+          radial-gradient(circle at top right, rgba(96, 165, 250, 0.28), transparent 36%),
+          linear-gradient(145deg, hsl(var(--background)), #020617 55%, #0f172a);
+      }
+      .card {
+        margin-top: 24px;
+        padding: 24px;
+        border-radius: 24px;
+        background-color: hsl(var(--card));
+        color: hsl(var(--card-foreground));
+        box-shadow: 0 24px 64px rgba(15, 23, 42, 0.35);
+      }
+      .cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 48px;
+        padding: 0 22px;
+        border-radius: 999px;
+        background-color: hsl(var(--primary));
+        color: hsl(var(--primary-foreground));
+      }
+      .search {
+        display: block;
+        width: 320px;
+        min-height: 48px;
+        margin-top: 18px;
+        padding: 0 18px;
+        border-radius: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.28);
+        background-color: rgba(15, 23, 42, 0.88);
+        color: hsl(var(--foreground));
+      }
+    </style>
+  </head>
+  <body>
+    <section class="hero">
+      <h1>Dark token hero</h1>
+      <a class="cta" href="#start">Start</a>
+      <input class="search" type="search" placeholder="Search" />
+      <article class="card">
+        <h2>Premium card</h2>
+        <p>Dark shell should survive server-side capture.</p>
+      </article>
+    </section>
+  </body>
+</html>`,
+      {
+        preferBrowser: false,
+        outputRoot
+      }
+    )
+  );
+
+  const bodyNode = result.capture.nodes.find((node) => node.tag === "body");
+
+  assert.ok(bodyNode);
+  assert.equal(result.capture.renderer, "server");
+  assert.ok(result.capture.themeAnalysis);
+  assert.equal(bodyNode.computedStyles["--background"], "222.2 47.4% 11.2%");
+  assert.ok(bodyNode.computedStyles["background-color"]);
+  assert.equal(bodyNode.computedStyles["background-color"].includes("var("), false);
+  assert.equal(result.capture.themeAnalysis.detectedTheme, "dark");
+  assert.equal(result.capture.themeAnalysis.styleSignals?.hasStrongDarkTheme, true);
+  assert.equal(result.analysis.selectedMode, "pixel-perfect");
+  assert.equal(result.emittedMode, "pixel-perfect");
+  assert.equal(
+    result.elementorDocument.content[0]?.settings?.background_color,
+    "hsl(222.2 47.4% 11.2%)"
+  );
 }
 
 async function testV3ZipResolver() {
@@ -4758,6 +7534,1355 @@ function testResponsivePresetDetectionHelper() {
   assert.equal(detectContainerPreset(parent, layoutById, "desktop"), "pricing-cards");
 }
 
+async function testV3EditablePreservesStyledButtonVisuals() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Styled Button Preservation</title>
+  </head>
+  <body>
+    <section style="padding:32px;background:#fff7ed;">
+      <a
+        href="#cta"
+        style="display:inline-flex;align-items:center;justify-content:center;padding:16px 28px;border-radius:999px;background:#e11d48;color:#f8fafc;border:1px solid rgba(255,255,255,.22);box-shadow:0 18px 40px rgba(225,29,72,.35);text-decoration:none;"
+      >
+        Comecar agora
+      </a>
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const editableResult = createEditableElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "editable"
+  });
+  const button = findFirstWidget(editableResult.document, "button");
+  const previewHtml = buildConvertedPreviewHtml({
+    capture: captureResult.capture,
+    document: editableResult.document
+  });
+
+  assert.ok(button);
+  assert.match(
+    String(button?.settings?.converter_v3_inline_style ?? ""),
+    /padding:16px 28px/i
+  );
+  assert.match(
+    String(button?.settings?.converter_v3_inline_style ?? ""),
+    /box-shadow:/i
+  );
+  assert.match(
+    String(button?.settings?.background_color ?? ""),
+    /(225,\s*29,\s*72|#e11d48)/i
+  );
+  assert.match(
+    String(button?.settings?.button_text_color ?? button?.settings?.color ?? ""),
+    /(248,\s*250,\s*252|#f8fafc)/i
+  );
+  assert.match(previewHtml, /225,\s*29,\s*72/i);
+  assert.match(previewHtml, /padding:16px 28px/i);
+  assert.equal(previewHtml.includes("background:#111"), false);
+}
+
+async function testV3EditablePreservesStyledInputAsHtml() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Styled Input Preservation</title>
+  </head>
+  <body>
+    <section style="padding:32px;background:#020617;color:#f8fafc;">
+      <input
+        type="search"
+        placeholder="Pesquisar"
+        value=""
+        style="display:block;width:280px;padding:14px 18px;border-radius:999px;background:#0f172a;color:#f8fafc;border:1px solid #334155;box-shadow:0 18px 40px rgba(15,23,42,.22);"
+      />
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const editableResult = createEditableElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "editable"
+  });
+  const htmlWidget = findFirstWidget(editableResult.document, "html");
+  const preservedHtml = String(htmlWidget?.settings?.html ?? "");
+
+  assert.ok(htmlWidget);
+  assert.match(preservedHtml, /<input/i);
+  assert.match(preservedHtml, /padding:14px 18px/i);
+  assert.match(preservedHtml, /border-radius:999px/i);
+  assert.match(preservedHtml, /box-shadow:/i);
+  assert.match(preservedHtml, /(15,\s*23,\s*42|#0f172a)/i);
+}
+
+async function testV3EditablePreservesDarkCardShell() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Dark Card Preservation</title>
+  </head>
+  <body>
+    <section style="padding:32px;background:#020617;">
+      <article
+        style="padding:24px;border-radius:24px;background:#111827;color:#f8fafc;box-shadow:0 24px 60px rgba(15,23,42,.35);"
+      >
+        <h3>Dark card</h3>
+        <p>O shell visual nao pode virar container neutro.</p>
+      </article>
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const editableResult = createEditableElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "editable"
+  });
+  const cardNode = captureResult.layout.nodes.find((node) => node.tag === "article");
+  const cardElement = flattenElementTree(editableResult.document.content).find(
+    (element) => element.settings?.converter_v3_source_node_id === cardNode?.id
+  );
+  const padding = cardElement?.settings?._padding as
+    | {
+        top?: number;
+        right?: number;
+        bottom?: number;
+        left?: number;
+      }
+    | undefined;
+
+  assert.ok(cardNode);
+  assert.ok(cardElement);
+  assert.match(
+    String(cardElement?.settings?.background_color ?? cardElement?.settings?._background_color ?? ""),
+    /(17,\s*24,\s*39|#111827)/i
+  );
+  assert.equal(cardElement?.settings?.border_radius, "24px");
+  assert.match(String(cardElement?.settings?.box_shadow ?? ""), /0 24px 60px/i);
+  assert.equal(padding?.top, 24);
+  assert.equal(padding?.right, 24);
+}
+
+async function testV3EditablePreservesHeroBackgroundAndOverlay() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Hero Overlay Preservation</title>
+  </head>
+  <body>
+    <section
+      style="position:relative;overflow:hidden;min-height:420px;padding:56px;background:linear-gradient(135deg, #0f172a 0%, #1d4ed8 100%);color:#f8fafc;"
+    >
+      <div
+        aria-hidden="true"
+        style="position:absolute;inset:0;background:rgba(15,23,42,.55);"
+      ></div>
+      <div style="position:relative;z-index:2;max-width:480px;">
+        <h1>Hero preservado</h1>
+        <p>Altura, contraste e overlay nao podem sumir.</p>
+        <a href="#hero-cta" style="display:inline-flex;padding:14px 24px;border-radius:999px;background:#f8fafc;color:#0f172a;text-decoration:none;">Ver mais</a>
+      </div>
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const editableResult = createEditableElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "editable"
+  });
+  const heroNode = captureResult.layout.nodes.find((node) => node.tag === "section");
+  const htmlWidget = findFirstWidget(editableResult.document, "html");
+  const preservedHtml = String(htmlWidget?.settings?.html ?? "");
+
+  assert.ok(heroNode);
+  assert.ok(editableResult.usedHtmlFallbackNodeIds.includes(heroNode.id));
+  assert.ok(htmlWidget);
+  assert.match(preservedHtml, /linear-gradient/i);
+  assert.match(preservedHtml, /min-height:420px/i);
+  assert.match(preservedHtml, /position:absolute/i);
+  assert.match(
+    preservedHtml,
+    /(background-color|background):rgba\(15,\s*23,\s*42,\s*(?:0?\.)?55\)/i
+  );
+}
+
+async function testV3EditablePreservesDarkFooterShell() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Dark Footer Preservation</title>
+  </head>
+  <body>
+    <section style="min-height:240px;padding:32px;">Conteudo</section>
+    <footer
+      style="display:flex;justify-content:space-between;align-items:center;padding:28px 32px;background:#020617;color:#e2e8f0;"
+    >
+      <span>Footer dark</span>
+      <a href="#contact" style="color:#f8fafc;text-decoration:none;">Contato</a>
+    </footer>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const editableResult = createEditableElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "editable"
+  });
+  const footerNode = captureResult.layout.nodes.find((node) => node.tag === "footer");
+  const footerElement = flattenElementTree(editableResult.document.content).find(
+    (element) => element.settings?.converter_v3_source_node_id === footerNode?.id
+  );
+
+  assert.ok(footerNode);
+  assert.ok(footerElement);
+  assert.match(
+    String(footerElement?.settings?.background_color ?? footerElement?.settings?._background_color ?? ""),
+    /(2,\s*6,\s*23|#020617)/i
+  );
+  assert.equal(footerElement?.settings?.justify_content, "space-between");
+  assert.equal(footerElement?.settings?.align_items, "center");
+}
+
+function testV3EditableWrapsGlobalPageShellWhenOnlyBodyCarriesDarkTheme() {
+  const width = 1280;
+  const height = 720;
+  const capture = createMockCapture({
+    id: "editable-page-shell",
+    title: "Editable Page Shell",
+    renderedHtml:
+      '<html><body style="margin:0;background:rgb(2, 6, 23);color:rgb(248, 250, 252);font-family:Space Grotesk,sans-serif;"><main><section data-capture-id="hero-section"><h1 data-capture-id="hero-title">Dark shell</h1></section></main></body></html>',
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.018,
+      dominantContrast: 15.2,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: "rgb(2, 6, 23)",
+        foreground: "rgb(248, 250, 252)",
+        fontFamily: "Space Grotesk"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: false,
+        hasStyledInputs: false,
+        hasElevatedCards: false
+      },
+      roleCounts: {
+        cards: 0,
+        buttons: 0,
+        inputs: 0,
+        headers: 0,
+        footers: 0,
+        sections: 1
+      },
+      messages: ["dark theme detected"]
+    },
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height
+      }
+    ],
+    nodes: [
+      {
+        id: "page",
+        tag: "main",
+        text: "",
+        attributes: {},
+        parentId: null,
+        childIds: ["hero-section"],
+        computedStyles: {},
+        box: {
+          x: 0,
+          y: 0,
+          top: 0,
+          right: width,
+          bottom: height,
+          left: 0,
+          width,
+          height,
+          centerX: width / 2,
+          centerY: height / 2
+        },
+        viewportStates: {},
+        visualOrder: 0,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "body-node",
+        tag: "body",
+        text: "",
+        attributes: {},
+        parentId: null,
+        childIds: ["page"],
+        computedStyles: {
+          "background-color": "rgb(2, 6, 23)",
+          color: "rgb(248, 250, 252)",
+          "font-family": "Space Grotesk"
+        },
+        box: {
+          x: 0,
+          y: 0,
+          top: 0,
+          right: width,
+          bottom: height,
+          left: 0,
+          width,
+          height,
+          centerX: width / 2,
+          centerY: height / 2
+        },
+        viewportStates: {},
+        visualOrder: -1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-section",
+        tag: "section",
+        text: "",
+        attributes: {},
+        parentId: "page",
+        childIds: ["hero-title"],
+        computedStyles: {},
+        box: {
+          x: 0,
+          y: 0,
+          top: 0,
+          right: width,
+          bottom: 320,
+          left: 0,
+          width,
+          height: 320,
+          centerX: width / 2,
+          centerY: 160
+        },
+        viewportStates: {},
+        visualOrder: 1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-title",
+        tag: "h1",
+        text: "Dark shell",
+        attributes: {},
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          color: "rgb(248, 250, 252)"
+        },
+        box: {
+          x: 48,
+          y: 48,
+          top: 48,
+          right: 480,
+          bottom: 120,
+          left: 48,
+          width: 432,
+          height: 72,
+          centerX: 264,
+          centerY: 84
+        },
+        viewportStates: {},
+        visualOrder: 2,
+        isVisible: true,
+        asset: {}
+      }
+    ]
+  });
+  const layout: LayoutDocument = {
+    id: "editable-page-shell-layout",
+    title: "Editable Page Shell Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 3,
+    sectionIds: ["hero-section"],
+    semanticIndex: {
+      hero: ["hero-section"]
+    },
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.98,
+        childIds: ["hero-title"],
+        anchors: [],
+        contains: ["hero", "text"]
+      }
+    ],
+    nodes: [
+      {
+        id: "page",
+        tag: "main",
+        kind: "page",
+        parentId: null,
+        children: ["hero-section"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-section",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["hero-title"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height: 320
+        },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.98
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-title",
+        tag: "h1",
+        kind: "text",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 48,
+          y: 48,
+          width: 432,
+          height: 72
+        },
+        visualOrder: 2,
+        layout: {},
+        spacing: {},
+        style: {
+          color: "rgb(248, 250, 252)"
+        },
+        content: {
+          text: "Dark shell"
+        },
+        flags: {},
+        responsive: {}
+      }
+    ]
+  };
+  const editableResult = createEditableElementorDocumentV3({
+    capture,
+    layout,
+    selectedMode: "editable"
+  });
+  const pageShell = editableResult.document.content[0];
+  const previewHtml = buildConvertedPreviewHtml({
+    capture,
+    document: editableResult.document
+  });
+
+  assert.equal(pageShell?.settings?.converter_v3_page_shell, true);
+  assert.equal(pageShell?.settings?.background_color, "rgb(2, 6, 23)");
+  assert.equal(pageShell?.settings?.converter_v3_page_shell_capture_node_id, "body-node");
+  assert.match(previewHtml, /background:rgb\(2, 6, 23\)/i);
+  assert.match(previewHtml, /color:rgb\(248, 250, 252\)/i);
+}
+
+async function testV3NativeExportKeepsDetectedPageShellWhenLayoutRootIsWhite() {
+  const width = 1440;
+  const height = 900;
+  const darkShell = "rgb(16, 37, 66)";
+  const whiteSurface = "rgb(255, 255, 255)";
+  const lightText = "rgb(248, 250, 252)";
+  const capture = createMockCapture({
+    renderer: "server",
+    title: "Native Page Shell Priority",
+    renderedHtml:
+      '<!doctype html><html><body style="margin:0;background:#ffffff;"><main style="min-height:100vh;background:rgb(16, 37, 66);color:rgb(248, 250, 252);"><section><h1>Dark shell</h1></section></main></body></html>',
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.02,
+      dominantContrast: 15.4,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: darkShell,
+        foreground: lightText,
+        primaryButtonColor: "rgb(56, 189, 248)",
+        cardBackground: "rgb(17, 24, 39)",
+        borderColor: "rgb(51, 65, 85)",
+        radius: "14px",
+        shadow: "0 18px 40px rgba(15, 23, 42, 0.2)"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: true,
+        hasStyledInputs: true,
+        hasElevatedCards: true
+      },
+      roleCounts: {
+        cards: 0,
+        buttons: 0,
+        inputs: 0,
+        headers: 0,
+        footers: 0,
+        sections: 1
+      },
+      messages: ["dark theme detected"]
+    },
+    nodes: [
+      {
+        id: "html-node",
+        tag: "html",
+        text: "",
+        attributes: {},
+        parentId: null,
+        childIds: ["body-node"],
+        computedStyles: {
+          background: whiteSurface,
+          "background-color": whiteSurface
+        },
+        box: null,
+        viewportStates: {},
+        visualOrder: -2,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "body-node",
+        tag: "body",
+        text: "",
+        attributes: {},
+        parentId: "html-node",
+        childIds: ["main-node"],
+        computedStyles: {
+          background: whiteSurface,
+          "background-color": whiteSurface,
+          color: "rgb(17, 24, 39)"
+        },
+        box: null,
+        viewportStates: {},
+        visualOrder: -1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "main-node",
+        tag: "main",
+        text: "",
+        attributes: {},
+        parentId: "body-node",
+        childIds: ["hero-section"],
+        computedStyles: {
+          background: darkShell,
+          "background-color": darkShell,
+          color: lightText,
+          "font-family": "Arial, sans-serif"
+        },
+        box: {
+          x: 0,
+          y: 0,
+          top: 0,
+          right: width,
+          bottom: height,
+          left: 0,
+          width,
+          height,
+          centerX: width / 2,
+          centerY: height / 2
+        },
+        viewportStates: {},
+        visualOrder: 0,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-section",
+        tag: "section",
+        text: "",
+        attributes: {},
+        parentId: "main-node",
+        childIds: ["hero-title"],
+        computedStyles: {},
+        box: {
+          x: 0,
+          y: 0,
+          top: 0,
+          right: width,
+          bottom: 320,
+          left: 0,
+          width,
+          height: 320,
+          centerX: width / 2,
+          centerY: 160
+        },
+        viewportStates: {},
+        visualOrder: 1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-title",
+        tag: "h1",
+        text: "Dark shell",
+        attributes: {},
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          color: lightText
+        },
+        box: {
+          x: 48,
+          y: 48,
+          top: 48,
+          right: 480,
+          bottom: 120,
+          left: 48,
+          width: 432,
+          height: 72,
+          centerX: 264,
+          centerY: 84
+        },
+        viewportStates: {},
+        visualOrder: 2,
+        isVisible: true,
+        asset: {}
+      }
+    ]
+  });
+  const layout: LayoutDocument = {
+    id: "native-page-shell-priority-layout",
+    title: "Native Page Shell Priority Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "body-node",
+    nodeCount: 4,
+    sectionIds: ["hero-section"],
+    semanticIndex: {
+      hero: ["hero-section"]
+    },
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.98,
+        childIds: ["hero-title"],
+        anchors: [],
+        contains: ["hero", "text"]
+      }
+    ],
+    nodes: [
+      {
+        id: "body-node",
+        tag: "body",
+        kind: "page",
+        parentId: null,
+        children: ["main-node"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: whiteSurface
+        },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "main-node",
+        tag: "main",
+        kind: "container",
+        parentId: "body-node",
+        children: ["hero-section"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: darkShell,
+          color: lightText,
+          fontFamily: "Arial, sans-serif"
+        },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-section",
+        tag: "section",
+        kind: "section",
+        parentId: "main-node",
+        children: ["hero-title"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height: 320
+        },
+        visualOrder: 2,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.98
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-title",
+        tag: "h1",
+        kind: "text",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 48,
+          y: 48,
+          width: 432,
+          height: 72
+        },
+        visualOrder: 3,
+        layout: {},
+        spacing: {},
+        style: {
+          color: lightText
+        },
+        content: {
+          text: "Dark shell"
+        },
+        flags: {},
+        responsive: {}
+      }
+    ]
+  };
+
+  const result = await withSnapshotFlagsDisabled(() =>
+    createElementorNativeExport({
+      capture,
+      layout,
+      selectedMode: "editable"
+    })
+  );
+  const pageShell = result.document.content[0];
+  const previewHtml =
+    result.previewHtml ??
+    buildConvertedPreviewHtml({
+      capture,
+      document: result.document
+    });
+
+  assert.equal(result.emittedMode, "editable");
+  assert.equal(pageShell?.settings?.converter_v3_page_shell, true);
+  assert.equal(pageShell?.settings?.background_color, darkShell);
+  assert.equal(pageShell?.settings?.text_color, lightText);
+  assert.equal(pageShell?.settings?.converter_v3_page_shell_capture_node_id, "main-node");
+  assert.match(previewHtml, /background:rgb\(16, 37, 66\)/i);
+  assert.match(previewHtml, /color:rgb\(248, 250, 252\)/i);
+}
+
+async function testV3SnapshotEmitterPropagatesDetectedPageBackgroundOnlyToPageShell() {
+  const width = 120;
+  const height = 120;
+  const darkShell = "rgb(16, 37, 66)";
+  const whiteSurface = "rgb(255, 255, 255)";
+  const reference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#ffffff" /></svg>`
+  );
+  const sectionBox = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: width,
+    bottom: height,
+    left: 0,
+    width,
+    height,
+    centerX: width / 2,
+    centerY: height / 2
+  };
+  const capture = createMockCapture({
+    id: "snapshot-page-shell-detection",
+    title: "Snapshot Page Shell Detection",
+    renderedHtml:
+      '<!doctype html><html><body style="margin:0;background:#ffffff;"><main style="min-height:100vh;background:rgb(16, 37, 66);"><section style="background:#ffffff;"></section></main></body></html>',
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height
+      }
+    ],
+    nodes: [
+      {
+        id: "html-node",
+        tag: "html",
+        text: "",
+        attributes: {},
+        parentId: null,
+        childIds: ["body-node"],
+        computedStyles: {
+          background: whiteSurface,
+          "background-color": whiteSurface
+        },
+        box: null,
+        viewportStates: {},
+        visualOrder: 0,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "body-node",
+        tag: "body",
+        text: "",
+        attributes: {},
+        parentId: "html-node",
+        childIds: ["main-node"],
+        computedStyles: {
+          background: whiteSurface,
+          "background-color": whiteSurface
+        },
+        box: sectionBox,
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              background: whiteSurface,
+              "background-color": whiteSurface
+            },
+            box: sectionBox,
+            isVisible: true
+          }
+        },
+        visualOrder: 1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "main-node",
+        tag: "main",
+        text: "",
+        attributes: {},
+        parentId: "body-node",
+        childIds: ["hero-section"],
+        computedStyles: {
+          background: darkShell,
+          "background-color": darkShell,
+          color: "rgb(248, 250, 252)",
+          "font-family": "Arial, sans-serif"
+        },
+        box: sectionBox,
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              background: darkShell,
+              "background-color": darkShell,
+              color: "rgb(248, 250, 252)",
+              "font-family": "Arial, sans-serif"
+            },
+            box: sectionBox,
+            isVisible: true
+          }
+        },
+        visualOrder: 2,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-section",
+        tag: "section",
+        text: "",
+        attributes: {},
+        parentId: "main-node",
+        childIds: [],
+        computedStyles: {
+          background: whiteSurface,
+          "background-color": whiteSurface
+        },
+        box: sectionBox,
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              background: whiteSurface,
+              "background-color": whiteSurface
+            },
+            box: sectionBox,
+            isVisible: true
+          }
+        },
+        visualOrder: 3,
+        isVisible: true,
+        asset: {}
+      }
+    ],
+    summary: {
+      totalNodes: 4,
+      visibleNodes: 4,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir: path.join(os.tmpdir(), "snapshot-page-shell-detection"),
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: reference
+      }
+    }
+  });
+  const sections: SectionCapture[] = [
+    {
+      id: "hero-section-capture",
+      nodeId: "hero-section",
+      name: "hero-section",
+      type: "hero",
+      box: {
+        x: 0,
+        y: 0,
+        width,
+        height
+      },
+      subtreeNodeIds: ["hero-section"],
+      originalHtml: `<section style="display:block;width:${width}px;height:${height}px;background:#ffffff;"></section>`,
+      htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;background:#ffffff;}</style></head><body><section style="display:block;width:${width}px;height:${height}px;background:#ffffff;"></section></body></html>`,
+      complexity: createSectionCaptureComplexity(),
+      viewports: {
+        desktop: {
+          viewport: "desktop",
+          width,
+          height,
+          snapshotDataUrl: reference,
+          linkOverlays: []
+        }
+      }
+    }
+  ];
+  const layout: LayoutDocument = {
+    id: "snapshot-page-shell-layout",
+    title: "Snapshot Page Shell Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 3,
+    sectionIds: ["hero-section"],
+    semanticIndex: {
+      hero: ["hero-section"]
+    },
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      }
+    ],
+    nodes: [
+      {
+        id: "page",
+        tag: "body",
+        kind: "page",
+        parentId: null,
+        children: ["main-node"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "main-node",
+        tag: "main",
+        kind: "container",
+        parentId: "page",
+        children: ["hero-section"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: darkShell,
+          color: "rgb(248, 250, 252)",
+          fontFamily: "Arial, sans-serif"
+        },
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "hero-section",
+        tag: "section",
+        kind: "section",
+        parentId: "main-node",
+        children: [],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 2,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: whiteSurface
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.99
+        },
+        responsive: {}
+      }
+    ]
+  };
+
+  const result = await createSnapshotElementorDocumentV3({
+    capture,
+    layout,
+    sections,
+    selectedMode: "snapshot"
+  });
+  const pageShell = result.document.content[0];
+  const snapshotSection = pageShell?.elements?.[0];
+
+  assert.equal(pageShell?.settings?.converter_v3_page_shell, true);
+  assert.equal(pageShell?.settings?.background_color, darkShell);
+  assert.equal(pageShell?.settings?.converter_v3_page_shell_capture_node_id, "main-node");
+  assert.equal(snapshotSection?.settings?.background_color, undefined);
+  assert.equal(snapshotSection?.settings?._background_color, undefined);
+  assert.match(result.previewHtml, /--detected-page-background:rgb\(16,\s*37,\s*66\)/i);
+}
+
+async function testV3PixelPerfectEmitterInjectsDetectedPageBackgroundVariableWithoutGlobalOverride() {
+  const darkShell = "rgb(16, 37, 66)";
+  const capture = createMockCapture({
+    nodes: [
+      {
+        id: "html-node",
+        tag: "html",
+        text: "",
+        attributes: {},
+        parentId: null,
+        childIds: ["body-node"],
+        computedStyles: {
+          background: "rgb(255, 255, 255)",
+          "background-color": "rgb(255, 255, 255)"
+        },
+        box: null,
+        viewportStates: {},
+        visualOrder: 0,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "body-node",
+        tag: "body",
+        text: "",
+        attributes: {},
+        parentId: "html-node",
+        childIds: ["main-node"],
+        computedStyles: {
+          background: "rgb(255, 255, 255)",
+          "background-color": "rgb(255, 255, 255)"
+        },
+        box: null,
+        viewportStates: {},
+        visualOrder: 1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "main-node",
+        tag: "main",
+        text: "",
+        attributes: {},
+        parentId: "body-node",
+        childIds: ["card-node"],
+        computedStyles: {
+          background: darkShell,
+          "background-color": darkShell,
+          color: "rgb(248, 250, 252)",
+          "font-family": "Arial, sans-serif"
+        },
+        box: null,
+        viewportStates: {},
+        visualOrder: 2,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "card-node",
+        tag: "div",
+        text: "Card copy",
+        attributes: {
+          class: "card"
+        },
+        parentId: "main-node",
+        childIds: [],
+        computedStyles: {
+          background: "rgb(255, 255, 255)",
+          "background-color": "rgb(255, 255, 255)"
+        },
+        box: null,
+        viewportStates: {},
+        visualOrder: 3,
+        isVisible: true,
+        asset: {}
+      }
+    ]
+  });
+  const layout: LayoutDocument = {
+    id: "pixel-perfect-page-shell-layout",
+    title: "Pixel Perfect Page Shell Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 2,
+    sectionIds: [],
+    semanticIndex: {},
+    detectedSections: [],
+    nodes: [
+      {
+        id: "page",
+        tag: "body",
+        kind: "page",
+        parentId: null,
+        children: ["main-node"],
+        box: {
+          x: 0,
+          y: 0,
+          width: 1440,
+          height: 720
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      },
+      {
+        id: "main-node",
+        tag: "main",
+        kind: "container",
+        parentId: "page",
+        children: [],
+        box: {
+          x: 0,
+          y: 0,
+          width: 1440,
+          height: 720
+        },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: darkShell,
+          color: "rgb(248, 250, 252)",
+          fontFamily: "Arial, sans-serif"
+        },
+        content: {},
+        flags: {},
+        responsive: {}
+      }
+    ]
+  };
+  const pageShell = resolvePageShellVisualContext({
+    capture,
+    layout
+  });
+  const document = createPixelPerfectElementorDocumentV3(
+    `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Pixel Perfect Background</title>
+    <style>
+      body { margin: 0; background: #ffffff; }
+      main { min-height: 100vh; background: rgb(16, 37, 66); }
+      .card { margin: 32px; padding: 24px; background: #ffffff; border-radius: 16px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="card">Card copy</div>
+    </main>
+  </body>
+</html>`,
+    {
+      title: "Pixel Perfect Background",
+      selectedMode: "pixel-perfect",
+      shellStyleMap: pageShell.styleMap
+    }
+  );
+  const rootSettings = document.content[0]?.settings as
+    | {
+        background_color?: string;
+        converter_v3_page_shell?: boolean;
+        converter_v3_detected_page_background?: string;
+      }
+    | undefined;
+  const htmlWidget = findFirstWidget(document, "html");
+  const widgetHtml = String(htmlWidget?.settings?.html ?? "");
+
+  assert.equal(rootSettings?.converter_v3_page_shell, true);
+  assert.equal(rootSettings?.background_color, darkShell);
+  assert.match(
+    String(rootSettings?.converter_v3_detected_page_background ?? ""),
+    /rgb\(16,\s*37,\s*66\)/i
+  );
+  assert.match(widgetHtml, /--detected-page-background:rgb\(16,\s*37,\s*66\)/i);
+  assert.match(widgetHtml, /body\s*&gt;\s*main/i);
+  assert.match(widgetHtml, /background:\s*var\(--detected-page-background,\s*#ffffff\)/i);
+  assert.match(widgetHtml, /\.card\s*\{\s*margin:\s*32px;\s*padding:\s*24px;\s*background:\s*#ffffff;/i);
+  assert.doesNotMatch(widgetHtml, /\*\s*\{\s*background\s*:/i);
+}
+
+function testV3SnapshotValidationTreatsCanvasMismatchAsPageBackgroundOnly() {
+  const capture = createMockCapture({
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.02,
+      dominantContrast: 15.4,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: "rgb(16, 37, 66)",
+        foreground: "rgb(248, 250, 252)",
+        primaryButtonColor: "rgb(56, 189, 248)",
+        cardBackground: "rgb(17, 24, 39)",
+        borderColor: "rgb(51, 65, 85)",
+        radius: "14px",
+        shadow: "0 18px 40px rgba(15, 23, 42, 0.2)"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: true,
+        hasStyledInputs: true,
+        hasElevatedCards: true
+      },
+      roleCounts: {
+        cards: 1,
+        buttons: 1,
+        inputs: 1,
+        headers: 0,
+        footers: 0,
+        sections: 1
+      },
+      messages: ["dark theme detected"]
+    }
+  });
+  const pageShellStyleMap = {
+    background: "rgb(16, 37, 66)",
+    "background-color": "rgb(16, 37, 66)"
+  };
+
+  assert.equal(
+    inferFullPageSnapshotLossType({
+      capture,
+      viewportWidth: 1440,
+      viewportHeight: 900,
+      bbox: {
+        x: 0,
+        y: 0,
+        width: 1440,
+        height: 520
+      },
+      dimensionsDiffer: false,
+      pageShellStyleMap
+    }),
+    "background"
+  );
+  assert.equal(
+    inferFullPageSnapshotLossType({
+      capture,
+      viewportWidth: 1440,
+      viewportHeight: 900,
+      bbox: {
+        x: 320,
+        y: 240,
+        width: 280,
+        height: 160
+      },
+      dimensionsDiffer: false,
+      pageShellStyleMap
+    }),
+    "position"
+  );
+}
+
 async function testV3NativeExportPreservesBackgroundImages() {
   const html = `<!doctype html>
 <html>
@@ -4890,7 +9015,13 @@ async function testV3NativeExportPreservesNestedBackgroundImagesFromLocalAssets(
   ].map((match) => match[1]);
 
   assert.equal(result.validation.passed, true);
-  assert.notEqual(result.emittedMode, "snapshot");
+
+  if (result.emittedMode === "snapshot") {
+    assert.ok(result.snapshot);
+    assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
+    return;
+  }
+
   assert.equal(backgroundImages.some((url) => url.startsWith("data:image/svg+xml;base64,")), true);
 }
 
@@ -4979,6 +9110,67 @@ async function testV3NativeExportPreservesRootBackgroundColorImageAndGradientOve
   assert.equal(rootSettings?._background_overlay_background, "gradient");
   assert.equal(rootSettings?.background_overlay_gradient_type, "linear");
   assert.equal(rootSettings?._background_overlay_gradient_type, "linear");
+}
+
+async function testV3NativeExportFallsBackToHtmlBackgroundWhenBodyIsTransparent() {
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const sourceRoot = path.join(outputRoot, "html-root-background-assets");
+
+  await mkdir(sourceRoot, { recursive: true });
+  await writeFile(
+    path.join(sourceRoot, "index.html"),
+    `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>HTML Root Background</title>
+    <style>
+      html {
+        background: rgb(16, 37, 66);
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: transparent;
+        color: white;
+        font-family: Arial, sans-serif;
+      }
+      main {
+        padding: 48px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>HTML background fallback</h1>
+      <p>Body stays transparent, but the export should keep the page color.</p>
+    </main>
+  </body>
+</html>`
+  );
+
+  const result = await withSnapshotFlagsDisabled(async () => {
+    const resolvedSource = await resolveSourceFromLocalFile(path.join(sourceRoot, "index.html"));
+    return runExportPipelineV3(resolvedSource, {
+      preferBrowser: true,
+      outputRoot
+    });
+  });
+  const elementorTemplate = JSON.parse(
+    await readFile(result.artifacts.elementorTemplatePath, "utf8")
+  ) as {
+    content: Array<{
+      settings?: {
+        background_color?: string;
+        _background_color?: string;
+      };
+    }>;
+  };
+  const rootSettings = elementorTemplate.content[0]?.settings;
+
+  assert.equal(result.validation.passed, true);
+  assert.equal(rootSettings?.background_color, "rgb(16, 37, 66)");
+  assert.equal(rootSettings?._background_color, "rgb(16, 37, 66)");
 }
 
 function testSectionClassifierDetectsSemanticSections() {
@@ -6224,6 +10416,123 @@ async function testV3ForceVisualSnapshotFallsBackToPixelPerfectWhenSnapshotCanno
   );
 }
 
+async function testV3SnapshotSelectionFallsBackToPixelPerfectWithoutForceFlag() {
+  const width = 160;
+  const sectionHeight = 100;
+  const outputDir = await ensureOutputDir("snapshot-selection-pixel-perfect-tests");
+  const reference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${sectionHeight}" viewBox="0 0 ${width} ${sectionHeight}"><rect width="${width}" height="${sectionHeight}" fill="#f2545b" /></svg>`
+  );
+  const capture = {
+    id: "snapshot-selection-pixel-perfect",
+    sourceKind: "lovable-react-source",
+    title: "Snapshot Selection Pixel Perfect Fallback",
+    sourceHtml: "<body></body>",
+    renderedHtml:
+      '<!doctype html><html><body style="margin:0;"><section data-capture-id="hero-selection-fallback" style="width:100%;height:100px;background:#f2545b;"></section></body></html>',
+    renderer: "browser",
+    inputAnalysis: createMockInputAnalysis({
+      layoutTypes: ["lovable-export", "tailwind"],
+      frameworkHints: ["lovable", "tailwind"]
+    }),
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height: sectionHeight
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [],
+    summary: {
+      totalNodes: 1,
+      visibleNodes: 1,
+      images: 0,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {}
+    },
+    sections: [
+      {
+        id: "hero-selection-fallback-section",
+        nodeId: "hero-selection-fallback",
+        name: "hero-selection-fallback-1",
+        type: "hero",
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height: sectionHeight
+        },
+        subtreeNodeIds: ["hero-selection-fallback"],
+        originalHtml: `<section style="width:${width}px;height:${sectionHeight}px;background:#f2545b;"></section>`,
+        htmlCandidate: `<!doctype html><html><body><section style="width:${width}px;height:${sectionHeight}px;background:#f2545b;"></section></body></html>`,
+        complexity: createSectionCaptureComplexity(),
+        viewports: {
+          desktop: {
+            viewport: "desktop",
+            width,
+            height: sectionHeight,
+            snapshotDataUrl: reference,
+            linkOverlays: []
+          }
+        }
+      }
+    ]
+  } satisfies PageCapture;
+  const layout: LayoutDocument = {
+    id: "snapshot-selection-pixel-perfect-layout",
+    title: "Snapshot Selection Pixel Perfect Layout",
+    sourceKind: "lovable-react-source",
+    rootNodeId: "page",
+    nodeCount: 1,
+    sectionIds: ["hero-selection-fallback"],
+    semanticIndex: {},
+    detectedSections: [
+      {
+        id: "hero-selection-fallback",
+        type: "hero",
+        confidence: 0.99,
+        childIds: [],
+        anchors: [],
+        contains: ["hero"]
+      }
+    ],
+    nodes: []
+  };
+
+  const result = await withSnapshotFlagsDisabled(() =>
+    createElementorNativeExport({
+      capture,
+      layout,
+      selectedMode: "snapshot",
+      outputDir
+    })
+  );
+
+  assert.equal(result.emittedMode, "pixel-perfect");
+  assert.equal(result.exportStage, "pixel-perfect-emitter");
+  assert.equal(result.snapshot, undefined);
+  assert.equal(result.warnings.includes(VISUAL_REASON_FALLBACK_PIXEL_PERFECT), true);
+}
+
 async function testV3ForceFullPageSnapshotUsesSingleResponsivePageSnapshot() {
   const desktopWidth = 1280;
   const tabletWidth = 834;
@@ -6571,13 +10880,16 @@ async function testV3LovableLikeSitesAutomaticallyUseUniversalFullPageClone() {
   assert.equal(result.analysis.selectedMode, "snapshot");
   assert.equal(result.emittedMode, "snapshot");
   assert.equal(result.report.selectedMode, "snapshot");
+  assert.equal(result.report.selectionReasons?.includes(VISUAL_REASON_HIGH_RISK), true);
+  assert.equal(result.report.selectionReasons?.includes(VISUAL_REASON_DARK_THEME), true);
+  assert.equal(result.report.selectionReasons?.includes(VISUAL_REASON_HERO_BACKGROUND), true);
   assert.equal(result.snapshot?.renderStrategy, "full-page-snapshot");
   assert.equal(result.snapshot?.visualValidationReport?.modeUsed, "full-page-snapshot");
   assert.equal(result.snapshot?.visualValidationReport?.status, "passed");
   assert.equal((result.capture.sections?.length ?? 0) >= 1, true);
   assert.match(
     result.analysis.reasons.join(" "),
-    /Politica visual .*Lovable-like|Complexidade visual alta detectada/i
+    /Politica (visual|universal) .*Lovable-like|Complexidade visual alta detectada/i
   );
 }
 
@@ -6611,6 +10923,8 @@ async function testV3ForcedSnapshotReportIncludesViewportLogs() {
 
   assert.equal(result.emittedMode, "snapshot");
   assert.equal(result.snapshot?.visualValidationReport?.status, "passed");
+  assert.equal(Array.isArray(result.report.visualValidationSummary), true);
+  assert.equal(result.report.visualValidationSummary[0], "[Visual Validation]");
   assert.equal(Array.isArray(result.report.visualLogs), true);
   assert.equal(result.report.visualLogs[0], "[Visual Validation]");
   assert.equal(result.report.visualLogs.some((line) => line.startsWith("[CAPTURE]")), true);
@@ -6629,6 +10943,26 @@ function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
   const capture = createMockCapture({
     id: "friendly-visual-validation",
     title: "Friendly Visual Validation",
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.02,
+      dominantContrast: 15.4,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: "rgb(15, 23, 42)",
+        foreground: "rgb(248, 250, 252)",
+        cardBackground: "rgb(30, 41, 59)"
+      },
+      roleCounts: {
+        cards: 2,
+        buttons: 1,
+        inputs: 1,
+        headers: 1,
+        footers: 0,
+        sections: 2
+      },
+      messages: ["dark theme detected"]
+    },
     sections: [
       {
         id: "hero-section-capture",
@@ -6800,6 +11134,27 @@ function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
     },
     snapshotEnabled: true,
     snapshotReason: "Snapshot visual validado.",
+    themeAudit: {
+      passed: false,
+      sourceTheme: "dark",
+      convertedTheme: "light",
+      sourceTokens: {
+        globalBackground: "rgb(15, 23, 42)"
+      },
+      convertedTokens: {
+        globalBackground: "rgb(255, 255, 255)"
+      },
+      issues: [
+        {
+          type: "theme-mismatch",
+          severity: "critical",
+          message: "dark theme lost",
+          originalValue: "rgb(15, 23, 42)",
+          convertedValue: "rgb(255, 255, 255)"
+        }
+      ],
+      messages: ["dark theme detected", "light theme detected", "dark theme lost"]
+    },
     snapshot: {
       renderStrategy: "section-snapshots",
       overallSimilarity: 0.968,
@@ -6819,21 +11174,25 @@ function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
         linksPreserved: 0,
         totalLinks: 0,
         similarityFinal: 0.968,
+        similarityFinalPercent: "96.80%",
         viewportResults: [
           {
             viewport: "desktop",
             passed: false,
-            similarity: 0.984
+            similarity: 0.984,
+            similarityPercent: "98.40%"
           },
           {
             viewport: "tablet",
             passed: true,
-            similarity: 0.991
+            similarity: 0.991,
+            similarityPercent: "99.10%"
           },
           {
             viewport: "mobile",
             passed: false,
-            similarity: 0.968
+            similarity: 0.968,
+            similarityPercent: "96.80%"
           }
         ],
         issues: [
@@ -6842,8 +11201,26 @@ function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
             sectionId: "hero-section",
             sectionName: "hero-1",
             sectionType: "hero",
+            sectionTypeLabel: "Hero",
+            severity: "critical",
             similarity: 0.984,
+            similarityPercent: "98.40%",
             lossType: "image",
+            estimatedLossCount: 2,
+            estimatedLosses: {
+              total: 2,
+              images: 2,
+              texts: 0,
+              buttons: 0,
+              links: 0,
+              backgrounds: 0
+            },
+            bbox: {
+              x: 12,
+              y: 24,
+              width: 180,
+              height: 120
+            },
             fallbackStage: "section-snapshot",
             fallbackUsed: "section-snapshot",
             message: "Viewport desktop; secao hero-1 (hero-section); similaridade 98.40%; perda detectada: image; fallback usado: section-snapshot."
@@ -6853,8 +11230,26 @@ function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
             sectionId: "cards-section",
             sectionName: "cards-2",
             sectionType: "grid",
+            sectionTypeLabel: "Cards",
+            severity: "warning",
             similarity: 0.968,
+            similarityPercent: "96.80%",
             lossType: "position",
+            estimatedLossCount: 4,
+            estimatedLosses: {
+              total: 4,
+              images: 0,
+              texts: 2,
+              buttons: 1,
+              links: 1,
+              backgrounds: 0
+            },
+            bbox: {
+              x: 20,
+              y: 220,
+              width: 280,
+              height: 160
+            },
             fallbackStage: "section-snapshot",
             fallbackUsed: "section-snapshot",
             message: "Viewport mobile; secao cards-2 (cards-section); similaridade 96.80%; perda detectada: position; fallback usado: section-snapshot."
@@ -6870,7 +11265,7 @@ function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
     }
   });
 
-  assert.deepEqual(report.visualLogs.slice(0, 7), [
+  assert.deepEqual(report.visualValidationSummary, [
     "[Visual Validation]",
     "Desktop: 98.4% - falhou",
     "Problema: secao Hero perdeu 2 imagens",
@@ -6879,6 +11274,98 @@ function testBuildExportReportFormatsFriendlyVisualValidationLogs() {
     "Problema: cards ficaram desalinhados",
     "Exportacao bloqueada"
   ]);
+  assert.deepEqual(report.visualLogs.slice(0, 7), report.visualValidationSummary);
+  assert.equal(report.themeAnalysis?.detectedTheme, "dark");
+  assert.equal(report.themeAudit?.passed, false);
+  assert.deepEqual(report.themeLogs, [
+    "[THEME] dark theme detected",
+    "[THEME] light theme detected",
+    "[THEME] dark theme lost"
+  ]);
+  assert.equal(report.visualLogs.includes("[THEME] dark theme lost"), true);
+}
+
+function testBuildExportReportIncludesFallbackTriggeredMessages() {
+  const capture = createMockCapture({
+    id: "fallback-trigger-report",
+    title: "Fallback Trigger Report"
+  });
+  const layout: LayoutDocument = {
+    id: "fallback-trigger-layout",
+    title: "Fallback Trigger Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 1,
+    sectionIds: [],
+    semanticIndex: {},
+    detectedSections: [],
+    nodes: []
+  };
+  const report = buildExportReport({
+    capture,
+    layout,
+    analysis: {
+      score: 4,
+      overlappingGroups: 0,
+      gridContainers: 0,
+      flexContainers: 1,
+      absoluteNodes: 0,
+      decorativeNodes: 0,
+      interactiveNodes: 0,
+      selectedMode: "editable",
+      reasons: ["Editable tentado primeiro."]
+    },
+    emittedMode: "pixel-perfect",
+    validation: {
+      passed: true,
+      mode: "pixel-perfect",
+      issueCount: 0,
+      issues: [],
+      stats: {
+        expectedTexts: 0,
+        matchedTexts: 0,
+        expectedImages: 0,
+        matchedImages: 0,
+        expectedButtons: 0,
+        matchedButtons: 0,
+        expectedLinks: 0,
+        matchedLinks: 0,
+        expectedSections: 0,
+        matchedSections: 0,
+        expectedCards: 0,
+        matchedCards: 0,
+        expectedHeaders: 0,
+        matchedHeaders: 0,
+        expectedFooters: 0,
+        matchedFooters: 0,
+        expectedPositionedNodes: 0,
+        matchedPositionedNodes: 0
+      }
+    },
+    snapshotEnabled: true,
+    snapshotReason: "Snapshot visual falhou e exigiu fallback final.",
+    fallbackReason:
+      "fallback to pixel-perfect: snapshot visual ainda falhou na auditoria final; fallback final em iframe preservou a aparencia completa.",
+    warnings: ["fallback to snapshot", "fallback to pixel-perfect"],
+    themeAudit: {
+      passed: true,
+      sourceTheme: "dark",
+      convertedTheme: "dark",
+      sourceTokens: {},
+      convertedTokens: {},
+      issues: [],
+      messages: []
+    }
+  });
+
+  assert.equal(
+    report.visualLogs.includes("[FALLBACK] fallback to snapshot triggered"),
+    true
+  );
+  assert.equal(
+    report.visualLogs.includes("[FALLBACK] fallback to pixel-perfect triggered"),
+    true
+  );
 }
 
 async function testV3NativeExportFallsBackToSnapshotWhenStructuralSimilarityIsLow() {
@@ -7166,6 +11653,647 @@ async function testV3NativeExportFallsBackToSnapshotWhenStructuralSimilarityIsLo
   }
 
   assert.match(result.warnings.join(" "), /similaridade visual/i);
+}
+
+async function testV3NativeExportFallsBackWhenEmbeddedAssetsStillMissSimilarityThreshold() {
+  const width = 180;
+  const height = 120;
+  const outputDir = await ensureOutputDir("native-embedded-visual-fidelity-tests");
+  const reference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#f2545b" /></svg>`
+  );
+  const embeddedImage = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72"><circle cx="36" cy="36" r="32" fill="#fde047" /></svg>`
+  );
+  const sectionBox = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: width,
+    bottom: height,
+    left: 0,
+    width,
+    height,
+    centerX: width / 2,
+    centerY: height / 2
+  };
+  const imageBox = {
+    x: 24,
+    y: 24,
+    top: 24,
+    right: 96,
+    bottom: 96,
+    left: 24,
+    width: 72,
+    height: 72,
+    centerX: 60,
+    centerY: 60
+  };
+  const capture: PageCapture = {
+    id: "native-embedded-visual-fidelity",
+    sourceKind: "raw-html",
+    title: "Native Embedded Visual Fidelity",
+    sourceHtml: "<body></body>",
+    renderedHtml: "<html><body><section><img alt=\"Visual\" /></section></body></html>",
+    renderer: "browser",
+    inputAnalysis: createMockInputAnalysis(),
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [
+      {
+        id: "hero-section",
+        tag: "section",
+        text: "",
+        attributes: {},
+        parentId: "page",
+        childIds: ["hero-image"],
+        computedStyles: {
+          display: "flex",
+          "align-items": "center",
+          padding: "24px",
+          background: "#ffffff",
+          "background-color": "#ffffff"
+        },
+        box: sectionBox,
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              display: "flex",
+              "align-items": "center",
+              padding: "24px",
+              background: "#ffffff",
+              "background-color": "#ffffff"
+            },
+            box: sectionBox,
+            isVisible: true
+          }
+        },
+        visualOrder: 0,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-image",
+        tag: "img",
+        text: "",
+        attributes: {
+          src: embeddedImage,
+          alt: "Visual"
+        },
+        parentId: "hero-section",
+        childIds: [],
+        computedStyles: {
+          display: "block",
+          width: "72px",
+          height: "72px"
+        },
+        box: imageBox,
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              display: "block",
+              width: "72px",
+              height: "72px"
+            },
+            box: imageBox,
+            isVisible: true
+          }
+        },
+        visualOrder: 1,
+        isVisible: true,
+        asset: {
+          src: embeddedImage
+        }
+      }
+    ],
+    sections: [
+      {
+        id: "section-hero-embedded",
+        nodeId: "hero-section",
+        name: "hero-section",
+        type: "hero",
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        subtreeNodeIds: ["hero-section", "hero-image"],
+        originalHtml: `<section style="display:block;width:${width}px;height:${height}px;background:#f2545b;"></section>`,
+        htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;background:#fff;}</style></head><body><section style="display:flex;align-items:center;width:${width}px;height:${height}px;padding:24px;background:#ffffff;"><img src="${embeddedImage}" alt="Visual" style="display:block;width:72px;height:72px;" /></section></body></html>`,
+        complexity: createSectionCaptureComplexity(),
+        viewports: {
+          desktop: {
+            viewport: "desktop",
+            width,
+            height,
+            snapshotDataUrl: reference,
+            linkOverlays: []
+          }
+        }
+      }
+    ],
+    summary: {
+      totalNodes: 2,
+      visibleNodes: 2,
+      images: 1,
+      buttons: 0,
+      textBlocks: 0,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: reference
+      }
+    }
+  };
+  const layout: LayoutDocument = {
+    id: "native-embedded-visual-fidelity-layout",
+    title: "Native Embedded Visual Fidelity Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 2,
+    sectionIds: ["hero-section"],
+    semanticIndex: {
+      hero: ["hero-section"]
+    },
+    detectedSections: [
+      {
+        id: "hero-section",
+        type: "hero",
+        confidence: 0.99,
+        childIds: ["hero-image"],
+        anchors: [],
+        contains: ["hero", "image"]
+      }
+    ],
+    nodes: [
+      {
+        id: "hero-section",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["hero-image"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 0,
+        layout: {
+          display: "flex",
+          alignItems: "center"
+        },
+        spacing: {
+          padding: "24px"
+        },
+        style: {
+          backgroundColor: "#ffffff"
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.99
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-image",
+        tag: "img",
+        kind: "image",
+        parentId: "hero-section",
+        children: [],
+        box: {
+          x: 24,
+          y: 24,
+          width: 72,
+          height: 72
+        },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {
+          src: embeddedImage,
+          alt: "Visual"
+        },
+        flags: {},
+        detection: {
+          semanticRole: "image",
+          confidence: 0.95
+        },
+        responsive: {}
+      }
+    ]
+  };
+
+  const result = await withSnapshotFlagsDisabled(() =>
+    createElementorNativeExport({
+      capture,
+      layout,
+      selectedMode: "editable",
+      outputDir
+    })
+  );
+
+  assert.equal(result.emittedMode, "snapshot");
+  assert.ok(result.snapshot);
+  assert.equal(result.snapshot.overallSimilarity >= 0.99, true);
+  assert.match(result.warnings.join(" "), /similaridade visual/i);
+  assert.equal(
+    result.warnings.some((warning) => /assets locais embutidos/i.test(warning)),
+    false
+  );
+}
+
+async function testV3NativeExportFallsBackToSnapshotWhenStructuralVisualAuditFails() {
+  const width = 240;
+  const height = 140;
+  const outputDir = await ensureOutputDir("native-visual-audit-fallback-tests");
+  const reference = createSvgDataUrl(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="${width}" height="${height}" fill="#020617" /></svg>`
+  );
+  const heroBox = {
+    x: 0,
+    y: 0,
+    top: 0,
+    right: width,
+    bottom: height,
+    left: 0,
+    width,
+    height,
+    centerX: width / 2,
+    centerY: height / 2
+  };
+  const capture: PageCapture = {
+    id: "native-visual-audit",
+    sourceKind: "lovable-react-source",
+    title: "Native Visual Audit Fallback",
+    sourceHtml: "<body></body>",
+    renderedHtml:
+      "<html><body><section><h1>Dark source</h1><a href=\"#cta\">Action</a><input placeholder=\"Email\" /></section></body></html>",
+    renderer: "browser",
+    inputAnalysis: createMockInputAnalysis({
+      layoutTypes: ["lovable-export", "tailwind"],
+      frameworkHints: ["lovable", "tailwind"],
+      structure: {
+        heroSections: 1,
+        buttons: 1,
+        forms: 1,
+        links: 1
+      } as InputPageAnalysis["structure"]
+    }),
+    viewports: [
+      {
+        name: "desktop",
+        width,
+        height
+      }
+    ],
+    domSnapshot: [],
+    styleSnapshot: [],
+    boxSnapshot: [],
+    responsiveSnapshot: [],
+    nodes: [
+      {
+        id: "hero-audit",
+        tag: "section",
+        text: "",
+        attributes: {},
+        parentId: "page",
+        childIds: ["hero-title", "hero-button", "hero-input"],
+        computedStyles: {
+          display: "block",
+          color: "#f8fafc"
+        },
+        box: heroBox,
+        viewportStates: {
+          desktop: {
+            computedStyles: {
+              display: "block",
+              color: "#f8fafc"
+            },
+            box: heroBox,
+            isVisible: true
+          }
+        },
+        visualOrder: 0,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-title",
+        tag: "h1",
+        text: "Dark source",
+        attributes: {},
+        parentId: "hero-audit",
+        childIds: [],
+        computedStyles: {
+          color: "#f8fafc"
+        },
+        box: heroBox,
+        viewportStates: {},
+        visualOrder: 1,
+        isVisible: true,
+        asset: {}
+      },
+      {
+        id: "hero-button",
+        tag: "a",
+        text: "Action",
+        attributes: {
+          href: "#cta"
+        },
+        parentId: "hero-audit",
+        childIds: [],
+        computedStyles: {
+          color: "#020617",
+          "background-color": "#38bdf8",
+          "border-radius": "999px",
+          "box-shadow": "0 18px 40px rgba(56, 189, 248, 0.35)"
+        },
+        box: heroBox,
+        viewportStates: {},
+        visualOrder: 2,
+        isVisible: true,
+        asset: {
+          href: "#cta"
+        }
+      },
+      {
+        id: "hero-input",
+        tag: "input",
+        text: "",
+        attributes: {
+          type: "email"
+        },
+        parentId: "hero-audit",
+        childIds: [],
+        computedStyles: {
+          color: "#f8fafc",
+          "background-color": "#111827",
+          "border-radius": "14px",
+          "box-shadow": "0 12px 24px rgba(15, 23, 42, 0.2)"
+        },
+        box: heroBox,
+        viewportStates: {},
+        visualOrder: 3,
+        isVisible: true,
+        asset: {}
+      }
+    ],
+    sections: [
+      {
+        id: "section-hero-audit",
+        nodeId: "hero-audit",
+        name: "hero-audit",
+        type: "hero",
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        subtreeNodeIds: ["hero-audit", "hero-title", "hero-button", "hero-input"],
+        originalHtml: `<section style="display:block;width:${width}px;height:${height}px;background:#020617;"></section>`,
+        htmlCandidate: `<!doctype html><html><head><meta charset="utf-8" /><style>html,body{margin:0;padding:0;background:#020617;}</style></head><body><section style="display:block;width:${width}px;height:${height}px;background:#020617;"></section></body></html>`,
+        complexity: createSectionCaptureComplexity(),
+        viewports: {
+          desktop: {
+            viewport: "desktop",
+            width,
+            height,
+            snapshotDataUrl: reference,
+            linkOverlays: []
+          }
+        }
+      }
+    ],
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.018,
+      dominantContrast: 15.4,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: "rgb(2, 6, 23)",
+        foreground: "rgb(248, 250, 252)",
+        primaryButtonColor: "rgb(56, 189, 248)",
+        cardBackground: "rgb(17, 24, 39)",
+        borderColor: "rgb(51, 65, 85)",
+        radius: "14px",
+        shadow: "0 18px 40px rgba(15, 23, 42, 0.2)"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: true,
+        hasStyledInputs: true,
+        hasElevatedCards: false
+      },
+      roleCounts: {
+        cards: 0,
+        buttons: 1,
+        inputs: 1,
+        headers: 0,
+        footers: 0,
+        sections: 1
+      },
+      messages: ["dark theme detected"]
+    },
+    summary: {
+      totalNodes: 4,
+      visibleNodes: 4,
+      links: 1,
+      images: 0,
+      buttons: 1,
+      textBlocks: 1,
+      sections: 1
+    },
+    artifacts: {
+      outputDir,
+      resolvedSourcePath: "",
+      renderedHtmlPath: "",
+      domSnapshotPath: "",
+      styleSnapshotPath: "",
+      boxSnapshotPath: "",
+      responsiveSnapshotPath: "",
+      layoutPath: "",
+      analysisPath: "",
+      pageCapturePath: "",
+      sectionArtifactsPath: "",
+      screenshots: {
+        desktop: reference
+      }
+    }
+  };
+  const layout: LayoutDocument = {
+    id: "native-visual-audit-layout",
+    title: "Native Visual Audit Layout",
+    sourceKind: "lovable-react-source",
+    rootNodeId: "page",
+    nodeCount: 4,
+    sectionIds: ["hero-audit"],
+    semanticIndex: {
+      hero: ["hero-audit"],
+      button: ["hero-button"]
+    },
+    detectedSections: [
+      {
+        id: "hero-audit",
+        type: "hero",
+        confidence: 0.99,
+        childIds: ["hero-title", "hero-button", "hero-input"],
+        anchors: [],
+        contains: ["hero", "button", "text"]
+      }
+    ],
+    nodes: [
+      {
+        id: "hero-audit",
+        tag: "section",
+        kind: "section",
+        parentId: "page",
+        children: ["hero-title", "hero-button", "hero-input"],
+        box: {
+          x: 0,
+          y: 0,
+          width,
+          height
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {
+          color: "#f8fafc"
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "hero",
+          confidence: 0.99,
+          containsInteractive: true
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-title",
+        tag: "h1",
+        kind: "text",
+        parentId: "hero-audit",
+        children: [],
+        box: {
+          x: 24,
+          y: 24,
+          width: width - 48,
+          height: 40
+        },
+        visualOrder: 1,
+        layout: {},
+        spacing: {},
+        style: {
+          color: "#f8fafc"
+        },
+        content: {
+          text: "Dark source"
+        },
+        flags: {},
+        detection: {
+          semanticRole: "text",
+          confidence: 0.95
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-button",
+        tag: "a",
+        kind: "button",
+        parentId: "hero-audit",
+        children: [],
+        box: {
+          x: 24,
+          y: 80,
+          width: 140,
+          height: 42
+        },
+        visualOrder: 2,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "#38bdf8",
+          borderRadius: "999px",
+          boxShadow: "0 18px 40px rgba(56, 189, 248, 0.35)"
+        },
+        content: {
+          href: "#cta"
+        },
+        flags: {},
+        detection: {
+          semanticRole: "button",
+          confidence: 0.95
+        },
+        responsive: {}
+      },
+      {
+        id: "hero-input",
+        tag: "input",
+        kind: "container",
+        parentId: "hero-audit",
+        children: [],
+        box: {
+          x: 24,
+          y: 132,
+          width: 180,
+          height: 42
+        },
+        visualOrder: 3,
+        layout: {},
+        spacing: {},
+        style: {
+          backgroundColor: "#111827",
+          borderRadius: "14px",
+          boxShadow: "0 12px 24px rgba(15, 23, 42, 0.2)"
+        },
+        content: {},
+        flags: {},
+        detection: {
+          semanticRole: "section",
+          confidence: 0.8
+        },
+        responsive: {}
+      }
+    ]
+  };
+
+  const result = await createElementorNativeExport({
+    capture,
+    layout,
+    selectedMode: "editable",
+    outputDir
+  });
+
+  assert.equal(result.emittedMode, "snapshot");
+  assert.equal(result.snapshot?.visualValidationReport?.status, "passed");
 }
 
 async function testV3ForceVisualSnapshotUsesSectionFallbackBeforePassing() {
@@ -8212,6 +13340,32 @@ async function main() {
   await testForceVisualSnapshotDefaultsToTrue();
   await testForceFullPageSnapshotDefaultsToFalse();
   await testV3HtmlCapturePipeline();
+  await testV3HtmlCaptureTreatsInlineSvgAsImageAsset();
+  await testV3SectionCaptureExpandsForOverflowingHeaderMedia();
+  await testV3HtmlCaptureCollectsExpandedComputedStyles();
+  await testV3HtmlCapturePreservesMultiLayerBackgroundImages();
+  await testV3HtmlCaptureTracksPictureSourcesAndLazyImages();
+  await testV3HtmlCaptureDetectsVisualPseudoElements();
+  await testV3SectionCaptureTracksHeroOverlayCardImagesAndPseudoBackgrounds();
+  await testV3BrowserDiagnosticsResolveRelativeHeroCardAndPseudoAssets();
+  await testV3CriticalAssetFailuresPromoteSnapshotFallback();
+  await testV3HtmlCapturePreservesThemeCssVariables();
+  await testV3ThemeDetectorIdentifiesDarkFixtures();
+  await testV3ThemeDetectorIdentifiesLightFixtures();
+  await testV3ThemeAuditFailsWhenDarkSourceTurnsIntoLightClone();
+  await testV3ThemeAuditFlagsGlobalBackgroundMismatchInsideDarkTheme();
+  testV3VisualAuditFlagsDarkCloneAndWhiteCards();
+  testV3VisualAuditFlagsDefaultButtonFixture();
+  testV3VisualAuditFlagsDefaultInputFixture();
+  testV3VisualAuditFlagsHeroOverlayMissingFixture();
+  testV3VisualAuditFlagsImportantVisualAssetMessage();
+  testV3VisualAuditFlagsWhiteCardsFixture();
+  testV3VisualAuditFlagsHeaderFooterMismatchAndPageHeightDifference();
+  testV3VisualClonePolicyPromotesHighRiskLovableLayouts();
+  testV3VisualClonePolicyPromotesHighRiskDarkGenericLayouts();
+  await testV3LovableLikeSitesKeepEditableWhenVisualRiskIsLow();
+  await testV3ServerRenderedDarkHighRiskPagesJumpToPixelPerfect();
+  await testV3ServerFallbackResolvesStylesheetDrivenDarkShell();
   await testV3ZipResolver();
   await testV3ZipResolverPrefersReactSourceWhenZipIncludesIndexHtml();
   await testV3ZipResolverSupportsNonStandardEntryAndPageNames();
@@ -8238,9 +13392,20 @@ async function main() {
   await testV3EditableComposesFeatureSectionOutroBlock();
   await testV3HybridComposesTestimonialSectionOutroBlock();
   await testV3EditableFallsBackToHybridOnUnsupportedBlock();
+  await testV3EditablePreservesStyledButtonVisuals();
+  await testV3EditablePreservesStyledInputAsHtml();
+  await testV3EditablePreservesDarkCardShell();
+  await testV3EditablePreservesHeroBackgroundAndOverlay();
+  await testV3EditablePreservesDarkFooterShell();
+  testV3EditableWrapsGlobalPageShellWhenOnlyBodyCarriesDarkTheme();
+  await testV3NativeExportKeepsDetectedPageShellWhenLayoutRootIsWhite();
+  await testV3SnapshotEmitterPropagatesDetectedPageBackgroundOnlyToPageShell();
+  await testV3PixelPerfectEmitterInjectsDetectedPageBackgroundVariableWithoutGlobalOverride();
+  testV3SnapshotValidationTreatsCanvasMismatchAsPageBackgroundOnly();
   await testV3NativeExportPreservesBackgroundImages();
   await testV3NativeExportPreservesNestedBackgroundImagesFromLocalAssets();
   await testV3NativeExportPreservesRootBackgroundColorImageAndGradientOverlay();
+  await testV3NativeExportFallsBackToHtmlBackgroundWhenBodyIsTransparent();
   testResponsiveChildSettingsHelper();
   testResponsiveGridColumnReductionHelper();
   testResponsiveSplitPatternHelper();
@@ -8253,17 +13418,20 @@ async function main() {
   await testV3SnapshotEmitterKeepsSnapshotOutputWhenSectionAlreadyMatchesVisually();
   await testV3ForceVisualSnapshotDisablesEditableAndHybridFallbacks();
   await testV3ForceVisualSnapshotFallsBackToPixelPerfectWhenSnapshotCannotBeValidated();
+  await testV3SnapshotSelectionFallsBackToPixelPerfectWithoutForceFlag();
   await testV3ForceFullPageSnapshotUsesSingleResponsivePageSnapshot();
   await testV3ForceFullPageSnapshotFallsBackToPixelPerfectOnlyWhenSnapshotCannotBeCreated();
   await testV3LovableLikeSitesAutomaticallyUseUniversalFullPageClone();
   await testV3ForcedSnapshotReportIncludesViewportLogs();
   await testV3NativeExportFallsBackToSnapshotWhenStructuralSimilarityIsLow();
+  await testV3NativeExportFallsBackWhenEmbeddedAssetsStillMissSimilarityThreshold();
+  await testV3NativeExportFallsBackToSnapshotWhenStructuralVisualAuditFails();
   testBuildExportReportFormatsFriendlyVisualValidationLogs();
+  testBuildExportReportIncludesFallbackTriggeredMessages();
   await testV3ForceVisualSnapshotUsesSectionFallbackBeforePassing();
   await testV3SnapshotEmitterFallsBackToFullPageSnapshotWhenSectionsAreUnsafe();
   await testV3ForceVisualSnapshotPrefersFullPageSnapshotForComplexVisualPages();
   await testV3ForceVisualSnapshotBlocksOnlyAfterFullPageFallbackFails();
-  console.log("converter-v3 tests passed");
 }
 
 main().catch((error) => {

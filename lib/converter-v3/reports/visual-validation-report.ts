@@ -37,6 +37,10 @@ function resolveLinksPreserved(result: ExportPipelineResult) {
 export function buildUniversalVisualValidationReport(
   result: ExportPipelineResult
 ): UniversalVisualValidationReport {
+  const criticalAssetMessages = result.capture.inputAnalysis.diagnostics.resources
+    .filter((resource) => resource.critical && resource.diagnostic)
+    .map((resource) => resource.diagnostic as string);
+
   const sectionsDetected =
     result.layout.detectedSections.length > 0
       ? result.layout.detectedSections.map((section) => ({
@@ -48,6 +52,24 @@ export function buildUniversalVisualValidationReport(
           id: sectionId,
           type: "section"
         }));
+
+  const fallbackMessages = result.report.visualLogs
+    .filter((line) => /fallback to snapshot triggered|fallback to pixel-perfect triggered/i.test(line))
+    .map((line) => line.replace(/^\[FALLBACK\]\s*/i, "").trim());
+  const errors = [
+    ...criticalAssetMessages,
+    ...result.capture.inputAnalysis.diagnostics.errors,
+    ...result.capture.inputAnalysis.diagnostics.warnings,
+    ...(result.validation.blockingReason ? [result.validation.blockingReason] : []),
+    ...result.validation.issues.map((issue) => issue.message),
+    ...(result.report.themeAudit?.passed
+      ? []
+      : result.report.themeAudit?.issues.map((issue) => issue.message) ?? []),
+    ...fallbackMessages,
+    ...(result.snapshot?.visualValidationReport?.blockingReason
+      ? [result.snapshot.visualValidationReport.blockingReason]
+      : [])
+  ];
 
   return {
     fileAnalyzed:
@@ -86,15 +108,11 @@ export function buildUniversalVisualValidationReport(
       result.capture.inputAnalysis.diagnostics.sectionCroppingRisk ?? false,
     fullPageSnapshotFailed:
       result.capture.inputAnalysis.diagnostics.fullPageSnapshotFailed ?? false,
+    themeDetected: result.capture.themeAnalysis?.detectedTheme,
+    themeAudit: result.report.themeAudit,
     visualIssues: result.report.visualIssues,
     learningNotes: result.report.learningNotes,
     logs: result.report.visualLogs,
-    errors: [
-      ...result.capture.inputAnalysis.diagnostics.errors,
-      ...result.capture.inputAnalysis.diagnostics.warnings,
-      ...(result.snapshot?.visualValidationReport?.blockingReason
-        ? [result.snapshot.visualValidationReport.blockingReason]
-        : [])
-    ]
+    errors: [...new Set(errors)]
   };
 }

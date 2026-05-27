@@ -1,8 +1,9 @@
 import * as cheerio from "cheerio";
 
 import type { PageCapture } from "@/lib/converter-v3/contracts/capture";
-import type { LayoutDocument } from "@/lib/converter-v3/contracts/layout";
+import type { LayoutDocument, LayoutNode } from "@/lib/converter-v3/contracts/layout";
 import type { VisualGeometryGroup } from "@/lib/converter-v3/contracts/geometry";
+import { buildStyledHtmlFragment } from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import {
   extractVisibleContentElements,
   groupVisibleContentByGeometry
@@ -117,7 +118,8 @@ function selectFragmentNodeIds(
 function buildGroupHtml(
   $: cheerio.CheerioAPI,
   group: VisualGeometryGroup,
-  capture: PageCapture
+  capture: PageCapture,
+  layoutById: Map<string, LayoutNode>
 ) {
   const fragmentNodeIds = selectFragmentNodeIds(group, capture);
   const fragments = fragmentNodeIds
@@ -130,10 +132,18 @@ function buildGroupHtml(
   }
 
   if (fragments.length === 1) {
-    return fragments[0];
+    return buildStyledHtmlFragment({
+      html: fragments[0],
+      captureById: buildNodeMap(capture),
+      layoutById
+    });
   }
 
-  return `<div data-converter-v3-geometry-group="${group.id}">${fragments.join("")}</div>`;
+  return buildStyledHtmlFragment({
+    html: `<div data-converter-v3-geometry-group="${group.id}">${fragments.join("")}</div>`,
+    captureById: buildNodeMap(capture),
+    layoutById
+  });
 }
 
 function buildContainerFromGroup(
@@ -180,9 +190,10 @@ export function createGeometryElementorDocumentV3(params: {
   const visibleElements = extractVisibleContentElements(params.capture);
   const groups = groupVisibleContentByGeometry(visibleElements, params.capture);
   const $ = cheerio.load(params.capture.renderedHtml);
+  const layoutById = new Map(params.layout.nodes.map((node) => [node.id, node]));
   const content = groups
     .map((group, index) => {
-      const html = buildGroupHtml($, group, params.capture);
+      const html = buildGroupHtml($, group, params.capture, layoutById);
 
       if (!html.trim()) {
         return null;

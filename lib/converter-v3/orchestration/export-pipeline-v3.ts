@@ -3,6 +3,8 @@ import path from "node:path";
 
 import type { ExportPipelineResult } from "@/lib/converter-v3/contracts/output";
 import type { ResolvedSource } from "@/lib/converter-v3/contracts/source";
+import { auditThemeConsistency } from "@/lib/converter-v3/analyze/theme-detector";
+import { buildConvertedPreviewHtml } from "@/lib/converter-v3/debug/conversion-debug";
 import { writeConversionDebugBundle } from "@/lib/converter-v3/debug/conversion-debug";
 import { createElementorNativeExport } from "@/lib/converter-v3/elementor-native-exporter";
 import type { CapturePipelineOptions } from "@/lib/converter-v3/orchestration/pipeline-v3";
@@ -12,7 +14,12 @@ import { buildUniversalVisualValidationReport } from "@/lib/converter-v3/reports
 import { resolveSourceFromHtml, resolveSourceFromUpload } from "@/lib/converter-v3/resolve/source-resolver";
 import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
 import {
-  isLovableLikeSource,
+  assessVisualCloneRisk,
+  requiresVisualSafeMode,
+  VISUAL_REASON_FALLBACK_PIXEL_PERFECT,
+  VISUAL_REASON_FALLBACK_SNAPSHOT,
+  VISUAL_REASON_HIGH_RISK,
+  shouldPreferUniversalVisualSnapshot,
   shouldForceUniversalFullPageSnapshot
 } from "@/lib/converter-v3/visual-clone-policy";
 import {
@@ -30,6 +37,12 @@ async function writeJson(filePath: string, value: unknown) {
   await writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
+function getCriticalVisualAssetFailures(capture: ExportPipelineResult["capture"]) {
+  return (capture.inputAnalysis.diagnostics.resources ?? []).filter(
+    (resource) => resource.status === "failed" && resource.critical
+  );
+}
+
 function sanitizeReportFileSegment(value: string) {
   return value
     .replace(/^.*[\\/]/, "")
@@ -40,6 +53,9 @@ function sanitizeReportFileSegment(value: string) {
 
 const BROWSER_CAPTURE_FAILURE_MESSAGE =
   "Captura visual do navegador falhou. Snapshot não pôde ser gerado.";
+
+const FALLBACK_TO_SNAPSHOT_TRIGGERED = "fallback to snapshot triggered";
+const FALLBACK_TO_PIXEL_PERFECT_TRIGGERED = "fallback to pixel-perfect triggered";
 
 function resolveFallbackReason(selectedMode: ExportPipelineResult["analysis"]["selectedMode"]) {
   if (
@@ -190,6 +206,21 @@ export function shouldRecoverBlockedExportWithSnapshot(params: {
   return true;
 }
 
+function shouldRecoverBlockedSnapshotWithPixelPerfect(params: {
+  emittedMode: ExportPipelineResult["emittedMode"];
+  capture: ExportPipelineResult["capture"];
+  contentIntegrity: ExportPipelineResult["contentIntegrity"];
+}) {
+  if (
+    params.emittedMode !== "snapshot" ||
+    params.contentIntegrity.status !== "blocked"
+  ) {
+    return false;
+  }
+
+  return params.capture.inputAnalysis.diagnostics.htmlRendered === true;
+}
+
 export async function runExportPipelineV3(
   resolvedSource: ResolvedSource,
   options: CapturePipelineOptions = {}
@@ -202,19 +233,22 @@ export async function runExportPipelineV3(
     captureResult.capture,
     captureResult.layout
   );
-  const preferUniversalVisualSnapshot =
-    captureResult.capture.renderer === "browser" && isLovableLikeSource(captureResult.capture);
+  const visualCloneRisk = assessVisualCloneRisk(captureResult.capture, captureResult.layout);
+  const visualSafeModeRequired = requiresVisualSafeMode(visualCloneRisk);
+  const preferUniversalVisualSnapshot = shouldPreferUniversalVisualSnapshot(
+    captureResult.capture,
+    captureResult.layout
+  );
   const outputDir = captureResult.capture.artifacts.outputDir;
   let selectedMode = captureResult.analysis.selectedMode;
 
   if (captureResult.capture.renderer === "browser") {
-    const sections = forceFullPageSnapshot || forceUniversalFullPageSnapshot
-      ? []
-      : await buildVisualSectionCaptures({
-          capture: captureResult.capture,
-          layout: captureResult.layout,
-          outputDir
-        });
+    const sections = await buildVisualSectionCaptures({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      outputDir
+    });
+    const criticalAssetFailures = getCriticalVisualAssetFailures(captureResult.capture);
 
     captureResult.capture.sections = sections;
     captureResult.capture.artifacts.sectionArtifactsPath = path.join(outputDir, "sections.json");
@@ -231,9 +265,36 @@ export async function runExportPipelineV3(
         ...captureResult.analysis,
         selectedMode,
         reasons: [
+          ...visualCloneRisk.reasons,
           forceFullPageSnapshot
             ? "FORCE_FULL_PAGE_SNAPSHOT ativo: somente o snapshot responsivo da pagina inteira sera usado como saida principal."
             : "Politica universal Lovable-like ativa: somente o snapshot responsivo da pagina inteira sera usado como saida principal.",
+          ...captureResult.analysis.reasons
+        ]
+      };
+    } else if (criticalAssetFailures.length > 0) {
+      const diagnostics = [
+        ...new Set(
+          criticalAssetFailures
+            .map((resource) => resource.diagnostic)
+            .filter(
+              (
+                diagnostic
+              ): diagnostic is NonNullable<(typeof criticalAssetFailures)[number]["diagnostic"]> =>
+                Boolean(diagnostic)
+            )
+        )
+      ];
+
+      selectedMode = "snapshot";
+      captureResult.analysis = {
+        ...captureResult.analysis,
+        selectedMode,
+        reasons: [
+          VISUAL_REASON_HIGH_RISK,
+          `Falha critica de fidelidade visual detectada (${diagnostics.join(
+            ", "
+          )}); snapshot visual foi promovido para preservar backgrounds, overlays e imagens essenciais antes de qualquer fallback pixel-perfect.`,
           ...captureResult.analysis.reasons
         ]
       };
@@ -243,6 +304,7 @@ export async function runExportPipelineV3(
         ...captureResult.analysis,
         selectedMode,
         reasons: [
+          ...visualCloneRisk.reasons,
           forceVisualSnapshot
             ? sections.length > 0
               ? "FORCE_VISUAL_SNAPSHOT ativo: snapshots visuais por secao/pagina inteira sao o modo principal."
@@ -270,6 +332,20 @@ export async function runExportPipelineV3(
         ]
       };
     }
+  } else if (
+    captureResult.capture.inputAnalysis.diagnostics.htmlRendered === true &&
+    visualSafeModeRequired
+  ) {
+    selectedMode = "pixel-perfect";
+    captureResult.analysis = {
+      ...captureResult.analysis,
+      selectedMode,
+      reasons: [
+        ...visualCloneRisk.reasons,
+        "Renderizacao sem browser real em pagina com shell visual critico: fallback direto para pixel-perfect para evitar clone claro/generico.",
+        ...captureResult.analysis.reasons
+      ]
+    };
   }
 
   let exportResult = await createElementorNativeExport({
@@ -292,6 +368,7 @@ export async function runExportPipelineV3(
     capture: captureResult.capture,
     layout: captureResult.layout,
     document: exportResult.document,
+    validation: exportResult.validation,
     emittedMode: exportResult.emittedMode,
     previewHtml: exportResult.previewHtml,
     snapshot: exportResult.snapshot,
@@ -309,7 +386,7 @@ export async function runExportPipelineV3(
     })
   ) {
     const recoveryReason =
-      "Conversao estrutural/geometrica perdeu conteudo detectavel; fallback universal para snapshot visual foi acionado.";
+      `${VISUAL_REASON_FALLBACK_SNAPSHOT}: conversao estrutural/geometrica perdeu conteudo detectavel; fallback universal para snapshot visual foi acionado.`;
     const recoveredExport = await createElementorNativeExport({
       capture: captureResult.capture,
       layout: captureResult.layout,
@@ -323,7 +400,7 @@ export async function runExportPipelineV3(
       warnings: mergeWarnings(
         exportResult.warnings,
         recoveredExport.warnings,
-        [contentIntegrity.failureReason, recoveryReason]
+        [contentIntegrity.failureReason, FALLBACK_TO_SNAPSHOT_TRIGGERED, recoveryReason]
       )
     };
 
@@ -331,6 +408,7 @@ export async function runExportPipelineV3(
       capture: captureResult.capture,
       layout: captureResult.layout,
       document: exportResult.document,
+      validation: exportResult.validation,
       emittedMode: exportResult.emittedMode,
       previewHtml: exportResult.previewHtml,
       snapshot: exportResult.snapshot,
@@ -347,7 +425,7 @@ export async function runExportPipelineV3(
     })
   ) {
     const recoveryReason =
-      "Renderizacao visual nao permitiu snapshot confiavel; fallback final em iframe preservou o DOM completo.";
+      `${VISUAL_REASON_FALLBACK_PIXEL_PERFECT}: renderizacao visual nao permitiu snapshot confiavel; fallback final em iframe preservou o DOM completo.`;
     const recoveredExport = await createElementorNativeExport({
       capture: captureResult.capture,
       layout: captureResult.layout,
@@ -361,7 +439,7 @@ export async function runExportPipelineV3(
       warnings: mergeWarnings(
         exportResult.warnings,
         recoveredExport.warnings,
-        [contentIntegrity.failureReason, recoveryReason]
+        [contentIntegrity.failureReason, FALLBACK_TO_PIXEL_PERFECT_TRIGGERED, recoveryReason]
       )
     };
 
@@ -369,6 +447,46 @@ export async function runExportPipelineV3(
       capture: captureResult.capture,
       layout: captureResult.layout,
       document: exportResult.document,
+      validation: exportResult.validation,
+      emittedMode: exportResult.emittedMode,
+      previewHtml: exportResult.previewHtml,
+      snapshot: exportResult.snapshot,
+      outputFile: elementorTemplatePath,
+      failureStage: exportResult.exportStage
+    });
+  }
+
+  if (
+    shouldRecoverBlockedSnapshotWithPixelPerfect({
+      emittedMode: exportResult.emittedMode,
+      capture: captureResult.capture,
+      contentIntegrity
+    })
+  ) {
+    const recoveryReason =
+      `${VISUAL_REASON_FALLBACK_PIXEL_PERFECT}: snapshot visual ainda falhou na auditoria final; fallback final em iframe preservou a aparencia completa.`;
+    const recoveredExport = await createElementorNativeExport({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      selectedMode: "pixel-perfect",
+      outputDir
+    });
+
+    exportResult = {
+      ...recoveredExport,
+      fallbackReason: recoveryReason,
+      warnings: mergeWarnings(
+        exportResult.warnings,
+        recoveredExport.warnings,
+        [contentIntegrity.failureReason, FALLBACK_TO_PIXEL_PERFECT_TRIGGERED, recoveryReason]
+      )
+    };
+
+    contentIntegrity = await validateContentIntegrity({
+      capture: captureResult.capture,
+      layout: captureResult.layout,
+      document: exportResult.document,
+      validation: exportResult.validation,
       emittedMode: exportResult.emittedMode,
       previewHtml: exportResult.previewHtml,
       snapshot: exportResult.snapshot,
@@ -382,8 +500,18 @@ export async function runExportPipelineV3(
   const warnings = exportResult.warnings;
   const elementorDocument = exportResult.document;
   const validation = exportResult.validation;
-  const previewHtml = exportResult.previewHtml;
+  const previewHtml =
+    exportResult.previewHtml ??
+    buildConvertedPreviewHtml({
+      capture: captureResult.capture,
+      document: elementorDocument
+    });
   const snapshot = exportResult.snapshot;
+  const themeAudit = auditThemeConsistency({
+    sourceThemeAnalysis: captureResult.capture.themeAnalysis,
+    previewHtml,
+    emittedMode
+  });
   const fullPageSnapshotFailed =
     snapshot?.renderStrategy === "full-page-snapshot" &&
     snapshot.visualValidationReport?.status === "blocked";
@@ -413,7 +541,8 @@ export async function runExportPipelineV3(
     snapshotReason: snapshotStatus.snapshotReason,
     fallbackReason,
     warnings,
-    snapshot
+    snapshot,
+    themeAudit
   });
   const previewHtmlPath = previewHtml ? path.join(outputDir, "snapshot-preview.html") : undefined;
   let artifacts: ExportPipelineResult["artifacts"] = {

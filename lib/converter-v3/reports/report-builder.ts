@@ -3,9 +3,16 @@ import type { ComplexityAnalysis, LayoutDocument, OutputMode } from "@/lib/conve
 import type {
   ExportReport,
   SnapshotVisualSummary,
+  ThemeAuditReport,
   VisualValidationIssueSummary,
+  VisualValidationIssue,
   VisualValidationReport
 } from "@/lib/converter-v3/contracts/output";
+import {
+  extractSelectionReasons,
+  VISUAL_REASON_FALLBACK_PIXEL_PERFECT,
+  VISUAL_REASON_FALLBACK_SNAPSHOT
+} from "@/lib/converter-v3/visual-clone-policy";
 
 function formatPercent(value: number) {
   return `${(value * 100).toFixed(2)}%`;
@@ -38,19 +45,67 @@ function getUniqueSectionLinkCount(section: NonNullable<PageCapture["sections"]>
   return uniqueLinks.size;
 }
 
-function buildVisualIssues(snapshot?: SnapshotVisualSummary): VisualValidationIssueSummary[] {
-  return (
-    snapshot?.visualValidationReport?.issues.map((issue) => ({
+function mapValidationIssueToSummary(issue: VisualValidationIssue): VisualValidationIssueSummary {
+  return {
+    type: issue.type,
+    nodeId: issue.nodeId,
+    sectionId: issue.sectionId,
+    sectionName: issue.sectionName,
+    sectionType: issue.sectionType,
+    sectionTypeLabel: issue.sectionTypeLabel,
+    viewport: issue.viewport,
+    severity: issue.severity,
+    similarity: issue.similarity,
+    similarityPercent: issue.similarityPercent,
+    lossType: issue.lossType,
+    estimatedLossCount: issue.estimatedLossCount,
+    estimatedLosses: issue.estimatedLosses,
+    bbox: issue.bbox,
+    originalScreenshotPath: issue.originalScreenshotPath,
+    convertedScreenshotPath: issue.convertedScreenshotPath,
+    diffScreenshotPath: issue.diffScreenshotPath,
+    originalValue: issue.originalValue,
+    convertedValue: issue.convertedValue,
+    message: issue.message
+  };
+}
+
+function buildVisualIssues(params: {
+  validation: VisualValidationReport;
+  snapshot?: SnapshotVisualSummary;
+}): VisualValidationIssueSummary[] {
+  const snapshotIssues =
+    params.snapshot?.visualValidationReport?.issues.map((issue) => ({
+      type: "missing-position" as const,
+      nodeId: issue.sectionId,
       sectionId: issue.sectionId,
       sectionName: issue.sectionName,
       sectionType: issue.sectionType,
+      sectionTypeLabel: issue.sectionTypeLabel,
       viewport: issue.viewport,
+      severity: issue.severity,
       similarity: issue.similarity,
+      similarityPercent: issue.similarityPercent,
       lossType: issue.lossType,
+      estimatedLossCount: issue.estimatedLossCount,
+      estimatedLosses: issue.estimatedLosses,
+      bbox: issue.bbox,
+      originalScreenshotPath: issue.originalScreenshotPath,
+      convertedScreenshotPath: issue.convertedScreenshotPath,
+      diffScreenshotPath: issue.diffScreenshotPath,
       fallbackStage: issue.fallbackStage,
       message: issue.message
-    })) ?? []
-  );
+    })) ?? [];
+  const merged = [...snapshotIssues, ...params.validation.issues.map(mapValidationIssueToSummary)];
+
+  return [
+    ...new Map(
+      merged.map((issue) => [
+        `${issue.type ?? "issue"}:${issue.nodeId ?? ""}:${issue.viewport ?? ""}:${issue.message}`,
+        issue
+      ])
+    ).values()
+  ];
 }
 
 function humanizeSectionType(type?: string) {
@@ -87,22 +142,116 @@ function pluralize(count: number, singular: string, plural: string) {
   return count === 1 ? singular : plural;
 }
 
+function compactIssueMessage(message: string) {
+  return message
+    .replace(/\s+Secao\s+[^.]+\([^)]+\)\.$/i, "")
+    .replace(/\.$/, "");
+}
+
+function resolveFriendlyValidationIssueMessage(issue: VisualValidationIssue) {
+  const compactMessage = compactIssueMessage(issue.message);
+
+  switch (issue.type) {
+    case "theme-mismatch":
+      return "theme mismatch";
+    case "body-white-on-dark":
+      return "dark theme lost";
+    case "hero-overlay-missing":
+      return "hero overlay missing";
+    case "hero-background-missing":
+      return "hero background missing";
+    case "background-mismatch":
+    case "important-image-missing":
+      return "important visual asset missing";
+    case "card-background-mismatch":
+      return "card background mismatch";
+    case "default-button-style-detected":
+      return "default button style detected";
+    case "default-input-style-detected":
+      return "default input style detected";
+    case "header-footer-background-mismatch":
+      return "header/footer background mismatch";
+    case "height-mismatch":
+      return "page height mismatch";
+    case "dominant-color-mismatch":
+      return "dominant color mismatch";
+    default:
+      return compactMessage;
+  }
+}
+
+function buildFallbackTriggeredMessages(params: {
+  warnings?: string[];
+  fallbackReason?: string;
+}) {
+  const combined = [params.fallbackReason, ...(params.warnings ?? [])]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  const messages: string[] = [];
+
+  if (combined.includes(VISUAL_REASON_FALLBACK_SNAPSHOT)) {
+    messages.push("fallback to snapshot triggered");
+  }
+
+  if (combined.includes(VISUAL_REASON_FALLBACK_PIXEL_PERFECT)) {
+    messages.push("fallback to pixel-perfect triggered");
+  }
+
+  return messages;
+}
+
 function resolveFriendlyProblemMessage(params: {
   issue: NonNullable<SnapshotVisualSummary["visualValidationReport"]>["issues"][number];
   section?: NonNullable<PageCapture["sections"]>[number];
 }) {
   const sectionType = (params.issue.sectionType ?? params.section?.type ?? "").toLowerCase();
-  const sectionLabel = humanizeSectionType(sectionType);
-  const imageCount = Math.max(params.section?.debug?.originalImages.length ?? 0, 1);
-  const backgroundCount = Math.max(params.section?.debug?.cssBackgrounds.length ?? 0, 1);
+  const sectionLabel = params.issue.sectionTypeLabel ?? humanizeSectionType(sectionType);
+  const imageCount = Math.max(
+    params.issue.estimatedLosses.images ?? params.section?.debug?.originalImages.length ?? 0,
+    params.issue.estimatedLossCount > 0 && params.issue.lossType === "image"
+      ? params.issue.estimatedLossCount
+      : 1
+  );
+  const backgroundCount = Math.max(
+    params.issue.estimatedLosses.backgrounds ?? params.section?.debug?.cssBackgrounds.length ?? 0,
+    params.issue.estimatedLossCount > 0 && params.issue.lossType === "background"
+      ? params.issue.estimatedLossCount
+      : 1
+  );
   const linkCount = Math.max(
-    params.section?.debug?.interactiveElements.filter((element) => Boolean(element.href)).length ?? 0,
-    1
+    params.issue.estimatedLosses.links ??
+      params.section?.debug?.interactiveElements.filter((element) => Boolean(element.href)).length ??
+      0,
+    params.issue.estimatedLossCount > 0 && params.issue.lossType === "link"
+      ? params.issue.estimatedLossCount
+      : 1
   );
   const buttonCount = Math.max(
-    params.section?.debug?.interactiveElements.filter((element) => element.isButton).length ?? 0,
-    1
+    params.issue.estimatedLosses.buttons ??
+      params.section?.debug?.interactiveElements.filter((element) => element.isButton).length ??
+      0,
+    params.issue.estimatedLossCount > 0 && params.issue.lossType === "button"
+      ? params.issue.estimatedLossCount
+      : 1
   );
+  const textCount = Math.max(
+    params.issue.estimatedLosses.texts ?? 0,
+    params.issue.estimatedLossCount > 0 && params.issue.lossType === "text"
+      ? params.issue.estimatedLossCount
+      : 1
+  );
+
+  if (!params.issue.sectionId && params.issue.bbox) {
+    return `perda visual detectada na area ${formatBox(params.issue.bbox)}`;
+  }
+
+  if (params.issue.severity === "critical" && /hero background missing/i.test(params.issue.message)) {
+    return "hero background missing";
+  }
+
+  if (params.issue.severity === "critical" && /card image missing/i.test(params.issue.message)) {
+    return "card image missing";
+  }
 
   if (params.issue.lossType === "image") {
     return `secao ${sectionLabel} perdeu ${imageCount} ${pluralize(imageCount, "imagem", "imagens")}`;
@@ -136,7 +285,7 @@ function resolveFriendlyProblemMessage(params: {
   }
 
   if (params.issue.lossType === "text") {
-    return `textos da secao ${sectionLabel} ficaram incompletos`;
+    return `secao ${sectionLabel} perdeu ${textCount} ${pluralize(textCount, "texto", "textos")}`;
   }
 
   return params.issue.message;
@@ -150,7 +299,27 @@ function buildFriendlyVisualValidationLogs(params: {
   const visualValidationReport = params.snapshot?.visualValidationReport;
 
   if (!visualValidationReport || visualValidationReport.viewportResults.length === 0) {
-    return [];
+    if (params.validation.issueCount === 0) {
+      return [];
+    }
+
+    const friendlyMessages = [
+      ...new Set(
+        params.validation.issues
+          .slice()
+          .sort(
+            (left, right) =>
+              determineSeverityWeight(right.severity) - determineSeverityWeight(left.severity)
+          )
+          .map(resolveFriendlyValidationIssueMessage)
+      )
+    ];
+
+    return [
+      "[Visual Validation]",
+      ...friendlyMessages.slice(0, 4).map((message) => `Problema: ${message}`),
+      params.validation.passed ? "Exportacao liberada" : "Exportacao bloqueada"
+    ];
   }
 
   const sectionById = new Map(
@@ -196,9 +365,37 @@ function buildFriendlyVisualValidationLogs(params: {
     }
   });
 
+  const extraValidationProblems = [
+    ...new Set(
+      params.validation.issues
+        .filter(
+          (issue) =>
+            !visualValidationReport.issues.some((snapshotIssue) => snapshotIssue.message === issue.message)
+        )
+        .map(resolveFriendlyValidationIssueMessage)
+    )
+  ];
+
+  extraValidationProblems.slice(0, 2).forEach((message) => {
+    logs.push(`Problema: ${message}`);
+  });
+
   logs.push(params.validation.passed ? "Exportacao liberada" : "Exportacao bloqueada");
 
   return logs;
+}
+
+function determineSeverityWeight(severity?: VisualValidationIssue["severity"]) {
+  switch (severity) {
+    case "blocking":
+      return 3;
+    case "critical":
+      return 2;
+    case "warning":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 function buildSectionLogs(params: { capture: PageCapture; layout: LayoutDocument }) {
@@ -256,20 +453,32 @@ function buildSectionLogs(params: { capture: PageCapture; layout: LayoutDocument
   });
 }
 
-function buildLossLogs(snapshot?: SnapshotVisualSummary) {
-  const issues = snapshot?.visualValidationReport?.issues ?? [];
-
-  return [
+function buildLossLogs(params: {
+  snapshot?: SnapshotVisualSummary;
+  validation: VisualValidationReport;
+}) {
+  const issues = params.snapshot?.visualValidationReport?.issues ?? [];
+  const snapshotLogs = [
     ...new Map(
       issues.map((issue) => [
         `${issue.viewport}:${issue.sectionId ?? "page"}:${issue.lossType}:${issue.message}`,
         [
           `[LOSS] viewport=${issue.viewport}`,
           issue.sectionName ? `section=${issue.sectionName}` : issue.sectionId ? `section=${issue.sectionId}` : "",
-          issue.sectionType ? `type=${issue.sectionType}` : "",
+          issue.sectionTypeLabel
+            ? `type=${issue.sectionTypeLabel}`
+            : issue.sectionType
+              ? `type=${issue.sectionType}`
+              : "",
+          `severity=${issue.severity}`,
           `loss=${issue.lossType}`,
           `similarity=${formatPercent(issue.similarity)}`,
+          `count=${issue.estimatedLossCount}`,
+          issue.bbox ? `bbox=${formatBox(issue.bbox)}` : "",
           issue.fallbackStage ? `stage=${issue.fallbackStage}` : "",
+          issue.originalScreenshotPath ? `original=${issue.originalScreenshotPath}` : "",
+          issue.convertedScreenshotPath ? `converted=${issue.convertedScreenshotPath}` : "",
+          issue.diffScreenshotPath ? `diff=${issue.diffScreenshotPath}` : "",
           issue.message
         ]
           .filter(Boolean)
@@ -277,29 +486,93 @@ function buildLossLogs(snapshot?: SnapshotVisualSummary) {
       ])
     ).values()
   ];
+  const structuralLogs = params.validation.issues
+    .filter(
+      (issue) =>
+        !issues.some(
+          (snapshotIssue) =>
+            snapshotIssue.message === issue.message &&
+            snapshotIssue.sectionId === issue.sectionId &&
+            snapshotIssue.viewport === issue.viewport
+        )
+    )
+    .map((issue) =>
+      [
+        `[AUDIT] severity=${issue.severity ?? "blocking"}`,
+        `type=${issue.type}`,
+        issue.nodeId ? `node=${issue.nodeId}` : "",
+        issue.viewport ? `viewport=${issue.viewport}` : "",
+        issue.sectionName ? `section=${issue.sectionName}` : issue.sectionId ? `section=${issue.sectionId}` : "",
+        compactIssueMessage(issue.message)
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+
+  return [...snapshotLogs, ...structuralLogs];
+}
+
+function buildThemeLogs(params: {
+  capture: PageCapture;
+  themeAudit?: ThemeAuditReport;
+}) {
+  const logs: string[] = [];
+  const themeMessages = params.capture.themeAnalysis?.messages ?? [];
+
+  themeMessages.forEach((message) => {
+    logs.push(`[THEME] ${message}`);
+  });
+
+  params.themeAudit?.messages.forEach((message) => {
+    if (themeMessages.includes(message)) {
+      return;
+    }
+
+    logs.push(`[THEME] ${message}`);
+  });
+
+  return [...new Set(logs)];
 }
 
 function buildVisualLogs(params: {
   capture: PageCapture;
   layout: LayoutDocument;
-  emittedMode: OutputMode;
   validation: VisualValidationReport;
   snapshotEnabled: boolean;
   snapshot?: SnapshotVisualSummary;
   fallbackReason?: string;
+  warnings?: string[];
+  themeAudit?: ThemeAuditReport;
+  visualValidationSummary: string[];
 }) {
-  const logs = buildFriendlyVisualValidationLogs({
-    capture: params.capture,
-    snapshot: params.snapshot,
-    validation: params.validation
-  });
+  const logs = [...params.visualValidationSummary];
   const resourceStatuses = params.capture.inputAnalysis.diagnostics.resources ?? [];
   const loadedAssets = resourceStatuses.filter((resource) => resource.status === "loaded").length;
   const failedAssets = resourceStatuses.filter((resource) => resource.status === "failed").length;
+  const assetDiagnosticCounts = new Map<string, number>();
+  const criticalAssetMessages = new Set<string>();
+  const themeLogs = buildThemeLogs({
+    capture: params.capture,
+    themeAudit: params.themeAudit
+  });
+
+  resourceStatuses.forEach((resource) => {
+    if (resource.diagnostic) {
+      assetDiagnosticCounts.set(
+        resource.diagnostic,
+        (assetDiagnosticCounts.get(resource.diagnostic) ?? 0) + 1
+      );
+    }
+
+    if (resource.critical && resource.diagnostic) {
+      criticalAssetMessages.add(resource.diagnostic);
+    }
+  });
 
   logs.push(
     `[CAPTURE] textos=${params.capture.summary.textBlocks} imagens=${params.capture.summary.images} botoes=${params.capture.summary.buttons} links=${params.capture.summary.links ?? 0} secoes=${params.capture.summary.sections} containers=${params.capture.summary.visualContainers ?? 0} grupos=${params.capture.summary.geometryGroups ?? 0}`
   );
+  logs.push(...themeLogs);
   logs.push(...buildSectionLogs({ capture: params.capture, layout: params.layout }));
 
   if (params.snapshotEnabled && params.snapshot) {
@@ -320,6 +593,16 @@ function buildVisualLogs(params: {
     if (failedAssets > 0) {
       logs.push(`[ASSET] ${failedAssets} recursos falharam durante a renderizacao`);
     }
+
+    for (const [diagnostic, count] of assetDiagnosticCounts.entries()) {
+      logs.push(`[ASSET] ${diagnostic}: ${count}`);
+    }
+  }
+
+  if (criticalAssetMessages.size > 0) {
+    criticalAssetMessages.forEach((message) => {
+      logs.push(`[CRITICAL FIDELITY] ${message}`);
+    });
   }
 
   if (params.snapshot?.totals.preservedLinks || params.capture.summary.links) {
@@ -339,11 +622,23 @@ function buildVisualLogs(params: {
       {}
   ).forEach(([viewport, similarity]) => {
     if (typeof similarity === "number") {
-        logs.push(`[VALIDATION] similaridade ${viewport}: ${formatPercent(similarity)}`);
+      logs.push(`[VALIDATION] similaridade ${viewport}: ${formatPercent(similarity)}`);
     }
   });
 
-  logs.push(...buildLossLogs(params.snapshot));
+  logs.push(
+    ...buildLossLogs({
+      snapshot: params.snapshot,
+      validation: params.validation
+    })
+  );
+
+  logs.push(
+    ...buildFallbackTriggeredMessages({
+      warnings: params.warnings,
+      fallbackReason: params.fallbackReason
+    }).map((message) => `[FALLBACK] ${message}`)
+  );
 
   if (params.fallbackReason) {
     logs.push(`[FALLBACK] ${params.fallbackReason}`);
@@ -355,7 +650,7 @@ function buildVisualLogs(params: {
       : `[EXPORT] bloqueado: ${params.validation.issueCount} perda(s) detectada(s)`
   );
 
-  return logs;
+  return [...new Set(logs)];
 }
 
 export function buildExportReport(params: {
@@ -369,20 +664,40 @@ export function buildExportReport(params: {
   fallbackReason?: string;
   warnings?: string[];
   snapshot?: SnapshotVisualSummary;
+  themeAudit?: ThemeAuditReport;
 }): ExportReport {
   const warnings = [
     ...(params.warnings ?? []),
     ...(params.fallbackReason ? [params.fallbackReason] : [])
   ];
-  const visualIssues = buildVisualIssues(params.snapshot);
+  const selectionReasons = extractSelectionReasons([
+    ...params.analysis.reasons,
+    ...warnings,
+    ...(params.themeAudit?.messages ?? [])
+  ]);
+  const visualIssues = buildVisualIssues({
+    validation: params.validation,
+    snapshot: params.snapshot
+  });
+  const visualValidationSummary = buildFriendlyVisualValidationLogs({
+    capture: params.capture,
+    snapshot: params.snapshot,
+    validation: params.validation
+  });
+  const themeLogs = buildThemeLogs({
+    capture: params.capture,
+    themeAudit: params.themeAudit
+  });
   const visualLogs = buildVisualLogs({
     capture: params.capture,
     layout: params.layout,
-    emittedMode: params.emittedMode,
     validation: params.validation,
     snapshotEnabled: params.snapshotEnabled,
     snapshot: params.snapshot,
-    fallbackReason: params.fallbackReason
+    fallbackReason: params.fallbackReason,
+    warnings,
+    themeAudit: params.themeAudit,
+    visualValidationSummary
   });
 
   return {
@@ -404,6 +719,7 @@ export function buildExportReport(params: {
     analysis: params.analysis,
     validation: params.validation,
     warnings,
+    selectionReasons,
     contentMetrics: {
       detectedTexts: params.capture.summary.textBlocks,
       detectedImages: params.capture.summary.images,
@@ -424,11 +740,16 @@ export function buildExportReport(params: {
         return acc;
       }, {}),
     visualIssues,
+    visualValidationSummary,
     visualLogs,
+    themeAnalysis: params.capture.themeAnalysis,
+    themeAudit: params.themeAudit,
+    themeLogs,
     learningNotes: params.snapshot?.learningNotes ?? [],
     fallbackTrail: [
       `selected:${params.analysis.selectedMode}`,
       `emitted:${params.emittedMode}`,
+      ...selectionReasons,
       ...(params.fallbackReason ? [`fallback:${params.fallbackReason}`] : []),
       ...(params.snapshot?.learningNotes ?? []),
       ...warnings,

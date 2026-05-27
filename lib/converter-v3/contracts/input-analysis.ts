@@ -48,6 +48,17 @@ export type InputAssetLoadStatus = {
   sourceTag?: string;
   sourceAttribute?: string;
   lazy?: boolean;
+  nodeId?: string;
+  pseudo?: "::before" | "::after";
+  importance?: "hero" | "card" | "section" | "generic";
+  critical?: boolean;
+  diagnostic?:
+    | "inline image loaded"
+    | "background image loaded"
+    | "pseudo-element background loaded"
+    | "asset failed"
+    | "hero background missing"
+    | "card image missing";
 };
 
 export type InputPageSectionCandidate = {

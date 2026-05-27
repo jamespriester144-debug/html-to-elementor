@@ -11,6 +11,7 @@ import type {
   VisualValidationIssue,
   VisualValidationReport
 } from "@/lib/converter-v3/contracts/output";
+import { buildInlineStyleFromComputedStyleMap } from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import { extractVisibleContentElements } from "@/lib/converter-v3/universal-content";
 import { renderHtmlToScreenshot } from "@/lib/converter-v3/visual-similarity";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
@@ -68,10 +69,6 @@ function escapeHtml(value: string) {
 
 function escapeHtmlAttribute(value: string) {
   return escapeHtml(value).replace(/"/g, "&quot;");
-}
-
-function escapeCssValue(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function normalizeText(value: string | undefined) {
@@ -291,50 +288,33 @@ function buildDetectedSections(layout: LayoutDocument, sections?: SectionCapture
 }
 
 function buildNodeInlineStyle(element: ElementorElement, captureNodeById: Map<string, PageCapture["nodes"][number]>) {
-  const styles = [
-    "box-sizing:border-box",
-    "width:100%"
-  ];
   const sourceNodeId = readSourceNodeId(element);
   const sourceNode = sourceNodeId ? captureNodeById.get(sourceNodeId) : undefined;
-  const sourceStyles = sourceNode?.computedStyles ?? {};
-
-  const styleEntries: Array<[string, string | undefined]> = [
-    ["display", sourceStyles.display],
-    ["flex-direction", sourceStyles["flex-direction"]],
-    ["flex-wrap", sourceStyles["flex-wrap"]],
-    ["justify-content", sourceStyles["justify-content"]],
-    ["align-items", sourceStyles["align-items"]],
-    ["gap", sourceStyles.gap],
-    ["grid-template-columns", sourceStyles["grid-template-columns"]],
-    ["background", sourceStyles.background],
-    ["background-color", sourceStyles["background-color"]],
-    ["background-image", sourceStyles["background-image"]],
-    ["background-position", sourceStyles["background-position"]],
-    ["background-size", sourceStyles["background-size"]],
-    ["background-repeat", sourceStyles["background-repeat"]],
-    ["color", sourceStyles.color],
-    ["padding", sourceStyles.padding],
-    ["margin", sourceStyles.margin],
-    ["border", sourceStyles.border],
-    ["border-radius", sourceStyles["border-radius"]],
-    ["box-shadow", sourceStyles["box-shadow"]],
-    ["text-align", sourceStyles["text-align"]],
-    ["max-width", sourceStyles["max-width"]]
-  ];
-
-  styleEntries.forEach(([name, value]) => {
-    if (value && value !== "normal" && value !== "auto" && value !== "none") {
-      styles.push(`${name}:${escapeCssValue(value)}`);
-    }
+  const settingsStyles =
+    (element.settings?.converter_v3_styles as Record<string, string> | undefined) ?? {};
+  const sourceStyles = {
+    ...settingsStyles,
+    ...(sourceNode?.computedStyles ?? {})
+  };
+  const rawStyle = buildInlineStyleFromComputedStyleMap(sourceStyles, {
+    width:
+      typeof element.settings?.width === "string"
+        ? element.settings.width
+        : sourceNode?.box?.width && sourceNode.box.width > 32
+          ? `${Math.round(Math.min(sourceNode.box.width, 1440))}px`
+          : undefined,
+    height: typeof element.settings?.height === "string" ? element.settings.height : undefined,
+    minHeight:
+      typeof element.settings?.min_height === "string"
+        ? element.settings.min_height
+        : sourceNode?.box?.height && sourceNode.box.height > 32
+          ? `${Math.round(sourceNode.box.height)}px`
+          : undefined
   });
+  const styles = ["box-sizing:border-box", "width:100%"];
 
-  if (sourceNode?.box?.height && sourceNode.box.height > 32) {
-    styles.push(`min-height:${Math.round(sourceNode.box.height)}px`);
-  }
-
-  if (sourceNode?.box?.width && sourceNode.box.width > 32) {
-    styles.push(`min-width:${Math.round(Math.min(sourceNode.box.width, 1440))}px`);
+  if (rawStyle) {
+    styles.push(rawStyle);
   }
 
   if (!styles.some((style) => style.startsWith("display:"))) {
@@ -350,6 +330,31 @@ function buildNodeInlineStyle(element: ElementorElement, captureNodeById: Map<st
   }
 
   return styles.join(";");
+}
+
+function styleContainsProperty(style: string, property: string) {
+  return new RegExp(`(?:^|;)\\s*${property}\\s*:`).test(style);
+}
+
+function withFallbackStyles(
+  style: string,
+  fallbackEntries: Array<[string, string]>
+) {
+  const nextStyle = style.trim();
+  const additions = fallbackEntries
+    .filter(([property]) => {
+      if (property === "background") {
+        return (
+          !styleContainsProperty(nextStyle, "background") &&
+          !styleContainsProperty(nextStyle, "background-color")
+        );
+      }
+
+      return !styleContainsProperty(nextStyle, property);
+    })
+    .map(([property, value]) => `${property}:${value}`);
+
+  return [nextStyle, ...additions].filter(Boolean).join(";");
 }
 
 function renderWidgetMarkup(
@@ -377,7 +382,16 @@ function renderWidgetMarkup(
         typeof (element.settings?.link as { url?: string } | undefined)?.url === "string"
           ? ((element.settings?.link as { url?: string }).url ?? "").trim()
           : "";
-      return `<a href="${escapeHtmlAttribute(href || "#")}" style="${style};display:inline-flex;align-items:center;justify-content:center;padding:12px 20px;text-decoration:none;border-radius:12px;background:#111;color:#fff;">${escapeHtml(
+      return `<a href="${escapeHtmlAttribute(href || "#")}" style="${withFallbackStyles(style, [
+        ["display", "inline-flex"],
+        ["align-items", "center"],
+        ["justify-content", "center"],
+        ["padding", "12px 20px"],
+        ["text-decoration", "none"],
+        ["border-radius", "12px"],
+        ["background", "#111"],
+        ["color", "#fff"]
+      ])}">${escapeHtml(
         text
       )}</a>`;
     }
@@ -449,6 +463,35 @@ function renderElementMarkup(
   return `<${tag} style="${buildNodeInlineStyle(element, captureNodeById)}">${children}</${tag}>`;
 }
 
+function resolvePreviewPageShellStyle(document: ElementorDocument) {
+  const pageShell = document.content.find(
+    (element) => element.settings?.converter_v3_page_shell === true
+  );
+  const styleMap =
+    (pageShell?.settings?.converter_v3_styles as Record<string, string> | undefined) ?? {};
+
+  return {
+    background: styleMap.background,
+    backgroundColor:
+      styleMap["background-color"] ||
+      (typeof pageShell?.settings?.background_color === "string"
+        ? pageShell.settings.background_color
+        : undefined),
+    backgroundImage: styleMap["background-image"],
+    backgroundSize: styleMap["background-size"],
+    backgroundPosition: styleMap["background-position"],
+    backgroundRepeat: styleMap["background-repeat"],
+    color:
+      styleMap.color ||
+      (typeof pageShell?.settings?.color === "string" ? pageShell.settings.color : undefined),
+    fontFamily:
+      styleMap["font-family"] ||
+      (typeof pageShell?.settings?.font_family === "string"
+        ? pageShell.settings.font_family
+        : undefined)
+  };
+}
+
 export function buildConvertedPreviewHtml(params: {
   capture: PageCapture;
   document: ElementorDocument;
@@ -458,9 +501,27 @@ export function buildConvertedPreviewHtml(params: {
     params.capture.viewports[0];
   const pageWidth = desktopViewport?.width ?? 1440;
   const captureNodeById = new Map(params.capture.nodes.map((node) => [node.id, node]));
+  const pageShellStyle = resolvePreviewPageShellStyle(params.document);
   const body = params.document.content
     .map((element) => renderElementMarkup(element, captureNodeById))
     .join("");
+  const bodyStyle = [
+    "margin:0",
+    "padding:0",
+    pageShellStyle.background
+      ? `background:${pageShellStyle.background}`
+      : pageShellStyle.backgroundColor
+        ? `background:${pageShellStyle.backgroundColor}`
+        : "background:#ffffff",
+    pageShellStyle.backgroundImage ? `background-image:${pageShellStyle.backgroundImage}` : "",
+    pageShellStyle.backgroundSize ? `background-size:${pageShellStyle.backgroundSize}` : "",
+    pageShellStyle.backgroundPosition ? `background-position:${pageShellStyle.backgroundPosition}` : "",
+    pageShellStyle.backgroundRepeat ? `background-repeat:${pageShellStyle.backgroundRepeat}` : "",
+    pageShellStyle.color ? `color:${pageShellStyle.color}` : "color:#111111",
+    pageShellStyle.fontFamily ? `font-family:${pageShellStyle.fontFamily}` : "font-family:Arial, sans-serif"
+  ]
+    .filter(Boolean)
+    .join(";");
 
   return `<!doctype html>
 <html>
@@ -471,9 +532,6 @@ export function buildConvertedPreviewHtml(params: {
       html, body {
         margin: 0;
         padding: 0;
-        background: #ffffff;
-        color: #111111;
-        font-family: Arial, sans-serif;
       }
 
       *, *::before, *::after {
@@ -493,7 +551,7 @@ export function buildConvertedPreviewHtml(params: {
       }
     </style>
   </head>
-  <body>
+  <body style="${bodyStyle}">
     <main>${body}</main>
   </body>
 </html>`;

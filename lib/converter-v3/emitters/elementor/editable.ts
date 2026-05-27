@@ -40,6 +40,16 @@ import {
   getVisualOrderChildIds,
   shouldUseUniversalNeutralLayoutMode
 } from "@/lib/converter-v3/emitters/elementor/universal-layout-mode";
+import {
+  buildInlineStyleFromComputedStyleMap,
+  buildElementorStyleBridgeSettings,
+  buildPreservedComputedStyleMap,
+  buildStyledHtmlFragment,
+  captureNodeHasVisiblePseudoStyles,
+  resolvePageShellVisualContext,
+  resolveStyleMapBackgroundColor,
+  shouldPreserveNodeAsHtmlWidget
+} from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import { applyPresetWidgetDefaults } from "@/lib/converter-v3/emitters/elementor/widget-defaults";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
 
@@ -60,24 +70,6 @@ function createElementId(prefix: string, index: number) {
 
 function sanitizeText(value: string | undefined) {
   return value?.replace(/\s+/g, " ").trim() || "";
-}
-
-function toSpacingObject(value?: string) {
-  if (!value) {
-    return undefined;
-  }
-
-  const parts = value.split(/\s+/).filter(Boolean);
-  const [top, right = top, bottom = top, left = right] = parts;
-
-  return {
-    unit: "px",
-    top: Number.parseFloat(top) || 0,
-    right: Number.parseFloat(right) || 0,
-    bottom: Number.parseFloat(bottom) || 0,
-    left: Number.parseFloat(left) || 0,
-    isLinked: parts.length === 1
-  };
 }
 
 function buildNodeMaps(capture: PageCapture, layout: LayoutDocument): NodeMaps {
@@ -143,6 +135,51 @@ function countSubtreeOverlaps(rootId: string, layoutById: NodeMaps["layoutById"]
 }
 
 function isNodeSimpleEnoughForUniversalNeutralMode(rootId: string, maps: NodeMaps) {
+  return isNodeSimpleEnough(rootId, maps, true);
+}
+
+function subtreeRequiresHtmlPreservation(rootId: string, maps: NodeMaps) {
+  const subtreeNodes = getSubtreeNodeIds(rootId, maps.layoutById)
+    .map((id) => maps.layoutById.get(id))
+    .filter((node): node is LayoutNode => Boolean(node))
+    .filter((node) => !node.flags.hidden);
+
+  return subtreeNodes.some((node) => {
+    const captureNode = maps.captureById.get(node.id);
+    const styles = buildPreservedComputedStyleMap({
+      node,
+      captureNode
+    });
+    const hasNonDefaultEffect = (value: string | undefined, defaults: string[]) =>
+      typeof value === "string" && !defaults.includes(value.trim().toLowerCase());
+    const overflow = `${styles.overflow ?? ""} ${styles["overflow-x"] ?? ""} ${styles["overflow-y"] ?? ""}`
+      .toLowerCase()
+      .trim();
+
+    return (
+      captureNodeHasVisiblePseudoStyles(captureNode) ||
+      shouldPreserveNodeAsHtmlWidget({
+        node,
+        captureNode
+      }) ||
+      hasNonDefaultEffect(styles["backdrop-filter"], ["none"]) ||
+      hasNonDefaultEffect(styles["mask-image"], ["none"]) ||
+      hasNonDefaultEffect(styles["-webkit-mask-image"], ["none"]) ||
+      hasNonDefaultEffect(styles["mix-blend-mode"], ["normal"]) ||
+      hasNonDefaultEffect(styles.opacity, ["1"]) ||
+      overflow.includes("hidden") ||
+      overflow.includes("clip")
+    );
+  });
+}
+
+function isNodeSimpleEnough(rootId: string, maps: NodeMaps, neutralLayoutMode = false) {
+  const rootNode = maps.layoutById.get(rootId);
+
+  if (!rootNode) {
+    return false;
+  }
+
   const subtreeNodes = getSubtreeNodeIds(rootId, maps.layoutById)
     .map((id) => maps.layoutById.get(id))
     .filter((node): node is LayoutNode => Boolean(node))
@@ -156,14 +193,64 @@ function isNodeSimpleEnoughForUniversalNeutralMode(rootId: string, maps: NodeMap
     (node) => node.kind === "section" && node.id !== rootId
   ).length;
   const overlaps = countSubtreeOverlaps(rootId, maps.layoutById);
+  const requiresPreservedHtml = subtreeRequiresHtmlPreservation(rootId, maps);
+
+  if (neutralLayoutMode) {
+    return (
+      subtreeNodes.length <= 18 &&
+      absoluteCount === 0 &&
+      decorativeCount === 0 &&
+      responsiveVariants === 0 &&
+      nestedSections <= 4 &&
+      overlaps === 0 &&
+      !requiresPreservedHtml
+    );
+  }
+
+  const desktopPattern = detectContainerPattern(rootNode, maps.layoutById, "desktop");
+  const tabletPattern = detectContainerPattern(rootNode, maps.layoutById, "tablet");
+  const mobilePattern = detectContainerPattern(rootNode, maps.layoutById, "mobile");
+  const desktopPreset = detectContainerPreset(rootNode, maps.layoutById, "desktop");
+  const tabletPreset = detectContainerPreset(rootNode, maps.layoutById, "tablet");
+  const mobilePreset = detectContainerPreset(rootNode, maps.layoutById, "mobile");
+  const isSplitPattern =
+    desktopPattern === "text-image-split" ||
+    desktopPattern === "image-text-split" ||
+    tabletPattern === "text-image-split" ||
+    tabletPattern === "image-text-split";
+  const isCardGridPattern =
+    desktopPattern === "card-grid" || tabletPattern === "card-grid";
+  const isRecognizedStructuredPattern =
+    isSplitPattern ||
+    isCardGridPattern ||
+    desktopPattern === "stack" ||
+    tabletPattern === "stack" ||
+    mobilePattern === "stack";
+  const hasRecognizedPreset =
+    desktopPreset !== "generic" ||
+    tabletPreset !== "generic" ||
+    mobilePreset !== "generic";
+
+  if (isRecognizedStructuredPattern || hasRecognizedPreset) {
+    return (
+      subtreeNodes.length <= (isCardGridPattern || hasRecognizedPreset ? 64 : 36) &&
+      absoluteCount === 0 &&
+      decorativeCount === 0 &&
+      responsiveVariants === 0 &&
+      nestedSections <= (isCardGridPattern || hasRecognizedPreset ? 20 : 10) &&
+      overlaps === 0 &&
+      !requiresPreservedHtml
+    );
+  }
 
   return (
-    subtreeNodes.length <= 18 &&
+    subtreeNodes.length <= 24 &&
     absoluteCount === 0 &&
     decorativeCount === 0 &&
     responsiveVariants === 0 &&
-    nestedSections <= 4 &&
-    overlaps === 0
+    nestedSections <= 6 &&
+    overlaps === 0 &&
+    !requiresPreservedHtml
   );
 }
 
@@ -176,6 +263,20 @@ function hasVisibleBackground(value?: string) {
   return normalized !== "transparent" && normalized !== "rgba(0,0,0,0)" && normalized !== "none";
 }
 
+function isDefaultCanvasBackground(value?: string) {
+  const normalized = (value ?? "").trim().toLowerCase();
+  const compact = normalized.replace(/\s+/g, "");
+
+  return (
+    compact === "#fff" ||
+    compact === "#ffffff" ||
+    compact === "rgb(255,255,255)" ||
+    compact === "rgba(255,255,255,1)" ||
+    compact === "hsl(0,0%,100%)" ||
+    /^hsl\(\s*0(?:deg)?(?:\s+|,\s*)0%\s*(?:,|\s)\s*100%\s*\)$/i.test(normalized)
+  );
+}
+
 function shouldExportRootNode(layout: LayoutDocument) {
   const rootNode = layout.nodes.find((node) => node.id === layout.rootNodeId);
 
@@ -183,7 +284,11 @@ function shouldExportRootNode(layout: LayoutDocument) {
     return false;
   }
 
-  return hasVisibleBackground(rootNode.style.backgroundColor) || Boolean(rootNode.style.backgroundImage);
+  return (
+    (hasVisibleBackground(rootNode.style.backgroundColor) &&
+      !isDefaultCanvasBackground(rootNode.style.backgroundColor)) ||
+    Boolean(rootNode.style.backgroundImage)
+  );
 }
 
 function getLayoutRootNodeId(layoutById: NodeMaps["layoutById"]) {
@@ -373,30 +478,83 @@ function applyDerivedChildSettings(
   });
 }
 
-function buildCommonSettings(node: LayoutNode) {
+function buildCommonSettings(
+  node: LayoutNode,
+  captureNode: PageCapture["nodes"][number] | undefined,
+  options: {
+    isButton?: boolean;
+  } = {}
+) {
   return {
     converter_v3_source_node_id: node.id,
     converter_v3_responsive: serializeResponsiveElement(node),
     ...createElementorResponsiveSettings(node),
-    _padding: toSpacingObject(node.spacing.padding),
-    _margin: toSpacingObject(node.spacing.margin),
-    width: node.box.width ? `${Math.round(node.box.width)}px` : undefined,
-    background_color: node.style.backgroundColor,
-    color: node.style.color,
-    font_size: node.style.fontSize,
-    font_family: node.style.fontFamily,
-    font_weight: node.style.fontWeight,
-    line_height: node.style.lineHeight,
-    align: node.style.textAlign,
-    border_radius: node.style.borderRadius,
-    box_shadow: node.style.boxShadow,
-    converter_v3_visual_order: node.visualOrder
+    ...buildElementorStyleBridgeSettings({
+      node,
+      captureNode,
+      isButton: options.isButton
+    })
   };
+}
+
+function wrapContentWithPageShell(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+  content: ElementorElement[];
+  counter: { value: number };
+}) {
+  const pageShell = resolvePageShellVisualContext({
+    capture: params.capture,
+    layout: params.layout
+  });
+
+  if (!pageShell.shouldWrap || params.content.length === 0) {
+    return params.content;
+  }
+
+  params.counter.value += 1;
+  const backgroundColor = resolveStyleMapBackgroundColor(pageShell.styleMap);
+
+  return [
+    {
+      id: createElementId("page-shell", params.counter.value),
+      elType: "container" as const,
+      settings: {
+        content_width: "full",
+        width: "100%",
+        max_width: undefined,
+        min_height: pageShell.minHeight,
+        flex_direction: "column",
+        justify_content: "flex-start",
+        align_items: "stretch",
+        gap: "0px",
+        html_tag: "main",
+        converter_v3_page_shell: true,
+        converter_v3_source_node_id: pageShell.sourceNodeId,
+        converter_v3_page_shell_capture_node_id: pageShell.captureNodeId,
+        converter_v3_styles: pageShell.styleMap,
+        converter_v3_inline_style: buildInlineStyleFromComputedStyleMap(pageShell.styleMap, {
+          width: "100%",
+          minHeight: pageShell.minHeight
+        }),
+        background_background:
+          backgroundColor || pageShell.styleMap["background-image"] ? "classic" : undefined,
+        background_color: backgroundColor,
+        _background_color: backgroundColor,
+        color: pageShell.styleMap.color,
+        text_color: pageShell.styleMap.color,
+        title_color: pageShell.styleMap.color,
+        font_family: pageShell.styleMap["font-family"]
+      },
+      elements: params.content
+    }
+  ];
 }
 
 
 function buildHtmlWidgetFromNode(
   nodeId: string,
+  maps: NodeMaps,
   $: cheerio.CheerioAPI,
   index: number
 ): ElementorElement | null {
@@ -411,7 +569,11 @@ function buildHtmlWidgetFromNode(
     elType: "widget",
     widgetType: "html",
     settings: {
-      html: element.toString(),
+      html: buildStyledHtmlFragment({
+        html: element.toString(),
+        captureById: maps.captureById,
+        layoutById: maps.layoutById
+      }),
       converter_v3_html_fallback: true,
       converter_v3_source_node_id: nodeId
     },
@@ -429,7 +591,12 @@ function buildHtmlFallbackElementFromNode(params: {
 }): ElementorElement | null {
   params.htmlFallbacks.add(params.node.id);
   params.counter.value += 1;
-  const htmlWidget = buildHtmlWidgetFromNode(params.node.id, params.$, params.counter.value);
+  const htmlWidget = buildHtmlWidgetFromNode(
+    params.node.id,
+    params.maps,
+    params.$,
+    params.counter.value
+  );
 
   if (!htmlWidget) {
     return null;
@@ -475,7 +642,7 @@ function buildHeadingOrTextWidget(
 
   if (/^h[1-6]$/.test(tag)) {
     const headingSettings = applyPresetWidgetDefaults("heading", widgetSemanticHint, {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       title: text,
       header_size: tag,
       converter_v3_widget_semantic: widgetSemanticHint
@@ -496,7 +663,7 @@ function buildHeadingOrTextWidget(
     (presetContext?.preset === "testimonial-cards" && text.length >= 60)
   ) {
     const quoteSettings = applyPresetWidgetDefaults("blockquote", widgetSemanticHint, {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       blockquote_content: text,
       converter_v3_widget_semantic: widgetSemanticHint ?? "testimonial-quote"
     });
@@ -512,7 +679,7 @@ function buildHeadingOrTextWidget(
 
   if (widgetSemanticHint === "price") {
     const priceSettings = applyPresetWidgetDefaults("heading", widgetSemanticHint, {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       title: text,
       header_size: "h3",
       converter_v3_widget_semantic: widgetSemanticHint
@@ -529,7 +696,7 @@ function buildHeadingOrTextWidget(
 
   if (widgetSemanticHint === "feature-title") {
     const featureTitleSettings = applyPresetWidgetDefaults("heading", widgetSemanticHint, {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       title: text,
       header_size: "h4",
       converter_v3_widget_semantic: widgetSemanticHint
@@ -546,7 +713,7 @@ function buildHeadingOrTextWidget(
 
   if (widgetSemanticHint === "testimonial-attribution") {
     const attributionSettings = applyPresetWidgetDefaults("heading", widgetSemanticHint, {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       title: text,
       header_size: "h6",
       converter_v3_widget_semantic: widgetSemanticHint
@@ -563,7 +730,7 @@ function buildHeadingOrTextWidget(
 
   if (widgetSemanticHint === "testimonial-rating") {
     const ratingSettings = applyPresetWidgetDefaults("text-editor", widgetSemanticHint, {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       editor: text,
       converter_v3_widget_semantic: widgetSemanticHint
     });
@@ -579,7 +746,7 @@ function buildHeadingOrTextWidget(
 
   if (widgetSemanticHint === "feature-eyebrow") {
     const eyebrowSettings = applyPresetWidgetDefaults("text-editor", widgetSemanticHint, {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       editor: text,
       converter_v3_widget_semantic: widgetSemanticHint
     });
@@ -594,7 +761,7 @@ function buildHeadingOrTextWidget(
   }
 
   const textSettings = applyPresetWidgetDefaults("text-editor", widgetSemanticHint, {
-    ...buildCommonSettings(node),
+    ...buildCommonSettings(node, captureNode),
     editor: text,
     converter_v3_widget_semantic: widgetSemanticHint
   });
@@ -616,7 +783,9 @@ function buildButtonWidget(
   widgetSemanticHint?: string
 ): ElementorElement {
   const buttonSettings = applyPresetWidgetDefaults("button", widgetSemanticHint, {
-    ...buildCommonSettings(node),
+    ...buildCommonSettings(node, captureNode, {
+      isButton: true
+    }),
     text: sanitizeText(node.content.text) || sanitizeText(captureNode?.text) || "Button",
     link: {
       url: node.content.href ?? "",
@@ -643,6 +812,7 @@ function buildButtonWidget(
 
 function buildImageWidget(
   node: LayoutNode,
+  captureNode: PageCapture["nodes"][number] | undefined,
   index: number,
   presetContext?: PresetContext,
   widgetSemanticHint?: string
@@ -652,7 +822,7 @@ function buildImageWidget(
   }
 
   const imageSettings = applyPresetWidgetDefaults("image", widgetSemanticHint, {
-    ...buildCommonSettings(node),
+    ...buildCommonSettings(node, captureNode),
     image: {
       url: node.content.src,
       alt: node.content.alt ?? ""
@@ -676,6 +846,7 @@ function buildIconListWidget(
   nodeId: string,
   $: cheerio.CheerioAPI,
   node: LayoutNode,
+  captureNode: PageCapture["nodes"][number] | undefined,
   index: number
 ): ElementorElement | null {
   const element = $(`[data-capture-id="${nodeId}"]`).first();
@@ -706,7 +877,7 @@ function buildIconListWidget(
     elType: "widget",
     widgetType: "icon-list",
     settings: {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       icon_list: items
     },
     elements: []
@@ -717,6 +888,7 @@ function buildAccordionWidget(
   nodeId: string,
   $: cheerio.CheerioAPI,
   node: LayoutNode,
+  captureNode: PageCapture["nodes"][number] | undefined,
   index: number
 ): ElementorElement | null {
   const element = $(`[data-capture-id="${nodeId}"]`).first();
@@ -752,7 +924,7 @@ function buildAccordionWidget(
     elType: "widget",
     widgetType: "accordion",
     settings: {
-      ...buildCommonSettings(node),
+      ...buildCommonSettings(node, captureNode),
       tabs
     },
     elements: []
@@ -861,6 +1033,7 @@ function buildContainerFromNode(
     maps.layoutById,
     sectionStructureDefaults.max_width
   );
+  const captureNode = maps.captureById.get(node.id);
 
   return {
     id: createElementId(node.kind === "section" ? "section" : "container", index),
@@ -877,11 +1050,10 @@ function buildContainerFromNode(
       gap,
       grid_template_columns: node.layout.gridTemplateColumns,
       grid_template_rows: node.layout.gridTemplateRows,
-      background_color: node.style.backgroundColor,
-      border_radius: node.style.borderRadius,
-      box_shadow: node.style.boxShadow,
-      _padding: toSpacingObject(node.spacing.padding),
-      _margin: toSpacingObject(node.spacing.margin),
+      ...buildElementorStyleBridgeSettings({
+        node,
+        captureNode
+      }),
       converter_v3_responsive: serializeResponsiveContainer(node, maps.layoutById),
       ...createElementorResponsiveSettings(node, maps.layoutById),
       ...widthSettings,
@@ -973,9 +1145,26 @@ function buildElementFromNode(params: {
         presetContext
       );
 
+  if (
+    shouldPreserveNodeAsHtmlWidget({
+      node,
+      captureNode
+    })
+  ) {
+    params.counter.value += 1;
+    params.htmlFallbacks.add(node.id);
+    return buildHtmlWidgetFromNode(node.id, params.maps, params.$, params.counter.value);
+  }
+
   if (node.kind === "image") {
     params.counter.value += 1;
-    return buildImageWidget(node, params.counter.value, presetContext, widgetSemanticHint);
+    return buildImageWidget(
+      node,
+      captureNode,
+      params.counter.value,
+      presetContext,
+      widgetSemanticHint
+    );
   }
 
   if (node.kind === "button") {
@@ -1002,7 +1191,13 @@ function buildElementFromNode(params: {
 
   if (tag === "ul" || tag === "ol") {
     params.counter.value += 1;
-    const listWidget = buildIconListWidget(node.id, params.$, node, params.counter.value);
+    const listWidget = buildIconListWidget(
+      node.id,
+      params.$,
+      node,
+      captureNode,
+      params.counter.value
+    );
 
     if (listWidget) {
       return listWidget;
@@ -1011,7 +1206,13 @@ function buildElementFromNode(params: {
 
   if (tag === "details" || (captureNode && node.children.every((childId) => params.maps.captureById.get(childId)?.tag === "details"))) {
     params.counter.value += 1;
-    const accordionWidget = buildAccordionWidget(node.id, params.$, node, params.counter.value);
+    const accordionWidget = buildAccordionWidget(
+      node.id,
+      params.$,
+      node,
+      captureNode,
+      params.counter.value
+    );
 
     if (accordionWidget) {
       return accordionWidget;
@@ -1021,20 +1222,17 @@ function buildElementFromNode(params: {
   if (["table", "svg", "canvas", "iframe", "video"].includes(tag)) {
     params.counter.value += 1;
     params.htmlFallbacks.add(node.id);
-    return buildHtmlWidgetFromNode(node.id, params.$, params.counter.value);
+    return buildHtmlWidgetFromNode(node.id, params.maps, params.$, params.counter.value);
   }
 
-  if (
-    params.neutralLayoutMode &&
-    !isNodeSimpleEnoughForUniversalNeutralMode(node.id, params.maps)
-  ) {
+  if (!isNodeSimpleEnough(node.id, params.maps, params.neutralLayoutMode)) {
     return buildHtmlFallbackElementFromNode({
       node,
       maps: params.maps,
       $: params.$,
       counter: params.counter,
       htmlFallbacks: params.htmlFallbacks,
-      neutralLayoutMode: true
+      neutralLayoutMode: params.neutralLayoutMode
     });
   }
 
@@ -1082,6 +1280,12 @@ export function createEditableElementorDocumentV3(params: {
       })
     )
     .filter((element): element is ElementorElement => Boolean(element));
+  const wrappedContent = wrapContentWithPageShell({
+    capture: params.capture,
+    layout: params.layout,
+    content,
+    counter
+  });
   const warnings = [...htmlFallbacks].map(
     (nodeId) => `No ${nodeId} manteve fallback HTML no emissor editable.`
   );
@@ -1091,7 +1295,7 @@ export function createEditableElementorDocumentV3(params: {
       version: "1.0",
       title: params.capture.title,
       type: "page",
-      content
+      content: wrappedContent
     },
     usedHtmlFallbackNodeIds: [...htmlFallbacks],
     warnings

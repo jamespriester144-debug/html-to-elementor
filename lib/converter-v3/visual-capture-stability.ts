@@ -72,6 +72,22 @@ export async function preparePageForVisualCapture(
         const deadline = now() + timeoutMs;
 
         const boostLazyAssets = () => {
+          const isPlaceholderAsset = (value: string | null) => {
+            const normalized = (value || "").trim().toLowerCase();
+
+            if (!normalized) {
+              return true;
+            }
+
+            return (
+              normalized === "#" ||
+              normalized.startsWith("data:image/gif;base64,") ||
+              normalized.includes("placeholder") ||
+              normalized.includes("spacer") ||
+              normalized.includes("blank")
+            );
+          };
+
           Array.from(document.querySelectorAll<HTMLElement>("img,iframe,video,source")).forEach(
             (element) => {
               if ("loading" in element) {
@@ -94,12 +110,14 @@ export async function preparePageForVisualCapture(
               const eagerSrcset =
                 element.getAttribute("data-srcset") ||
                 element.getAttribute("data-lazy-srcset");
+              const currentSrc = element.getAttribute("src");
+              const currentSrcset = element.getAttribute("srcset");
 
-              if (eagerSrc && !element.getAttribute("src")) {
+              if (eagerSrc && (!currentSrc || isPlaceholderAsset(currentSrc))) {
                 element.setAttribute("src", eagerSrc);
               }
 
-              if (eagerSrcset && !element.getAttribute("srcset")) {
+              if (eagerSrcset && (!currentSrcset || isPlaceholderAsset(currentSrcset))) {
                 element.setAttribute("srcset", eagerSrcset);
               }
             }
@@ -148,12 +166,41 @@ export async function preparePageForVisualCapture(
         };
 
         const waitForBackgroundImages = async () => {
+          const waitForImageSettlement = (url: string) =>
+            new Promise<void>((resolve) => {
+              const image = new Image();
+              const remainingMs = Math.max(deadline - now(), 0);
+              const timeout = Math.max(Math.min(remainingMs, 2000), 250);
+              let settled = false;
+              const finish = () => {
+                if (settled) {
+                  return;
+                }
+
+                settled = true;
+                clearTimeout(timer);
+                image.onload = null;
+                image.onerror = null;
+                resolve();
+              };
+              const timer = window.setTimeout(finish, timeout);
+
+              image.onload = () => finish();
+              image.onerror = () => finish();
+              image.src = url;
+            });
           const urls = Array.from(document.querySelectorAll<HTMLElement>("*"))
             .flatMap((element) => {
-              const computed = window.getComputedStyle(element);
-              const backgroundImage = computed.backgroundImage || "";
-              return Array.from(backgroundImage.matchAll(/url\((['"]?)(.*?)\1\)/gi)).map(
-                (match) => match[2]
+              const backgroundImages = [
+                window.getComputedStyle(element).backgroundImage || "",
+                window.getComputedStyle(element, "::before").backgroundImage || "",
+                window.getComputedStyle(element, "::after").backgroundImage || ""
+              ];
+
+              return backgroundImages.flatMap((backgroundImage) =>
+                Array.from(backgroundImage.matchAll(/url\((['"]?)(.*?)\1\)/gi)).map(
+                  (match) => match[2]
+                )
               );
             })
             .filter((url) => Boolean(url) && !url.startsWith("data:"));
@@ -161,15 +208,7 @@ export async function preparePageForVisualCapture(
           const uniqueUrls = [...new Set(urls)];
 
           await Promise.allSettled(
-            uniqueUrls.map(
-              (url) =>
-                new Promise<void>((resolve) => {
-                  const image = new Image();
-                  image.onload = () => resolve();
-                  image.onerror = () => resolve();
-                  image.src = url;
-                })
-            )
+            uniqueUrls.map((url) => waitForImageSettlement(url))
           );
         };
 

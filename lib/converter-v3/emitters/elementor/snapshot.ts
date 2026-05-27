@@ -12,6 +12,8 @@ import type {
 } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, OutputMode } from "@/lib/converter-v3/contracts/layout";
 import type {
+  SnapshotEstimatedLossCounts,
+  SnapshotProblemBoundingBox,
   SnapshotSectionValidationEntry,
   SnapshotSectionRenderMode,
   SnapshotSectionReport,
@@ -37,6 +39,13 @@ import {
   readImageDimensions,
   renderHtmlToScreenshot
 } from "@/lib/converter-v3/visual-similarity";
+import {
+  buildDetectedPageBackgroundCssVariables,
+  buildInlineStyleFromComputedStyleMap,
+  resolvePageShellVisualContext,
+  resolveStyleMapBackgroundColor,
+  resolveStyleMapBackgroundValue
+} from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import { shouldForceUniversalFullPageSnapshot } from "@/lib/converter-v3/visual-clone-policy";
 import { buildVisualSectionCaptures } from "@/lib/converter-v3/sections/visual-section-capture";
 import {
@@ -92,6 +101,11 @@ type SectionSeparationAssessment = {
   safe: boolean;
   issues: SectionSeparationIssue[];
   fallbackReason?: string;
+};
+
+type SectionProblemMatch = SnapshotSectionInfo & {
+  box: SnapshotProblemBoundingBox;
+  section?: SectionCapture;
 };
 
 type SnapshotEmitterResult = {
@@ -223,6 +237,224 @@ function getUniqueLinkCount(section: SectionCapture) {
   });
 
   return unique.size;
+}
+
+function humanizeSectionType(type?: string) {
+  switch ((type ?? "").toLowerCase()) {
+    case "hero":
+      return "Hero";
+    case "header":
+      return "Header";
+    case "grid":
+      return "Cards";
+    case "cta":
+      return "CTA";
+    case "faq":
+      return "FAQ";
+    case "footer":
+      return "Footer";
+    default:
+      return "Secao";
+  }
+}
+
+function roundProblemBox(
+  box:
+    | SnapshotProblemBoundingBox
+    | {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }
+    | undefined
+): SnapshotProblemBoundingBox | undefined {
+  if (!box) {
+    return undefined;
+  }
+
+  return {
+    x: Math.max(Math.round(box.x), 0),
+    y: Math.max(Math.round(box.y), 0),
+    width: Math.max(Math.round(box.width), 1),
+    height: Math.max(Math.round(box.height), 1)
+  };
+}
+
+function formatProblemBox(box: SnapshotProblemBoundingBox) {
+  return `x=${box.x}, y=${box.y}, w=${box.width}, h=${box.height}`;
+}
+
+function countSectionTextBlocks(capture: PageCapture, section?: SectionCapture | null) {
+  if (!section) {
+    return 0;
+  }
+
+  const subtreeIds = new Set(section.subtreeNodeIds);
+
+  return capture.nodes.filter((node) => {
+    if (!subtreeIds.has(node.id)) {
+      return false;
+    }
+
+    return node.isVisible && node.text.trim().length > 0;
+  }).length;
+}
+
+function buildEstimatedLosses(params: {
+  capture: PageCapture;
+  section?: SectionCapture | null;
+  lossType: SnapshotValidationLossType;
+}): {
+  estimatedLossCount: number;
+  estimatedLosses: SnapshotEstimatedLossCounts;
+} {
+  const images = params.section?.debug?.originalImages.length ?? 0;
+  const texts = countSectionTextBlocks(params.capture, params.section);
+  const buttons =
+    params.section?.debug?.interactiveElements.filter((element) => element.isButton).length ?? 0;
+  const links = params.section ? getUniqueLinkCount(params.section) : 0;
+  const backgrounds = params.section?.debug?.cssBackgrounds.length ?? 0;
+  const totals = {
+    images,
+    texts,
+    buttons,
+    links,
+    backgrounds
+  };
+
+  const estimatedLossCount =
+    params.lossType === "image"
+      ? Math.max(images, params.section ? 1 : 0)
+      : params.lossType === "text"
+        ? Math.max(texts, params.section ? 1 : 0)
+        : params.lossType === "button"
+          ? Math.max(buttons, params.section ? 1 : 0)
+          : params.lossType === "link"
+            ? Math.max(links, params.section ? 1 : 0)
+            : params.lossType === "background"
+              ? Math.max(backgrounds, params.section ? 1 : 0)
+              : Math.max(images + texts + buttons + links + backgrounds, params.section ? 1 : 0);
+
+  return {
+    estimatedLossCount,
+    estimatedLosses: {
+      total: estimatedLossCount,
+      ...totals
+    }
+  };
+}
+
+function buildSectionProblemBox(params: {
+  section: SectionCapture;
+  viewportName: CaptureViewportName;
+  mismatchBounds?:
+    | {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }
+    | undefined;
+}) {
+  const viewport = params.section.viewports[params.viewportName];
+  const anchorBox =
+    viewport?.captureBox ??
+    params.section.debug?.captureBoundingBox ??
+    params.section.debug?.sectionBoundingBox ??
+    params.section.box;
+
+  if (!params.mismatchBounds) {
+    return roundProblemBox(anchorBox);
+  }
+
+  return roundProblemBox({
+    x: anchorBox.x + params.mismatchBounds.x,
+    y: anchorBox.y + params.mismatchBounds.y,
+    width: params.mismatchBounds.width,
+    height: params.mismatchBounds.height
+  });
+}
+
+function calculateOverlapArea(
+  left: SnapshotProblemBoundingBox,
+  right: SnapshotProblemBoundingBox
+) {
+  const overlapX = Math.max(
+    0,
+    Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x)
+  );
+  const overlapY = Math.max(
+    0,
+    Math.min(left.y + left.height, right.y + right.height) - Math.max(left.y, right.y)
+  );
+
+  return overlapX * overlapY;
+}
+
+function calculateCenterDistance(
+  left: SnapshotProblemBoundingBox,
+  right: SnapshotProblemBoundingBox
+) {
+  const leftCenterX = left.x + left.width / 2;
+  const leftCenterY = left.y + left.height / 2;
+  const rightCenterX = right.x + right.width / 2;
+  const rightCenterY = right.y + right.height / 2;
+
+  return Math.hypot(leftCenterX - rightCenterX, leftCenterY - rightCenterY);
+}
+
+function findClosestSectionForProblem(params: {
+  layout: LayoutDocument;
+  sections: SectionCapture[];
+  bbox?: SnapshotProblemBoundingBox;
+}): SectionProblemMatch | undefined {
+  if (!params.bbox) {
+    return undefined;
+  }
+
+  const sectionById = new Map(params.sections.map((section) => [section.nodeId, section]));
+  const nodeById = new Map(params.layout.nodes.map((node) => [node.id, node]));
+  const candidates = getOrderedSectionInfo(params.layout, params.sections)
+    .map((info) => {
+      const section = sectionById.get(info.nodeId);
+      const box = roundProblemBox(section?.box ?? nodeById.get(info.nodeId)?.box);
+
+      if (!box) {
+        return undefined;
+      }
+
+      return {
+        ...info,
+        box,
+        section
+      } as SectionProblemMatch;
+    })
+    .filter((candidate): candidate is SectionProblemMatch => candidate !== undefined);
+
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  return [...candidates].sort((left, right) => {
+    const overlapDelta =
+      calculateOverlapArea(params.bbox as SnapshotProblemBoundingBox, right.box) -
+      calculateOverlapArea(params.bbox as SnapshotProblemBoundingBox, left.box);
+
+    if (overlapDelta !== 0) {
+      return overlapDelta;
+    }
+
+    const distanceDelta =
+      calculateCenterDistance(params.bbox as SnapshotProblemBoundingBox, left.box) -
+      calculateCenterDistance(params.bbox as SnapshotProblemBoundingBox, right.box);
+
+    if (distanceDelta !== 0) {
+      return distanceDelta;
+    }
+
+    return left.box.y - right.box.y || left.box.x - right.box.x;
+  })[0];
 }
 
 function extractWidgetHtmlFromFrozenDocument(documentHtml: string) {
@@ -483,6 +715,7 @@ function buildSectionSnapshotMarkup(section: SectionCapture) {
 function buildPreviewHtml(params: {
   capture: PageCapture;
   decisions: SnapshotDecision[];
+  shellStyleMap?: Record<string, string>;
 }) {
   const sectionsHtml = params.decisions
     .map(
@@ -491,6 +724,41 @@ function buildPreviewHtml(params: {
       )}" style="margin:0;padding:0;">${decision.widgetHtml}</section>`
     )
     .join("");
+  const detectedBackgroundVariables = buildDetectedPageBackgroundCssVariables(
+    params.shellStyleMap ?? {}
+  );
+  const pageShellRules = [
+    "background: var(--detected-page-background, #ffffff);",
+    "background-color: var(--detected-page-background-color, #ffffff);",
+    params.shellStyleMap?.["background-image"]
+      ? "background-image: var(--detected-page-background-image);"
+      : "",
+    params.shellStyleMap?.["background-size"]
+      ? "background-size: var(--detected-page-background-size);"
+      : "",
+    params.shellStyleMap?.["background-position"]
+      ? "background-position: var(--detected-page-background-position);"
+      : "",
+    params.shellStyleMap?.["background-repeat"]
+      ? "background-repeat: var(--detected-page-background-repeat);"
+      : "",
+    params.shellStyleMap?.["background-attachment"]
+      ? "background-attachment: var(--detected-page-background-attachment);"
+      : "",
+    params.shellStyleMap?.["background-origin"]
+      ? "background-origin: var(--detected-page-background-origin);"
+      : "",
+    params.shellStyleMap?.["background-clip"]
+      ? "background-clip: var(--detected-page-background-clip);"
+      : "",
+    params.shellStyleMap?.["background-blend-mode"]
+      ? "background-blend-mode: var(--detected-page-background-blend-mode);"
+      : "",
+    "color: var(--detected-page-foreground, #111111);",
+    "font-family: var(--detected-page-font-family, Arial, sans-serif);"
+  ]
+    .filter(Boolean)
+    .join("\n        ");
 
   return `<!doctype html>
 <html>
@@ -498,20 +766,36 @@ function buildPreviewHtml(params: {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
+      :root {
+        ${detectedBackgroundVariables}
+      }
+
       html, body {
         margin: 0;
         padding: 0;
-        background: #ffffff;
+        min-height: 100%;
       }
 
       *, *::before, *::after {
         box-sizing: border-box;
       }
 
+      html,
+      body,
+      body > .elementor,
+      body > .elementor-page,
+      body > .site,
+      body > .site-content,
+      body > .elementor-section-wrap,
+      .converter-v3-preview-page {
+        ${pageShellRules}
+      }
+
       .converter-v3-preview-page {
         display: inline-block;
         width: max-content;
         min-width: 100%;
+        min-height: 100%;
         padding: 0;
         margin: 0;
       }
@@ -1190,6 +1474,61 @@ function buildContainerElement(params: {
   } satisfies ElementorElement;
 }
 
+function wrapSnapshotContentWithPageShell(params: {
+  capture: PageCapture;
+  layout: LayoutDocument;
+  content: ElementorElement[];
+}) {
+  const pageShell = resolvePageShellVisualContext({
+    capture: params.capture,
+    layout: params.layout
+  });
+
+  if (!pageShell.shouldWrap || params.content.length === 0) {
+    return params.content;
+  }
+
+  const backgroundColor = resolveStyleMapBackgroundColor(pageShell.styleMap);
+
+  return [
+    {
+      id: createElementId("page-shell", params.content.length + 1),
+      elType: "container" as const,
+      settings: {
+        content_width: "full",
+        width: "100%",
+        max_width: undefined,
+        min_height: pageShell.minHeight,
+        flex_direction: "column",
+        justify_content: "flex-start",
+        align_items: "stretch",
+        gap: "0px",
+        html_tag: "main",
+        _padding: zeroSpacing(),
+        _margin: zeroSpacing(),
+        converter_v3_page_shell: true,
+        converter_v3_source_node_id: pageShell.sourceNodeId,
+        converter_v3_page_shell_capture_node_id: pageShell.captureNodeId,
+        converter_v3_styles: pageShell.styleMap,
+        converter_v3_detected_page_background: pageShell.detectedPageBackground,
+        converter_v3_inline_style: buildInlineStyleFromComputedStyleMap(pageShell.styleMap, {
+          width: "100%",
+          minHeight: pageShell.minHeight
+        }),
+        background_background:
+          backgroundColor || pageShell.styleMap["background-image"] ? "classic" : undefined,
+        background_color: backgroundColor,
+        _background_color: backgroundColor,
+        color: pageShell.styleMap.color,
+        text_color: pageShell.styleMap.color,
+        title_color: pageShell.styleMap.color,
+        font_family: pageShell.styleMap["font-family"]
+      },
+      elements: params.content
+    }
+  ];
+}
+
 async function buildInitialDecisions(sections: SectionCapture[]): Promise<InitialDecisionResult> {
   const learning = createSectionStrategyLearningState();
   const decisions: SnapshotDecision[] = [];
@@ -1433,22 +1772,150 @@ function inferSnapshotLossType(
   return "position";
 }
 
+export function inferFullPageSnapshotLossType(params: {
+  capture: PageCapture;
+  viewportWidth: number;
+  viewportHeight: number;
+  bbox?: SnapshotProblemBoundingBox;
+  dimensionsDiffer: boolean;
+  pageShellStyleMap?: Record<string, string>;
+}): SnapshotValidationLossType {
+  if (params.dimensionsDiffer) {
+    return "size";
+  }
+
+  const styleMap = params.pageShellStyleMap ?? {};
+  const hasMeaningfulPageBackground = Boolean(
+    resolveStyleMapBackgroundValue(styleMap) || resolveStyleMapBackgroundColor(styleMap)
+  );
+
+  if (!hasMeaningfulPageBackground || !params.bbox) {
+    return "position";
+  }
+
+  const viewportArea = Math.max(params.viewportWidth * params.viewportHeight, 1);
+  const mismatchArea = Math.max(params.bbox.width * params.bbox.height, 1);
+  const mismatchRatio = mismatchArea / viewportArea;
+  const touchesHorizontalEdge =
+    params.bbox.x <= 4 || params.bbox.x + params.bbox.width >= params.viewportWidth - 4;
+  const touchesVerticalEdge =
+    params.bbox.y <= 4 || params.bbox.y + params.bbox.height >= params.viewportHeight - 4;
+  const spansMostOfPageWidth = params.bbox.width >= params.viewportWidth * 0.72;
+  const spansMostOfPageHeight = params.bbox.height >= params.viewportHeight * 0.42;
+  const strongTheme = params.capture.themeAnalysis?.styleSignals?.hasStrongDarkTheme === true;
+
+  if (
+    (mismatchRatio >= 0.18 && touchesHorizontalEdge && touchesVerticalEdge) ||
+    (spansMostOfPageWidth && spansMostOfPageHeight) ||
+    (strongTheme && mismatchRatio >= 0.12 && (spansMostOfPageWidth || spansMostOfPageHeight))
+  ) {
+    return "background";
+  }
+
+  return "position";
+}
+
+function isCriticalFidelityAssetLoss(
+  sectionType: string | undefined,
+  lossType: SnapshotValidationLossType
+) {
+  const normalized = (sectionType ?? "").toLowerCase();
+
+  return (
+    (normalized === "hero" && lossType === "background") ||
+    (normalized === "grid" && lossType === "image")
+  );
+}
+
 function buildSnapshotValidationMessage(params: {
   viewport: CaptureViewportName;
   section?: SectionCapture | null;
+  sectionOverride?: Pick<SectionProblemMatch, "nodeId" | "name" | "type">;
+  bbox?: SnapshotProblemBoundingBox;
   similarity: number;
   lossType: SnapshotValidationLossType;
   fallbackStage: SnapshotVisualValidationIssue["fallbackStage"];
 }) {
-  const label = params.section
-    ? `${params.section.name} (${params.section.nodeId})`
-    : "pagina inteira";
+  const sectionName = params.section?.name ?? params.sectionOverride?.name;
+  const sectionId = params.section?.nodeId ?? params.sectionOverride?.nodeId;
+  const sectionType = params.section?.type ?? params.sectionOverride?.type;
+  const label =
+    sectionName && sectionId
+      ? `secao ${sectionName} (${sectionId}) tipo ${humanizeSectionType(sectionType)}`
+      : params.bbox
+        ? `perda visual detectada na area ${formatProblemBox(params.bbox)}`
+        : "pagina inteira";
+  const criticalMessage = isCriticalFidelityAssetLoss(sectionType, params.lossType)
+    ? sectionType?.toLowerCase() === "hero"
+      ? "hero background missing"
+      : "card image missing"
+    : null;
 
-  return `Viewport ${params.viewport}; secao ${label}; similaridade ${toPercentLabel(
+  if (criticalMessage) {
+    return `Viewport ${params.viewport}; ${criticalMessage}; similaridade ${toPercentLabel(
+      params.similarity
+    )}; fallback usado: ${describeFallbackStage(params.fallbackStage)}.`;
+  }
+
+  return `Viewport ${params.viewport}; ${label}; similaridade ${toPercentLabel(
     params.similarity
   )}; perda detectada: ${params.lossType}; fallback usado: ${describeFallbackStage(
     params.fallbackStage
   )}.`;
+}
+
+function createSnapshotValidationIssue(params: {
+  capture: PageCapture;
+  viewport: CaptureViewportName;
+  section?: SectionCapture | null;
+  sectionOverride?: SectionProblemMatch;
+  similarity: number;
+  lossType: SnapshotValidationLossType;
+  fallbackStage: SnapshotVisualValidationIssue["fallbackStage"];
+  originalScreenshotPath?: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+  bbox?: SnapshotProblemBoundingBox;
+}): SnapshotVisualValidationIssue {
+  const resolvedSection = params.section ?? params.sectionOverride?.section ?? null;
+  const sectionType = resolvedSection?.type ?? params.sectionOverride?.type;
+  const { estimatedLossCount, estimatedLosses } = buildEstimatedLosses({
+    capture: params.capture,
+    section: resolvedSection,
+    lossType: params.lossType
+  });
+  const severity = isCriticalFidelityAssetLoss(sectionType, params.lossType)
+    ? "critical"
+    : "warning";
+
+  return {
+    viewport: params.viewport,
+    sectionId: resolvedSection?.nodeId ?? params.sectionOverride?.nodeId,
+    sectionName: resolvedSection?.name ?? params.sectionOverride?.name,
+    sectionType,
+    sectionTypeLabel: humanizeSectionType(sectionType),
+    severity,
+    similarity: params.similarity,
+    similarityPercent: toPercentLabel(params.similarity),
+    lossType: params.lossType,
+    estimatedLossCount,
+    estimatedLosses,
+    bbox: params.bbox,
+    fallbackStage: params.fallbackStage,
+    fallbackUsed: params.fallbackStage,
+    originalScreenshotPath: params.originalScreenshotPath,
+    convertedScreenshotPath: params.convertedScreenshotPath,
+    diffScreenshotPath: params.diffScreenshotPath,
+    message: buildSnapshotValidationMessage({
+      viewport: params.viewport,
+      section: resolvedSection,
+      sectionOverride: params.sectionOverride,
+      bbox: params.bbox,
+      similarity: params.similarity,
+      lossType: params.lossType,
+      fallbackStage: params.fallbackStage
+    })
+  };
 }
 
 function buildSectionDiagnosticSummary(
@@ -1483,6 +1950,11 @@ function buildSectionDiagnosticSummary(
     diagnostics.push("pagina inteira pode conter scrollbar, borda extra ou elemento fixed/sticky divergente");
   }
 
+  if (!section && lossType === "background") {
+    diagnostics.push("background global da pagina pode ter voltado para o fallback do body/html");
+    diagnostics.push("corrigir apenas wrappers globais do shell, sem sobrescrever cards ou secoes internas");
+  }
+
   if (!section && (lossType === "button" || lossType === "link")) {
     diagnostics.push("overlays de links podem estar fora da posicao sobre o snapshot full-page");
   }
@@ -1503,6 +1975,10 @@ function buildSectionDiagnosticSummary(
     diagnostics.push("a secao usa backgrounds CSS que precisam ser preservados na captura");
   }
 
+  if (isCriticalFidelityAssetLoss(section?.type, lossType)) {
+    diagnostics.push(section?.type === "hero" ? "hero background missing" : "card image missing");
+  }
+
   if ((section?.debug?.loadedFonts.length ?? 0) > 0) {
     diagnostics.push("a secao depende de fontes carregadas em runtime");
   }
@@ -1517,6 +1993,7 @@ async function writeSectionVisualDebugReport(params: {
   viewportName: CaptureViewportName;
   similarity: number;
   lossType?: SnapshotValidationLossType;
+  problemBox?: SnapshotProblemBoundingBox;
   originalScreenshotPath?: string;
   convertedScreenshotPath?: string;
   diffScreenshotPath?: string;
@@ -1559,6 +2036,7 @@ async function writeSectionVisualDebugReport(params: {
     stage: params.stage,
     similarity: params.similarity,
     lossType: params.lossType,
+    problemBox: params.problemBox,
     originalHtml: params.section.originalHtml,
     boundingBox: params.section.debug?.sectionBoundingBox ?? params.section.box,
     captureBox: params.section.debug?.captureBoundingBox ?? desktopViewport?.captureBox,
@@ -1650,6 +2128,7 @@ function collectVisualDebugArtifacts(params: {
 }
 
 async function validateSnapshotSectionAcrossViewports(params: {
+  capture: PageCapture;
   section: SectionCapture;
   widgetHtml: string;
   outputDir?: string;
@@ -1695,10 +2174,20 @@ async function validateSnapshotSectionAcrossViewports(params: {
       similarityThreshold: PAGE_SIMILARITY_THRESHOLD,
       diffOutputPath: diffScreenshotPath
     });
+    const lossType = inferSnapshotLossType(params.section, viewport, comparison.dimensionsDiffer);
+    const bbox = comparison.passed
+      ? undefined
+      : buildSectionProblemBox({
+          section: params.section,
+          viewportName,
+          mismatchBounds: comparison.mismatchBounds
+        });
     const result = {
       viewport: viewportName,
       passed: comparison.passed,
       similarity: comparison.similarity,
+      similarityPercent: toPercentLabel(comparison.similarity),
+      bbox,
       originalScreenshotPath: viewport.snapshotPath,
       convertedScreenshotPath,
       diffScreenshotPath: comparison.diffOutputPath
@@ -1714,7 +2203,8 @@ async function validateSnapshotSectionAcrossViewports(params: {
       stage: params.stage,
       viewportName,
       similarity: comparison.similarity,
-      lossType: inferSnapshotLossType(params.section, viewport, comparison.dimensionsDiffer),
+      lossType,
+      problemBox: bbox,
       originalScreenshotPath: viewport.snapshotPath,
       convertedScreenshotPath,
       diffScreenshotPath: comparison.diffOutputPath,
@@ -1722,27 +2212,18 @@ async function validateSnapshotSectionAcrossViewports(params: {
     });
 
     if (!comparison.passed) {
-      const lossType = inferSnapshotLossType(params.section, viewport, comparison.dimensionsDiffer);
-      issues.push({
+      issues.push(createSnapshotValidationIssue({
+        capture: params.capture,
         viewport: viewportName,
-        sectionId: params.section.nodeId,
-        sectionName: params.section.name,
-        sectionType: params.section.type,
+        section: params.section,
         similarity: comparison.similarity,
         lossType,
         fallbackStage: params.stage,
-        fallbackUsed: params.stage,
         originalScreenshotPath: viewport.snapshotPath,
         convertedScreenshotPath,
         diffScreenshotPath: comparison.diffOutputPath,
-        message: buildSnapshotValidationMessage({
-          viewport: viewportName,
-          section: params.section,
-          similarity: comparison.similarity,
-          lossType,
-          fallbackStage: params.stage
-        })
-      });
+        bbox
+      }));
     }
   }
 
@@ -1781,9 +2262,12 @@ async function validateSnapshotSectionAcrossViewports(params: {
 
 async function validatePreviewAcrossViewports(params: {
   capture: PageCapture;
+  layout: LayoutDocument;
+  sections: SectionCapture[];
   previewHtml: string;
   outputDir?: string;
   mode: "section-snapshot" | "full-page-snapshot";
+  pageShellStyleMap?: Record<string, string>;
 }): Promise<{
   passed: boolean;
   similarity: number;
@@ -1825,10 +2309,21 @@ async function validatePreviewAcrossViewports(params: {
       similarityThreshold: PAGE_SIMILARITY_THRESHOLD,
       diffOutputPath: diffScreenshotPath
     });
+    const fallbackViewportBox = roundProblemBox({
+      x: 0,
+      y: 0,
+      width: comparison.width,
+      height: comparison.height
+    });
+    const bbox = comparison.passed
+      ? undefined
+      : roundProblemBox(comparison.mismatchBounds) ?? fallbackViewportBox;
     const result = {
       viewport: viewport.name,
       passed: comparison.passed,
       similarity: comparison.similarity,
+      similarityPercent: toPercentLabel(comparison.similarity),
+      bbox,
       originalScreenshotPath: referencePath,
       convertedScreenshotPath,
       diffScreenshotPath: comparison.diffOutputPath
@@ -1847,25 +2342,31 @@ async function validatePreviewAcrossViewports(params: {
     }
 
     if (!comparison.passed) {
-      const lossType: SnapshotValidationLossType = comparison.dimensionsDiffer
-        ? "size"
-        : "position";
-      issues.push({
+      const sectionOverride = findClosestSectionForProblem({
+        layout: params.layout,
+        sections: params.sections,
+        bbox
+      });
+      const lossType = inferFullPageSnapshotLossType({
+        capture: params.capture,
+        viewportWidth: viewport.width,
+        viewportHeight: viewport.height,
+        bbox,
+        dimensionsDiffer: comparison.dimensionsDiffer,
+        pageShellStyleMap: params.pageShellStyleMap
+      });
+      issues.push(createSnapshotValidationIssue({
+        capture: params.capture,
         viewport: viewport.name,
+        sectionOverride,
         similarity: comparison.similarity,
         lossType,
         fallbackStage: params.mode,
-        fallbackUsed: params.mode,
         originalScreenshotPath: referencePath,
         convertedScreenshotPath,
         diffScreenshotPath: comparison.diffOutputPath,
-        message: buildSnapshotValidationMessage({
-          viewport: viewport.name,
-          similarity: comparison.similarity,
-          lossType,
-          fallbackStage: params.mode
-        })
-      });
+        bbox
+      }));
     }
   }
 
@@ -1905,6 +2406,8 @@ function buildSnapshotWarnings(
         issue.originalScreenshotPath ?? "n/a"
       } convertido=${issue.convertedScreenshotPath ?? "n/a"} diff=${
         issue.diffScreenshotPath ?? "n/a"
+      } count=${issue.estimatedLossCount} bbox=${
+        issue.bbox ? formatProblemBox(issue.bbox) : "n/a"
       }`
   );
 }
@@ -1931,6 +2434,10 @@ async function createForceVisualSnapshotDocumentV3(params: {
   fullPageOnly?: boolean;
 } = {}): Promise<SnapshotEmitterResult> {
   const fullPageOnly = options.fullPageOnly ?? false;
+  const pageShell = resolvePageShellVisualContext({
+    capture: params.capture,
+    layout: params.layout
+  });
   const orderedSections = fullPageOnly
     ? []
     : [...params.sections].sort((left, right) => left.box.y - right.box.y || left.box.x - right.box.x);
@@ -1986,14 +2493,18 @@ async function createForceVisualSnapshotDocumentV3(params: {
   }): Promise<SnapshotEmitterResult> => {
     const previewHtml = buildPreviewHtml({
       capture: params.capture,
-      decisions: params2.decisions
+      decisions: params2.decisions,
+      shellStyleMap: pageShell.styleMap
     });
-    const content = params2.decisions.flatMap((decision, index) => {
-      const section = params2.contentSections[index];
+    const content = wrapSnapshotContentWithPageShell({
+      capture: params.capture,
+      layout: params.layout,
+      content: params2.decisions.flatMap((decision, index) => {
+        const section = params2.contentSections[index];
 
-      if (!section) {
-        return [];
-      }
+        if (!section) {
+          return [];
+        }
 
       return [
         buildContainerElement({
@@ -2009,6 +2520,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
           index
         })
       ];
+      })
     });
     const sectionReports = params2.decisions.map<SnapshotSectionReport>((decision) => ({
       nodeId: decision.nodeId,
@@ -2076,7 +2588,10 @@ async function createForceVisualSnapshotDocumentV3(params: {
           ...sectionSeparation.issues.map(
             (issue) => `${issue.name} (${issue.nodeId}): ${issue.reason}`
           ),
-          ...summarizeVisualDiagnostics(issues, params2.contentSections),
+          ...summarizeVisualDiagnostics(
+            issues,
+            orderedSections.length > 0 ? orderedSections : params2.contentSections
+          ),
           params2.fullPageFallbackReason ? `fallback global: ${params2.fullPageFallbackReason}` : "",
           blockingReason ? `motivo do bloqueio: ${blockingReason}` : ""
         ].filter(Boolean)
@@ -2091,6 +2606,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
       linksPreserved: preservedLinks,
       totalLinks,
       similarityFinal: params2.finalValidation.similarity,
+      similarityFinalPercent: toPercentLabel(params2.finalValidation.similarity),
       viewportResults: params2.finalValidation.viewportResults,
       issues,
       diagnosticSummary,
@@ -2208,13 +2724,17 @@ async function createForceVisualSnapshotDocumentV3(params: {
     );
     const previewHtml = buildPreviewHtml({
       capture: params.capture,
-      decisions: [decision]
+      decisions: [decision],
+      shellStyleMap: pageShell.styleMap
     });
     const finalValidation = await validatePreviewAcrossViewports({
       capture: params.capture,
+      layout: params.layout,
+      sections: orderedSections,
       previewHtml,
       outputDir: params.outputDir,
-      mode: "full-page-snapshot"
+      mode: "full-page-snapshot",
+      pageShellStyleMap: pageShell.styleMap
     });
 
     if (!finalValidation.passed) {
@@ -2268,6 +2788,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
     for (const section of activeSections) {
       const decision = decisions.find((candidate) => candidate.nodeId === section.nodeId);
       const validation = await validateSnapshotSectionAcrossViewports({
+        capture: params.capture,
         section,
         widgetHtml: decision?.widgetHtml ?? buildSectionSnapshotMarkup(section),
         outputDir: params.outputDir,
@@ -2349,13 +2870,17 @@ async function createForceVisualSnapshotDocumentV3(params: {
 
   const previewHtml = buildPreviewHtml({
     capture: params.capture,
-    decisions
+    decisions,
+    shellStyleMap: pageShell.styleMap
   });
   const finalValidation = await validatePreviewAcrossViewports({
     capture: params.capture,
+    layout: params.layout,
+    sections: activeSections,
     previewHtml,
     outputDir: params.outputDir,
-    mode: "section-snapshot"
+    mode: "section-snapshot",
+    pageShellStyleMap: pageShell.styleMap
   });
 
   if (!finalValidation.passed) {
@@ -2382,6 +2907,11 @@ export async function createSnapshotElementorDocumentV3(params: {
   selectedMode: OutputMode;
   outputDir?: string;
 }): Promise<SnapshotEmitterResult> {
+  const pageShell = resolvePageShellVisualContext({
+    capture: params.capture,
+    layout: params.layout
+  });
+
   if (
     isForceFullPageSnapshotEnabled() ||
     shouldForceUniversalFullPageSnapshot(params.capture, params.layout)
@@ -2417,7 +2947,8 @@ export async function createSnapshotElementorDocumentV3(params: {
   let decisions = initial.decisions;
   let previewHtml = buildPreviewHtml({
     capture: params.capture,
-    decisions
+    decisions,
+    shellStyleMap: pageShell.styleMap
   });
   let overallSimilarity =
     decisions.length > 0
@@ -2476,7 +3007,8 @@ export async function createSnapshotElementorDocumentV3(params: {
     ];
     previewHtml = buildPreviewHtml({
       capture: params.capture,
-      decisions
+      decisions,
+      shellStyleMap: pageShell.styleMap
     });
     overallSimilarity = await computeOverallSimilarity({
       capture: params.capture,
@@ -2527,7 +3059,8 @@ export async function createSnapshotElementorDocumentV3(params: {
       weakestHtmlDecision.widgetHtml = buildSectionSnapshotMarkup(section);
       previewHtml = buildPreviewHtml({
         capture: params.capture,
-        decisions
+        decisions,
+        shellStyleMap: pageShell.styleMap
       });
       overallSimilarity = await computeOverallSimilarity({
         capture: params.capture,
@@ -2543,27 +3076,31 @@ export async function createSnapshotElementorDocumentV3(params: {
         ? [syntheticPageSection]
         : []
       : orderedSections;
-  const content = decisions.flatMap((decision, index) => {
-    const section = contentSections[index];
+  const content = wrapSnapshotContentWithPageShell({
+    capture: params.capture,
+    layout: params.layout,
+    content: decisions.flatMap((decision, index) => {
+      const section = contentSections[index];
 
-    if (!section) {
-      return [];
-    }
+      if (!section) {
+        return [];
+      }
 
-    return [
-      buildContainerElement({
-        section,
-        widgetHtml: decision.widgetHtml,
-        mode: decision.mode,
-        similarity: decision.similarity,
-        fidelityScore: decision.fidelityScore,
-        riskScore: decision.riskScore,
-        htmlBlocked: decision.htmlBlocked,
-        instabilityReasons: decision.instabilityReasons,
-        healingSteps: decision.healingSteps,
-        index
-      })
-    ];
+      return [
+        buildContainerElement({
+          section,
+          widgetHtml: decision.widgetHtml,
+          mode: decision.mode,
+          similarity: decision.similarity,
+          fidelityScore: decision.fidelityScore,
+          riskScore: decision.riskScore,
+          htmlBlocked: decision.htmlBlocked,
+          instabilityReasons: decision.instabilityReasons,
+          healingSteps: decision.healingSteps,
+          index
+        })
+      ];
+    })
   });
   const sectionReports = decisions.map<SnapshotSectionReport>((decision) => ({
     nodeId: decision.nodeId,

@@ -1,7 +1,10 @@
 import type {
   CaptureSummary,
   CaptureViewportName,
-  PageCapture
+  PageCapture,
+  ThemeAnalysis,
+  ThemeDesignTokens,
+  ThemeMode
 } from "@/lib/converter-v3/contracts/capture";
 import type {
   InputAssetLoadStatus,
@@ -71,6 +74,8 @@ export type SnapshotVisualSummary = {
   };
 };
 
+export type VisualIssueSeverity = "warning" | "critical" | "blocking";
+
 export type VisualValidationIssueType =
   | "missing-text"
   | "missing-image"
@@ -80,21 +85,42 @@ export type VisualValidationIssueType =
   | "missing-section"
   | "missing-card"
   | "missing-header"
-  | "missing-footer";
+  | "missing-footer"
+  | "empty-section"
+  | "theme-mismatch"
+  | "background-mismatch"
+  | "body-white-on-dark"
+  | "card-background-mismatch"
+  | "default-button-style-detected"
+  | "default-input-style-detected"
+  | "hero-background-missing"
+  | "hero-overlay-missing"
+  | "important-image-missing"
+  | "header-footer-background-mismatch"
+  | "height-mismatch"
+  | "dominant-color-mismatch";
 
 export type VisualValidationIssue = {
   type: VisualValidationIssueType;
   nodeId: string;
   message: string;
+  severity?: VisualIssueSeverity;
   sectionId?: string;
   sectionName?: string;
   sectionType?: string;
+  sectionTypeLabel?: string;
   viewport?: CaptureViewportName;
   similarity?: number;
+  similarityPercent?: string;
   lossType?: SnapshotValidationLossType;
+  estimatedLossCount?: number;
+  estimatedLosses?: SnapshotEstimatedLossCounts;
+  bbox?: SnapshotProblemBoundingBox;
   originalScreenshotPath?: string;
   convertedScreenshotPath?: string;
   diffScreenshotPath?: string;
+  originalValue?: string | number;
+  convertedValue?: string | number;
 };
 
 export type SnapshotValidationLossType =
@@ -111,10 +137,28 @@ export type SnapshotValidationMode =
   | "section-fallback"
   | "full-page-snapshot";
 
+export type SnapshotProblemBoundingBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type SnapshotEstimatedLossCounts = {
+  total: number;
+  images: number;
+  texts: number;
+  buttons: number;
+  links: number;
+  backgrounds: number;
+};
+
 export type SnapshotViewportValidation = {
   viewport: CaptureViewportName;
   passed: boolean;
   similarity: number;
+  similarityPercent: string;
+  bbox?: SnapshotProblemBoundingBox;
   originalScreenshotPath?: string;
   convertedScreenshotPath?: string;
   diffScreenshotPath?: string;
@@ -136,8 +180,14 @@ export type SnapshotVisualValidationIssue = {
   sectionId?: string;
   sectionName?: string;
   sectionType?: string;
+  sectionTypeLabel?: string;
+  severity: "critical" | "warning";
   similarity: number;
+  similarityPercent: string;
   lossType: SnapshotValidationLossType;
+  estimatedLossCount: number;
+  estimatedLosses: SnapshotEstimatedLossCounts;
+  bbox?: SnapshotProblemBoundingBox;
   fallbackStage:
     | "section-snapshot"
     | "section-recapture"
@@ -163,6 +213,7 @@ export type SnapshotVisualValidationReport = {
   linksPreserved: number;
   totalLinks: number;
   similarityFinal: number;
+  similarityFinalPercent: string;
   viewportResults: SnapshotViewportValidation[];
   issues: SnapshotVisualValidationIssue[];
   diagnosticSummary?: string[];
@@ -171,12 +222,25 @@ export type SnapshotVisualValidationReport = {
 };
 
 export type VisualValidationIssueSummary = {
+  type?: VisualValidationIssueType;
+  nodeId?: string;
   sectionId?: string;
   sectionName?: string;
   sectionType?: string;
+  sectionTypeLabel?: string;
   viewport?: CaptureViewportName;
+  severity?: VisualIssueSeverity;
   similarity?: number;
+  similarityPercent?: string;
   lossType?: SnapshotValidationLossType;
+  estimatedLossCount?: number;
+  estimatedLosses?: SnapshotEstimatedLossCounts;
+  bbox?: SnapshotProblemBoundingBox;
+  originalScreenshotPath?: string;
+  convertedScreenshotPath?: string;
+  diffScreenshotPath?: string;
+  originalValue?: string | number;
+  convertedValue?: string | number;
   fallbackStage?:
     | "section-snapshot"
     | "section-recapture"
@@ -190,6 +254,18 @@ export type VisualValidationReport = {
   mode: OutputMode;
   issueCount: number;
   issues: VisualValidationIssue[];
+  severityCounts?: Record<VisualIssueSeverity, number>;
+  highestSeverity?: VisualIssueSeverity | "none";
+  blockingReason?: string;
+  summaryMessages?: string[];
+  auditMetrics?: {
+    originalVisibleHeight?: number;
+    convertedVisibleHeight?: number;
+    heightDifferenceRatio?: number;
+    dominantColorDistance?: number;
+    sourceDominantColor?: string;
+    convertedDominantColor?: string;
+  };
   stats: {
     expectedTexts: number;
     matchedTexts: number;
@@ -212,6 +288,30 @@ export type VisualValidationReport = {
   };
 };
 
+export type ThemeAuditIssueType =
+  | "theme-mismatch"
+  | "card-background-mismatch"
+  | "default-button-style-detected"
+  | "default-input-style-detected";
+
+export type ThemeAuditIssue = {
+  type: ThemeAuditIssueType;
+  severity: VisualIssueSeverity;
+  message: string;
+  originalValue?: string;
+  convertedValue?: string;
+};
+
+export type ThemeAuditReport = {
+  passed: boolean;
+  sourceTheme: ThemeMode;
+  convertedTheme: ThemeMode;
+  sourceTokens: ThemeDesignTokens;
+  convertedTokens: ThemeDesignTokens;
+  issues: ThemeAuditIssue[];
+  messages: string[];
+};
+
 export type ExportReport = {
   id: string;
   title: string;
@@ -231,6 +331,7 @@ export type ExportReport = {
   analysis: ComplexityAnalysis;
   validation: VisualValidationReport;
   warnings: string[];
+  selectionReasons?: string[];
   contentMetrics: {
     detectedTexts: number;
     detectedImages: number;
@@ -242,7 +343,11 @@ export type ExportReport = {
   };
   viewportSimilarities?: Partial<Record<CaptureViewportName, number>>;
   visualIssues: VisualValidationIssueSummary[];
+  visualValidationSummary: string[];
   visualLogs: string[];
+  themeAnalysis?: ThemeAnalysis;
+  themeAudit?: ThemeAuditReport;
+  themeLogs: string[];
   learningNotes: string[];
   fallbackTrail: string[];
   snapshot?: SnapshotVisualSummary;
@@ -273,6 +378,8 @@ export type UniversalVisualValidationReport = {
   viewportMatched: boolean;
   sectionCroppingRisk: boolean;
   fullPageSnapshotFailed: boolean;
+  themeDetected?: ThemeMode;
+  themeAudit?: ThemeAuditReport;
   visualIssues: VisualValidationIssueSummary[];
   learningNotes: string[];
   logs: string[];
@@ -309,6 +416,9 @@ export type ContentIntegrityReport = {
   snapshotGenerated: boolean;
   overlaysGenerated: boolean;
   modeUsed: UniversalVisualMode;
+  visualAuditPassed?: boolean;
+  visualAuditHighestSeverity?: VisualIssueSeverity | "none";
+  visualAuditIssues?: VisualValidationIssueSummary[];
   failureStage?: string;
   failureReason?: string;
   recommendation: string;

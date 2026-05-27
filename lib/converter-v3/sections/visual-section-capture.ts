@@ -116,6 +116,7 @@ const FROZEN_STYLE_PROPERTIES = [
   "background-position",
   "background-repeat",
   "background-clip",
+  "background-blend-mode",
   "color",
   "font-family",
   "font-size",
@@ -135,6 +136,11 @@ const FROZEN_STYLE_PROPERTIES = [
   "overflow-x",
   "overflow-y",
   "opacity",
+  "filter",
+  "backdrop-filter",
+  "mix-blend-mode",
+  "mask-image",
+  "-webkit-mask-image",
   "visibility",
   "transform",
   "object-fit",
@@ -532,6 +538,204 @@ async function extractViewportSectionData(params: {
               .join(";");
           }
 
+          const performanceEntries = new Map(
+            performance.getEntriesByType("resource").map((entry) => [entry.name, entry])
+          );
+
+          function absoluteUrl(value) {
+            const normalized = (value || "").trim();
+
+            if (!normalized) {
+              return "";
+            }
+
+            try {
+              return new URL(normalized, window.location.href).href;
+            } catch {
+              return normalized;
+            }
+          }
+
+          function splitBackgroundLayers(value) {
+            const layers = [];
+            let current = "";
+            let depth = 0;
+            let quote = null;
+
+            for (let index = 0; index < value.length; index += 1) {
+              const char = value[index];
+              const previous = index > 0 ? value[index - 1] : "";
+
+              if (quote) {
+                current += char;
+
+                if (char === quote && previous !== "\\\\") {
+                  quote = null;
+                }
+
+                continue;
+              }
+
+              if (char === '"' || char === "'") {
+                quote = char;
+                current += char;
+                continue;
+              }
+
+              if (char === "(") {
+                depth += 1;
+                current += char;
+                continue;
+              }
+
+              if (char === ")") {
+                depth = Math.max(depth - 1, 0);
+                current += char;
+                continue;
+              }
+
+              if (char === "," && depth === 0) {
+                const trimmed = current.trim();
+
+                if (trimmed) {
+                  layers.push(trimmed);
+                }
+
+                current = "";
+                continue;
+              }
+
+              current += char;
+            }
+
+            const trimmed = current.trim();
+
+            if (trimmed) {
+              layers.push(trimmed);
+            }
+
+            return layers;
+          }
+
+          function extractCssUrls(value) {
+            if (!value || value === "none") {
+              return [];
+            }
+
+            return splitBackgroundLayers(value).flatMap((layer) =>
+              Array.from(layer.matchAll(/url\\((['"]?)(.*?)\\1\\)/gi))
+                .map((match) => match[2]?.trim())
+                .filter(Boolean)
+            );
+          }
+
+          function buildBackgroundLayers(value) {
+            if (!value || value === "none") {
+              return [];
+            }
+
+            return splitBackgroundLayers(value).map((layer, index) => {
+              const normalized = layer.trim();
+              const url = Array.from(normalized.matchAll(/url\\((['"]?)(.*?)\\1\\)/gi))
+                .map((match) => match[2]?.trim())
+                .find(Boolean);
+
+              return {
+                index,
+                type: /(?:^|[^-])(linear|radial|conic)-gradient\\(/i.test(normalized)
+                  ? "gradient"
+                  : url
+                    ? "image"
+                    : "other",
+                value: normalized,
+                url
+              };
+            });
+          }
+
+          function extractSrcsetCandidates(value) {
+            const input = value || "";
+            const candidates = [];
+            let index = 0;
+
+            while (index < input.length) {
+              while (index < input.length && /[\\s,]/.test(input[index] || "")) {
+                index += 1;
+              }
+
+              if (index >= input.length) {
+                break;
+              }
+
+              const isDataUrl = input.slice(index, index + 5).toLowerCase() === "data:";
+              let candidate = "";
+
+              while (index < input.length) {
+                const char = input[index] || "";
+
+                if (/\\s/.test(char) || (!isDataUrl && char === ",")) {
+                  break;
+                }
+
+                candidate += char;
+                index += 1;
+              }
+
+              const normalizedCandidate = candidate.trim();
+
+              if (normalizedCandidate) {
+                candidates.push(normalizedCandidate);
+              }
+
+              while (index < input.length && input[index] !== ",") {
+                index += 1;
+              }
+
+              if (input[index] === ",") {
+                index += 1;
+              }
+            }
+
+            return candidates;
+          }
+
+          function uniqueValues(values) {
+            const seen = new Set();
+            const result = [];
+
+            values.forEach((value) => {
+              const normalized = (value || "").trim();
+
+              if (!normalized || seen.has(normalized)) {
+                return;
+              }
+
+              seen.add(normalized);
+              result.push(normalized);
+            });
+
+            return result;
+          }
+
+          function resolveAssetStatus(urls, loadedInline) {
+            if (!urls.length) {
+              return "loaded";
+            }
+
+            if (urls.every((url) => url.startsWith("data:") || performanceEntries.has(url))) {
+              return "loaded";
+            }
+
+            if (
+              loadedInline ||
+              urls.some((url) => url.startsWith("data:") || performanceEntries.has(url))
+            ) {
+              return "pending";
+            }
+
+            return "failed";
+          }
+
           function cloneNodeWithInlineStyles(node) {
             if (node.nodeType === window.Node.TEXT_NODE) {
               return document.createTextNode(node.textContent || "");
@@ -572,6 +776,18 @@ async function extractViewportSectionData(params: {
               clone.removeAttribute("sizes");
               clone.removeAttribute("loading");
               clone.removeAttribute("decoding");
+            }
+
+            if (element instanceof HTMLSourceElement) {
+              const srcset =
+                element.getAttribute("srcset") ||
+                element.getAttribute("data-srcset") ||
+                element.getAttribute("data-lazy-srcset") ||
+                "";
+
+              if (srcset) {
+                clone.setAttribute("srcset", srcset);
+              }
             }
 
             if (element instanceof HTMLAnchorElement) {
@@ -693,6 +909,18 @@ async function extractViewportSectionData(params: {
           }
 
           const rootRect = root.getBoundingClientRect();
+          const subtreeVisibleElements = [root, ...Array.from(root.querySelectorAll("*"))].filter((element) => {
+            if (!(element instanceof HTMLElement || element instanceof SVGElement)) {
+              return false;
+            }
+
+            if (!isVisibleElement(element)) {
+              return false;
+            }
+
+            const tagName = element.tagName.toLowerCase();
+            return !["script", "noscript", "style", "meta", "link"].includes(tagName);
+          });
           const invadingElements = Array.from(document.body.querySelectorAll("*")).filter((element) => {
             if (element === root || root.contains(element)) {
               return false;
@@ -739,6 +967,13 @@ async function extractViewportSectionData(params: {
               bottom: rootRect.bottom
             }
           );
+          subtreeVisibleElements.forEach((element) => {
+            const rect = element.getBoundingClientRect();
+            captureRect.left = Math.min(captureRect.left, rect.left);
+            captureRect.top = Math.min(captureRect.top, rect.top);
+            captureRect.right = Math.max(captureRect.right, rect.right);
+            captureRect.bottom = Math.max(captureRect.bottom, rect.bottom);
+          });
           const documentWidth = Math.max(
             document.documentElement.scrollWidth,
             document.body.scrollWidth,
@@ -846,31 +1081,100 @@ async function extractViewportSectionData(params: {
           });
 
           const originalImages = uniqueElements
-            .filter((element) => element instanceof HTMLImageElement)
-            .map((element) => ({
-              nodeId: getNodeCaptureId(element),
-              tag: element.tagName.toLowerCase(),
-              src: element.currentSrc || element.src || element.getAttribute("src") || "",
-              alt: element.getAttribute("alt") || undefined,
-              width: Math.max(element.naturalWidth || element.clientWidth || 0, 0),
-              height: Math.max(element.naturalHeight || element.clientHeight || 0, 0)
-            }))
-            .filter((image) => Boolean(image.src));
-
-          const cssBackgrounds = uniqueElements
+            .filter(
+              (element) => element instanceof HTMLImageElement || element instanceof HTMLPictureElement
+            )
             .map((element) => {
-              const computed = window.getComputedStyle(element);
-              const backgroundImage = computed.backgroundImage || "";
-
-              if (!backgroundImage || backgroundImage === "none") {
-                return null;
-              }
+              const image =
+                element instanceof HTMLPictureElement ? element.querySelector("img") : element;
+              const srcsetCandidates = uniqueValues(
+                image
+                  ? [
+                      ...extractSrcsetCandidates(image.getAttribute("srcset")),
+                      ...extractSrcsetCandidates(image.getAttribute("data-srcset")),
+                      ...extractSrcsetCandidates(image.getAttribute("data-lazy-srcset")),
+                      ...(element instanceof HTMLPictureElement
+                        ? Array.from(element.querySelectorAll("source")).flatMap((source) => [
+                            ...extractSrcsetCandidates(source.getAttribute("srcset")),
+                            ...extractSrcsetCandidates(source.getAttribute("data-srcset")),
+                            ...extractSrcsetCandidates(source.getAttribute("data-lazy-srcset"))
+                          ])
+                        : [])
+                    ]
+                  : []
+              ).map((candidate) => absoluteUrl(candidate));
+              const lazy =
+                Boolean(
+                  image?.loading === "lazy" ||
+                    image?.getAttribute("data-src") ||
+                    image?.getAttribute("data-lazy-src") ||
+                    image?.getAttribute("data-original") ||
+                    image?.getAttribute("data-srcset") ||
+                    image?.getAttribute("data-lazy-srcset")
+                ) ||
+                (element instanceof HTMLPictureElement &&
+                  Array.from(element.querySelectorAll("source")).some((source) =>
+                    Boolean(source.getAttribute("data-srcset") || source.getAttribute("data-lazy-srcset"))
+                  ));
+              const currentSrc = image?.currentSrc || image?.getAttribute("src") || "";
+              const src = currentSrc || srcsetCandidates[0] || "";
 
               return {
                 nodeId: getNodeCaptureId(element),
                 tag: element.tagName.toLowerCase(),
-                backgroundImage
+                src,
+                currentSrc: currentSrc || undefined,
+                srcsetCandidates,
+                alt: image?.getAttribute("alt") || undefined,
+                width: Math.max(image?.naturalWidth || image?.clientWidth || 0, 0),
+                height: Math.max(image?.naturalHeight || image?.clientHeight || 0, 0),
+                lazy,
+                status: resolveAssetStatus(
+                  uniqueValues([absoluteUrl(src), ...srcsetCandidates]),
+                  Boolean(image && image.complete && image.naturalWidth > 0)
+                )
               };
+            })
+            .filter((image) => Boolean(image.src));
+
+          const cssBackgrounds = uniqueElements
+            .flatMap((element) => {
+              const entries = [
+                {
+                  pseudo: undefined,
+                  backgroundImage: window.getComputedStyle(element).backgroundImage || ""
+                },
+                {
+                  pseudo: "::before",
+                  backgroundImage: window.getComputedStyle(element, "::before").backgroundImage || ""
+                },
+                {
+                  pseudo: "::after",
+                  backgroundImage: window.getComputedStyle(element, "::after").backgroundImage || ""
+                }
+              ];
+
+              return entries.map((entry) => {
+                if (!entry.backgroundImage || entry.backgroundImage === "none") {
+                  return null;
+                }
+
+                const backgroundUrls = uniqueValues(
+                  extractCssUrls(entry.backgroundImage).map((url) => absoluteUrl(url))
+                );
+                const backgroundLayers = buildBackgroundLayers(entry.backgroundImage);
+
+                return {
+                  nodeId: getNodeCaptureId(element),
+                  tag: element.tagName.toLowerCase(),
+                  backgroundImage: entry.backgroundImage,
+                  backgroundUrls,
+                  backgroundLayers,
+                  hasGradient: backgroundLayers.some((layer) => layer.type === "gradient"),
+                  pseudo: entry.pseudo,
+                  status: resolveAssetStatus(backgroundUrls, false)
+                };
+              });
             })
             .filter((item) => Boolean(item));
 
