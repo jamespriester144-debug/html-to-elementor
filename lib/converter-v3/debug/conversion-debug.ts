@@ -1,6 +1,7 @@
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import * as cheerio from "cheerio";
 import type { PageCapture, SectionCapture } from "@/lib/converter-v3/contracts/capture";
 import type { VisibleContentElement } from "@/lib/converter-v3/contracts/geometry";
 import type { LayoutDocument } from "@/lib/converter-v3/contracts/layout";
@@ -11,7 +12,11 @@ import type {
   VisualValidationIssue,
   VisualValidationReport
 } from "@/lib/converter-v3/contracts/output";
-import { buildInlineStyleFromComputedStyleMap } from "@/lib/converter-v3/emitters/elementor/style-preservation";
+import {
+  CLICKABLE_TEXT_DECORATION_RESET_CSS,
+  buildInlineStyleFromComputedStyleMap,
+  normalizeClickableTextDecorationStyles
+} from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import { extractVisibleContentElements } from "@/lib/converter-v3/universal-content";
 import { renderHtmlToScreenshot } from "@/lib/converter-v3/visual-similarity";
 import type { ElementorDocument, ElementorElement } from "@/types/conversion";
@@ -357,6 +362,16 @@ function withFallbackStyles(
   return [nextStyle, ...additions].filter(Boolean).join(";");
 }
 
+function sanitizeClickableHtmlFragment(html: string) {
+  const $ = cheerio.load(html);
+
+  normalizeClickableTextDecorationStyles($);
+
+  const bodyHtml = $("body").html()?.trim();
+
+  return bodyHtml && bodyHtml.length > 0 ? bodyHtml : html;
+}
+
 function renderWidgetMarkup(
   element: ElementorElement,
   captureNodeById: Map<string, PageCapture["nodes"][number]>
@@ -370,7 +385,7 @@ function renderWidgetMarkup(
     }
     case "text-editor": {
       const editor = String(element.settings?.editor ?? "").trim();
-      return editor ? `<div style="${style}">${editor}</div>` : "";
+      return editor ? `<div style="${style}">${sanitizeClickableHtmlFragment(editor)}</div>` : "";
     }
     case "blockquote": {
       const quote = normalizeText(String(element.settings?.blockquote_content ?? ""));
@@ -431,7 +446,7 @@ function renderWidgetMarkup(
     }
     case "html": {
       const html = String(element.settings?.html ?? "");
-      return html ? `<div style="${style}">${html}</div>` : "";
+      return html ? `<div style="${style}">${sanitizeClickableHtmlFragment(html)}</div>` : "";
     }
     default: {
       const children = element.elements
@@ -512,7 +527,7 @@ export function buildConvertedPreviewHtml(params: {
       ? `background:${pageShellStyle.background}`
       : pageShellStyle.backgroundColor
         ? `background:${pageShellStyle.backgroundColor}`
-        : "background:#ffffff",
+        : "background:transparent",
     pageShellStyle.backgroundImage ? `background-image:${pageShellStyle.backgroundImage}` : "",
     pageShellStyle.backgroundSize ? `background-size:${pageShellStyle.backgroundSize}` : "",
     pageShellStyle.backgroundPosition ? `background-position:${pageShellStyle.backgroundPosition}` : "",
@@ -537,6 +552,8 @@ export function buildConvertedPreviewHtml(params: {
       *, *::before, *::after {
         box-sizing: border-box;
       }
+
+      ${CLICKABLE_TEXT_DECORATION_RESET_CSS}
 
       img {
         max-width: 100%;

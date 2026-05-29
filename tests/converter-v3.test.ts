@@ -7666,6 +7666,9 @@ async function testV3EditablePreservesStyledButtonVisuals() {
   );
   assert.match(previewHtml, /225,\s*29,\s*72/i);
   assert.match(previewHtml, /padding:16px 28px/i);
+  assert.match(previewHtml, /background:transparent/i);
+  assert.equal(previewHtml.includes("background:#ffffff"), false);
+  assert.equal(previewHtml.includes("background: #ffffff"), false);
   assert.equal(previewHtml.includes("background:#111"), false);
 }
 
@@ -7676,7 +7679,7 @@ async function testV3EditableNormalizesButtonUnderline() {
     <title>Underline Button Normalization</title>
   </head>
   <body>
-    <section style="padding:32px;background:#fff7ed;">
+    <section style="padding:32px;">
       <a
         href="#cta"
         style="display:inline-flex;align-items:center;justify-content:center;padding:16px 28px;border-radius:999px;background:#e11d48;color:#f8fafc;border:1px solid rgba(255,255,255,.22);box-shadow:0 18px 40px rgba(225,29,72,.35);text-decoration:underline;"
@@ -7715,6 +7718,9 @@ async function testV3EditableNormalizesButtonUnderline() {
     String(button?.settings?.converter_v3_inline_style ?? ""),
     /text-decoration:\s*none/i
   );
+  assert.equal(button?.settings?.typography_typography, "custom");
+  assert.equal(button?.settings?.typography_text_decoration, "none");
+  assert.equal(button?.settings?.button_typography_text_decoration, "none");
   assert.equal(/text-decoration:\s*underline/i.test(previewHtml), false);
 }
 
@@ -7790,10 +7796,11 @@ async function testV3StyledHtmlFragmentNormalizesDefaultLinkUnderline() {
 
   assert.match(strippedFragment, /text-decoration:\s*none/i);
   assert.equal(/text-decoration:\s*underline/i.test(strippedFragment), false);
-  assert.match(explicitUnderlineFragment, /text-decoration:\s*underline/i);
+  assert.match(explicitUnderlineFragment, /text-decoration:\s*none/i);
+  assert.equal(/text-decoration:\s*underline/i.test(explicitUnderlineFragment), false);
 }
 
-async function testV3StyledHtmlFragmentNormalizesNestedLinkUnderline() {
+async function testV3StyledHtmlFragmentNormalizesClickableUnderlineStyles() {
   const captureNode: PageCapture["nodes"][number] = {
     id: "block-1",
     tag: "div",
@@ -7832,13 +7839,35 @@ async function testV3StyledHtmlFragmentNormalizesNestedLinkUnderline() {
 
   const fragment = buildStyledHtmlFragment({
     html:
-      '<div data-capture-id="block-1"><p>Read <a href="/more">more</a> or <a href="/learn" style="text-decoration: underline;">learn</a></p></div>',
+      '<div data-capture-id="block-1"><p>Read <a href="/more">more</a> or <a href="/learn" style="text-decoration: underline;">learn</a> <button style="text-decoration: underline;"><span style="text-decoration: underline;">buy</span></button> <span role="button" style="text-decoration: underline;">tap</span></p></div>',
     captureById: new Map([[captureNode.id, captureNode]]),
     layoutById: new Map([[layoutNode.id, layoutNode]])
   });
 
-  assert.match(fragment, /<a href="\/more" style="text-decoration:none">more<\/a>/i);
-  assert.match(fragment, /<a href="\/learn" style="text-decoration:\s*underline;/i);
+  assert.match(fragment, /<a href="\/more" style="[^"]*text-decoration:none/i);
+  assert.match(fragment, /<a href="\/learn" style="[^"]*text-decoration:none/i);
+  assert.match(fragment, /<button style="[^"]*text-decoration:none/i);
+  assert.match(fragment, /role="button" style="[^"]*text-decoration:none/i);
+  assert.equal(/text-decoration:\s*underline/i.test(fragment), false);
+}
+
+function testV3PixelPerfectInjectsClickableUnderlineReset() {
+  const document = createPixelPerfectElementorDocumentV3(
+    '<!doctype html><html><head><style>a{ text-decoration: underline !important; }</style></head><body><a href="#buy">Buy</a></body></html>',
+    {
+      title: "Pixel Perfect Underline Reset",
+      selectedMode: "pixel-perfect"
+    }
+  );
+  const htmlWidget = findFirstWidget(document, "html");
+  const html = String(htmlWidget?.settings?.html ?? "");
+
+  assert.ok(htmlWidget);
+  assert.match(html, /a\[href\]\{text-decoration:none !important/i);
+  assert.match(html, /\.elementor-button\{text-decoration:none !important/i);
+  assert.match(html, /background:transparent/i);
+  assert.equal(html.includes("var(--detected-page-background, #ffffff)"), false);
+  assert.equal(/#ffffff/i.test(html), false);
 }
 
 async function testV3EditablePreservesStyledInputAsHtml() {
@@ -9010,6 +9039,7 @@ async function testV3SnapshotEmitterPropagatesDetectedPageBackgroundOnlyToPageSh
   assert.equal(snapshotSection?.settings?.background_color, undefined);
   assert.equal(snapshotSection?.settings?._background_color, undefined);
   assert.match(result.previewHtml, /--detected-page-background:rgb\(16,\s*37,\s*66\)/i);
+  assert.equal(result.previewHtml.includes("var(--detected-page-background, #ffffff)"), false);
 }
 
 async function testV3PixelPerfectEmitterInjectsDetectedPageBackgroundVariableWithoutGlobalOverride() {
@@ -13782,7 +13812,8 @@ async function main() {
   await testV3EditablePreservesStyledButtonVisuals();
   await testV3EditableNormalizesButtonUnderline();
   await testV3StyledHtmlFragmentNormalizesDefaultLinkUnderline();
-  await testV3StyledHtmlFragmentNormalizesNestedLinkUnderline();
+  await testV3StyledHtmlFragmentNormalizesClickableUnderlineStyles();
+  testV3PixelPerfectInjectsClickableUnderlineReset();
   await testV3EditablePreservesStyledInputAsHtml();
   await testV3EditablePreservesDarkCardShell();
   await testV3EditablePreservesHeroBackgroundAndOverlay();

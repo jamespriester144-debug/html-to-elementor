@@ -101,12 +101,49 @@ const NUMERIC_BOX_STYLE_PROPERTIES = new Set([
   "max-height"
 ]);
 
+export const CLICKABLE_TEXT_DECORATION_RESET_STYLE =
+  "text-decoration:none !important;text-decoration-line:none !important";
+
+export const CLICKABLE_TEXT_DECORATION_RESET_SELECTORS = [
+  "a[href]",
+  "a[href] *",
+  "button",
+  "button *",
+  "[role=\"button\"]",
+  "[role=\"button\"] *",
+  "[role=\"link\"]",
+  "[role=\"link\"] *",
+  "input[type=\"button\"]",
+  "input[type=\"submit\"]",
+  "input[type=\"reset\"]",
+  ".elementor-button",
+  ".elementor-button *",
+  ".elementor-widget-button a",
+  ".elementor-widget-button a *"
+] as const;
+
+export const CLICKABLE_TEXT_DECORATION_RESET_CSS = CLICKABLE_TEXT_DECORATION_RESET_SELECTORS
+  .map(
+    (selector) =>
+      `${selector}{text-decoration:none !important;text-decoration-line:none !important;}`
+  )
+  .join("");
+
 function trimStyleValue(value?: string) {
   return value?.trim() || undefined;
 }
 
 function hasInlineTextDecorationStyle(value?: string) {
   return /\btext-decoration(?:-line|-style|-color)?\s*:/i.test(value ?? "");
+}
+
+function removeInlineTextDecorationStyles(value?: string) {
+  return (value ?? "")
+    .split(";")
+    .map((declaration) => declaration.trim())
+    .filter(Boolean)
+    .filter((declaration) => !/^text-decoration(?:-[a-z-]+)?\s*:/i.test(declaration))
+    .join(";");
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -1264,6 +1301,14 @@ export function buildElementorStyleBridgeSettings(params: {
     overflow_x: trimStyleValue(styleMap["overflow-x"]),
     overflow_y: trimStyleValue(styleMap["overflow-y"]),
     display: trimStyleValue(styleMap.display),
+    text_decoration: params.isButton ? "none" : undefined,
+    typography_typography: params.isButton ? "custom" : undefined,
+    typography_text_decoration: params.isButton ? "none" : undefined,
+    _typography_text_decoration: params.isButton ? "none" : undefined,
+    button_text_decoration: params.isButton ? "none" : undefined,
+    button_typography_typography: params.isButton ? "custom" : undefined,
+    button_typography_text_decoration: params.isButton ? "none" : undefined,
+    button_hover_text_decoration: params.isButton ? "none" : undefined,
     converter_v3_styles: styleMap,
     converter_v3_inline_style: buildInlineStyleFromComputedStyleMap(styleMap, {
       width,
@@ -1422,16 +1467,15 @@ function convertInlineSvgElementsToImages($: cheerio.CheerioAPI) {
   });
 }
 
-function normalizeAnchorUnderlineStyles($: cheerio.CheerioAPI) {
-  $("a[href]").each((_, element) => {
-    const anchor = $(element);
-    const style = anchor.attr("style");
+export function normalizeClickableTextDecorationStyles($: cheerio.CheerioAPI) {
+  $(CLICKABLE_TEXT_DECORATION_RESET_SELECTORS.join(",")).each((_, element) => {
+    const clickable = $(element);
+    const cleanedStyle = removeInlineTextDecorationStyles(clickable.attr("style"));
 
-    if (hasInlineTextDecorationStyle(style)) {
-      return;
-    }
-
-    anchor.attr("style", mergeExistingStyle(style, "text-decoration:none"));
+    clickable.attr(
+      "style",
+      mergeExistingStyle(cleanedStyle, CLICKABLE_TEXT_DECORATION_RESET_STYLE)
+    );
   });
 }
 
@@ -1490,7 +1534,7 @@ export function buildStyledHtmlFragment(params: {
   });
 
   convertInlineSvgElementsToImages($);
-  normalizeAnchorUnderlineStyles($);
+  normalizeClickableTextDecorationStyles($);
 
   const fragment = $.root()
     .children()

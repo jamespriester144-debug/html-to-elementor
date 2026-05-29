@@ -718,13 +718,14 @@ function buildPixelPerfectCandidate(params: {
     capture: params.capture,
     layout: params.layout
   });
+  const shellStyleMap = pageShell.shouldWrap ? pageShell.styleMap : undefined;
 
   return {
     document: createPixelPerfectElementorDocumentV3(params.capture.renderedHtml, {
       title: params.capture.title,
       selectedMode: params.selectedMode,
       fallbackReason: params.fallbackReason,
-      shellStyleMap: pageShell.styleMap
+      shellStyleMap
     }),
     emittedMode: "pixel-perfect",
     exportStage: "pixel-perfect-emitter",

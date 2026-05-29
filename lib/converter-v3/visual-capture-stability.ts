@@ -1,4 +1,8 @@
 import type { BrowserPage } from "@/lib/converter-v3/browser-page";
+import {
+  CLICKABLE_TEXT_DECORATION_RESET_CSS,
+  CLICKABLE_TEXT_DECORATION_RESET_SELECTORS
+} from "@/lib/converter-v3/emitters/elementor/style-preservation";
 
 type VisualCapturePreparationOptions = {
   timeoutMs?: number;
@@ -27,10 +31,12 @@ export async function preparePageForVisualCapture(
     .evaluate(
       async ({
         timeoutMs,
-        scrollEntirePage
+        scrollEntirePage,
+        clickableSelectors
       }: {
         timeoutMs: number;
         scrollEntirePage: boolean;
+        clickableSelectors: readonly string[];
       }) => {
         const styleId = "converter-v3-visual-capture-lock";
 
@@ -63,8 +69,36 @@ export async function preparePageForVisualCapture(
               background: transparent !important;
               color: inherit !important;
             }
+
+            ${CLICKABLE_TEXT_DECORATION_RESET_CSS}
           `;
           document.head.appendChild(style);
+        }
+
+        const clickableSelector = clickableSelectors.join(",");
+        const normalizeClickableTextDecorations = () => {
+          Array.from(document.querySelectorAll(clickableSelector)).forEach((element) => {
+            if (!(element instanceof HTMLElement)) {
+              return;
+            }
+
+            element.style.setProperty("text-decoration", "none", "important");
+            element.style.setProperty("text-decoration-line", "none", "important");
+            element.style.removeProperty("text-decoration-style");
+            element.style.removeProperty("text-decoration-color");
+          });
+        };
+
+        normalizeClickableTextDecorations();
+
+        if (window.MutationObserver && document.documentElement) {
+          const clickableTextObserver = new MutationObserver(() => normalizeClickableTextDecorations());
+          clickableTextObserver.observe(document.documentElement, {
+            attributes: true,
+            childList: true,
+            characterData: true,
+            subtree: true
+          });
         }
 
         const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -519,6 +553,7 @@ export async function preparePageForVisualCapture(
 
         boostLazyAssets();
         freezeInteractiveMedia();
+        normalizeClickableTextDecorations();
         await waitForFonts();
         await waitForBackgroundImages();
         await inlineLocalAssetsAsDataUrls();
@@ -530,6 +565,7 @@ export async function preparePageForVisualCapture(
 
         boostLazyAssets();
         freezeInteractiveMedia();
+        normalizeClickableTextDecorations();
         await waitForImages();
         await waitForMeaningfulContent();
         await waitForBackgroundImages();
@@ -538,7 +574,8 @@ export async function preparePageForVisualCapture(
       },
       {
         timeoutMs,
-        scrollEntirePage: options.scrollEntirePage ?? true
+        scrollEntirePage: options.scrollEntirePage ?? true,
+        clickableSelectors: CLICKABLE_TEXT_DECORATION_RESET_SELECTORS
       }
     )
     .catch(() => undefined);

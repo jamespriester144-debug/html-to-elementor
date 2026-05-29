@@ -42,9 +42,10 @@ import {
   renderHtmlToScreenshot
 } from "@/lib/converter-v3/visual-similarity";
 import {
-  buildDetectedPageBackgroundCssVariables,
+  CLICKABLE_TEXT_DECORATION_RESET_CSS,
   buildInlineStyleFromComputedStyleMap,
   normalizeElementorColorValue,
+  normalizeClickableTextDecorationStyles,
   resolvePageShellVisualContext,
   resolveStyleMapBackgroundColor,
   resolveStyleMapBackgroundValue
@@ -520,6 +521,7 @@ function findClosestSectionForProblem(params: {
 
 function extractWidgetHtmlFromFrozenDocument(documentHtml: string) {
   const $ = cheerio.load(documentHtml);
+  normalizeClickableTextDecorationStyles($);
   const bodyHtml = $("body").html()?.trim();
 
   return bodyHtml && bodyHtml.length > 0 ? bodyHtml : documentHtml;
@@ -785,38 +787,42 @@ function buildPreviewHtml(params: {
       )}" style="margin:0;padding:0;">${decision.widgetHtml}</section>`
     )
     .join("");
-  const detectedBackgroundVariables = buildDetectedPageBackgroundCssVariables(
-    params.shellStyleMap ?? {}
-  );
-  const pageShellRules = [
-    "background: var(--detected-page-background, #ffffff);",
-    "background-color: var(--detected-page-background-color, #ffffff);",
+  const pageShellStyles = [
+    params.shellStyleMap?.background
+      ? `background: ${params.shellStyleMap.background};`
+      : params.shellStyleMap?.["background-color"]
+        ? `background: ${params.shellStyleMap["background-color"]};`
+        : "background: transparent;",
     params.shellStyleMap?.["background-image"]
-      ? "background-image: var(--detected-page-background-image);"
+      ? `background-image: ${params.shellStyleMap["background-image"]};`
       : "",
     params.shellStyleMap?.["background-size"]
-      ? "background-size: var(--detected-page-background-size);"
+      ? `background-size: ${params.shellStyleMap["background-size"]};`
       : "",
     params.shellStyleMap?.["background-position"]
-      ? "background-position: var(--detected-page-background-position);"
+      ? `background-position: ${params.shellStyleMap["background-position"]};`
       : "",
     params.shellStyleMap?.["background-repeat"]
-      ? "background-repeat: var(--detected-page-background-repeat);"
+      ? `background-repeat: ${params.shellStyleMap["background-repeat"]};`
       : "",
     params.shellStyleMap?.["background-attachment"]
-      ? "background-attachment: var(--detected-page-background-attachment);"
+      ? `background-attachment: ${params.shellStyleMap["background-attachment"]};`
       : "",
     params.shellStyleMap?.["background-origin"]
-      ? "background-origin: var(--detected-page-background-origin);"
+      ? `background-origin: ${params.shellStyleMap["background-origin"]};`
       : "",
     params.shellStyleMap?.["background-clip"]
-      ? "background-clip: var(--detected-page-background-clip);"
+      ? `background-clip: ${params.shellStyleMap["background-clip"]};`
       : "",
     params.shellStyleMap?.["background-blend-mode"]
-      ? "background-blend-mode: var(--detected-page-background-blend-mode);"
+      ? `background-blend-mode: ${params.shellStyleMap["background-blend-mode"]};`
       : "",
-    "color: var(--detected-page-foreground, #111111);",
-    "font-family: var(--detected-page-font-family, Arial, sans-serif);"
+    params.shellStyleMap?.color
+      ? `color: ${params.shellStyleMap.color};`
+      : "color: #111111;",
+    params.shellStyleMap?.["font-family"]
+      ? `font-family: ${params.shellStyleMap["font-family"]};`
+      : "font-family: Arial, sans-serif;"
   ]
     .filter(Boolean)
     .join("\n        ");
@@ -827,10 +833,6 @@ function buildPreviewHtml(params: {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
-      :root {
-        ${detectedBackgroundVariables}
-      }
-
       html, body {
         margin: 0;
         padding: 0;
@@ -841,6 +843,8 @@ function buildPreviewHtml(params: {
         box-sizing: border-box;
       }
 
+      ${CLICKABLE_TEXT_DECORATION_RESET_CSS}
+
       html,
       body,
       body > .elementor,
@@ -849,7 +853,7 @@ function buildPreviewHtml(params: {
       body > .site-content,
       body > .elementor-section-wrap,
       .converter-v3-preview-page {
-        ${pageShellRules}
+        ${pageShellStyles}
       }
 
       .converter-v3-preview-page {
@@ -1785,12 +1789,14 @@ function buildStandaloneSectionPreviewHtml(params: {
       html, body {
         margin: 0;
         padding: 0;
-        background: #ffffff;
+        background: transparent;
       }
 
       *, *::before, *::after {
         box-sizing: border-box;
       }
+
+      ${CLICKABLE_TEXT_DECORATION_RESET_CSS}
 
       .converter-v3-standalone-snapshot {
         width: ${Math.max(Math.round(params.viewportWidth), 1)}px;
@@ -2583,7 +2589,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
     const previewHtml = buildPreviewHtml({
       capture: params.capture,
       decisions: params2.decisions,
-      shellStyleMap: pageShell.styleMap
+      shellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
     });
     const content = wrapSnapshotContentWithPageShell({
       capture: params.capture,
@@ -2814,7 +2820,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
     const previewHtml = buildPreviewHtml({
       capture: params.capture,
       decisions: [decision],
-      shellStyleMap: pageShell.styleMap
+      shellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
     });
     const finalValidation = await validatePreviewAcrossViewports({
       capture: params.capture,
@@ -2823,7 +2829,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
       previewHtml,
       outputDir: params.outputDir,
       mode: "full-page-snapshot",
-      pageShellStyleMap: pageShell.styleMap
+      pageShellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
     });
 
     if (!finalValidation.passed) {
@@ -2960,7 +2966,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
   const previewHtml = buildPreviewHtml({
     capture: params.capture,
     decisions,
-    shellStyleMap: pageShell.styleMap
+    shellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
   });
   const finalValidation = await validatePreviewAcrossViewports({
     capture: params.capture,
@@ -2969,7 +2975,7 @@ async function createForceVisualSnapshotDocumentV3(params: {
     previewHtml,
     outputDir: params.outputDir,
     mode: "section-snapshot",
-    pageShellStyleMap: pageShell.styleMap
+    pageShellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
   });
 
   if (!finalValidation.passed) {
@@ -3037,7 +3043,7 @@ export async function createSnapshotElementorDocumentV3(params: {
   let previewHtml = buildPreviewHtml({
     capture: params.capture,
     decisions,
-    shellStyleMap: pageShell.styleMap
+    shellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
   });
   let overallSimilarity =
     decisions.length > 0
@@ -3097,7 +3103,7 @@ export async function createSnapshotElementorDocumentV3(params: {
     previewHtml = buildPreviewHtml({
       capture: params.capture,
       decisions,
-      shellStyleMap: pageShell.styleMap
+      shellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
     });
     overallSimilarity = await computeOverallSimilarity({
       capture: params.capture,
@@ -3149,7 +3155,7 @@ export async function createSnapshotElementorDocumentV3(params: {
       previewHtml = buildPreviewHtml({
         capture: params.capture,
         decisions,
-        shellStyleMap: pageShell.styleMap
+        shellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
       });
       overallSimilarity = await computeOverallSimilarity({
         capture: params.capture,
@@ -3215,7 +3221,7 @@ export async function createSnapshotElementorDocumentV3(params: {
     previewHtml,
     outputDir: params.outputDir,
     mode: usedFullPageSnapshot ? "full-page-snapshot" : "section-snapshot",
-    pageShellStyleMap: pageShell.styleMap
+    pageShellStyleMap: pageShell.shouldWrap ? pageShell.styleMap : undefined
   });
   const visualValidationMode = resolveSnapshotValidationMode({
     usedFullPageSnapshot,

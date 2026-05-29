@@ -2,8 +2,11 @@ import * as cheerio from "cheerio";
 
 import type { OutputMode } from "@/lib/converter-v3/contracts/layout";
 import {
+  CLICKABLE_TEXT_DECORATION_RESET_CSS,
+  CLICKABLE_TEXT_DECORATION_RESET_SELECTORS,
   buildDetectedPageBackgroundCssVariables,
   normalizeElementorColorValue,
+  normalizeClickableTextDecorationStyles,
   resolveStyleMapBackgroundValue
 } from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import type { ElementorDocument } from "@/types/conversion";
@@ -135,10 +138,21 @@ function injectFrameRuntime(
     $("html").append("<body></body>");
   }
 
+  normalizeClickableTextDecorationStyles($);
+
   const shellCssVariables = buildDetectedPageBackgroundCssVariables(shellStyleMap ?? {});
+  const hasDetectedShellBackground = Boolean(
+    shellStyleMap?.background ||
+      shellStyleMap?.["background-color"] ||
+      shellStyleMap?.["background-image"]
+  );
   const shellStyles = [
-    "background:var(--detected-page-background, #ffffff) !important;",
-    "background-color:var(--detected-page-background-color, #ffffff) !important;",
+    hasDetectedShellBackground
+      ? "background:var(--detected-page-background) !important;"
+      : "background:transparent !important;",
+    shellStyleMap?.["background-color"]
+      ? "background-color:var(--detected-page-background-color) !important;"
+      : "",
     shellStyleMap?.["background-image"] &&
     shellStyleMap["background-image"].trim().toLowerCase() !== "none"
       ? "background-image:var(--detected-page-background-image) !important;"
@@ -201,6 +215,8 @@ body {
   overflow-x: hidden !important;
   overflow-y: visible !important;
 }
+
+${CLICKABLE_TEXT_DECORATION_RESET_CSS}
 </style>`);
 
   $("body").append(`<script>
@@ -339,7 +355,7 @@ export function createPixelPerfectElementorDocumentV3(
   const detectedPageBackground =
     resolveStyleMapBackgroundValue(options.shellStyleMap ?? {}) ??
     trimStyleValue(options.shellStyleMap?.["background-color"]) ??
-    "#fff";
+    "transparent";
   const srcdoc = escapeHtmlAttribute(
     injectFrameRuntime(html, frameToken, options.shellStyleMap)
   );
@@ -358,9 +374,60 @@ export function createPixelPerfectElementorDocumentV3(
 (function(){
   var frame = document.currentScript && document.currentScript.previousElementSibling;
   var frameToken = "${frameToken}";
+  var clickableSelectors = ${JSON.stringify(CLICKABLE_TEXT_DECORATION_RESET_SELECTORS)};
+  var clickableSelector = clickableSelectors.join(",");
   if (!frame || frame.tagName !== "IFRAME") return;
   frame.setAttribute("scrolling", "no");
   frame.style.overflow = "hidden";
+  function getFrameDocument() {
+    try {
+      return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
+    } catch (error) {
+      return null;
+    }
+  }
+  function normalizeClickableTextDecorations() {
+    var doc = getFrameDocument();
+
+    if (!doc) {
+      return;
+    }
+
+    Array.prototype.forEach.call(doc.querySelectorAll(clickableSelector), function(element) {
+      if (!element || element.nodeType !== 1) {
+        return;
+      }
+
+      element.style.setProperty("text-decoration", "none", "important");
+      element.style.setProperty("text-decoration-line", "none", "important");
+      element.style.removeProperty("text-decoration-style");
+      element.style.removeProperty("text-decoration-color");
+    });
+  }
+  var clickableTextObserver = null;
+  function attachClickableTextObserver() {
+    if (clickableTextObserver || !window.MutationObserver) {
+      return;
+    }
+
+    var doc = getFrameDocument();
+
+    if (!doc || !doc.documentElement) {
+      return;
+    }
+
+    clickableTextObserver = new MutationObserver(function() {
+      normalizeClickableTextDecorations();
+      resizeFrame();
+    });
+
+    clickableTextObserver.observe(doc.documentElement, {
+      attributes: true,
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
+  }
   function applyHeight(nextHeight) {
     if (!nextHeight || !Number.isFinite(nextHeight)) return;
     var targetHeight = Math.ceil(nextHeight);
@@ -369,6 +436,7 @@ export function createPixelPerfectElementorDocumentV3(
     frame.style.height = String(targetHeight) + "px";
   }
   function resizeFrame() {
+    normalizeClickableTextDecorations();
     try {
       var doc = frame.contentDocument || frame.contentWindow.document;
       if (!doc) return;
@@ -394,7 +462,12 @@ export function createPixelPerfectElementorDocumentV3(
     applyHeight(Number(data.height));
   }
   window.addEventListener("message", handleFrameMessage);
-  frame.addEventListener("load", resizeFrame);
+  frame.addEventListener("load", function() {
+    normalizeClickableTextDecorations();
+    attachClickableTextObserver();
+    resizeFrame();
+  });
+  normalizeClickableTextDecorations();
   setTimeout(resizeFrame, 50);
   setTimeout(resizeFrame, 250);
   setTimeout(resizeFrame, 1000);
