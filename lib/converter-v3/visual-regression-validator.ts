@@ -259,6 +259,22 @@ function readSourceNodeId(element: ElementorElement): string | undefined {
   return typeof nodeId === "string" && nodeId.trim() ? nodeId.trim() : undefined;
 }
 
+function readMappedSourceNodeIds(element: ElementorElement): string[] {
+  const ids = new Set<string>();
+  const sourceNodeId = readSourceNodeId(element);
+  const pageShellCaptureNodeId = element.settings?.converter_v3_page_shell_capture_node_id;
+
+  if (sourceNodeId) {
+    ids.add(sourceNodeId);
+  }
+
+  if (typeof pageShellCaptureNodeId === "string" && pageShellCaptureNodeId.trim()) {
+    ids.add(pageShellCaptureNodeId.trim());
+  }
+
+  return [...ids];
+}
+
 function pushElementSourceMapping(
   actual: ActualRepresentation,
   sourceNodeId: string,
@@ -335,12 +351,10 @@ function collectActualRepresentation(document: ElementorDocument): ActualReprese
   };
 
   const visit = (element: ElementorElement) => {
-    const sourceNodeId = readSourceNodeId(element);
-
-    if (sourceNodeId) {
+    readMappedSourceNodeIds(element).forEach((sourceNodeId) => {
       actual.sourceNodeIds.add(sourceNodeId);
       pushElementSourceMapping(actual, sourceNodeId, element);
-    }
+    });
 
     if (element.widgetType === "heading") {
       const title = normalizeText(String(element.settings?.title ?? ""));

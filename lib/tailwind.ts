@@ -272,10 +272,14 @@ function asHslColor(variableName: string) {
   return `hsl(var(${variableName}))`;
 }
 
+function semanticColorValue(name: string, variableName: string) {
+  return `var(--color-${name}, ${asHslColor(variableName)})`;
+}
+
 function colorValue(value: string) {
   const [name, alpha] = value.split("/");
   const variableName = colorVars[name];
-  const color = variableName ? asHslColor(variableName) : namedColors[name] ?? name;
+  const color = variableName ? semanticColorValue(name, variableName) : namedColors[name] ?? name;
   const alphaNumber = Number(alpha);
   const alphaValue = Number.isFinite(alphaNumber) ? alphaNumber / 100 : undefined;
 
@@ -284,7 +288,7 @@ function colorValue(value: string) {
   }
 
   if (variableName && typeof alphaValue === "number") {
-    return `hsl(var(${variableName}) / ${alphaValue})`;
+    return `color-mix(in srgb, ${color} ${alphaNumber}%, transparent)`;
   }
 
   if (typeof alphaValue === "number") {
@@ -894,8 +898,8 @@ svg {
 }
 body {
   font-family: var(--font-sans);
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
+  background-color: var(--color-background, hsl(var(--background)));
+  color: var(--color-foreground, hsl(var(--foreground)));
 }
 .container {
   width: 100%;

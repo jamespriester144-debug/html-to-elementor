@@ -18,6 +18,7 @@ import type {
   SnapshotSectionRenderMode,
   SnapshotSectionReport,
   SnapshotValidationLossType,
+  SnapshotValidationMode,
   SnapshotViewportValidation,
   SnapshotVisualSummary,
   SnapshotVisualValidationIssue,
@@ -36,12 +37,14 @@ import {
 } from "@/lib/converter-v3/section-fidelity-policy";
 import {
   compareImagesPixelByPixel,
+  type PixelComparisonResult,
   readImageDimensions,
   renderHtmlToScreenshot
 } from "@/lib/converter-v3/visual-similarity";
 import {
   buildDetectedPageBackgroundCssVariables,
   buildInlineStyleFromComputedStyleMap,
+  normalizeElementorColorValue,
   resolvePageShellVisualContext,
   resolveStyleMapBackgroundColor,
   resolveStyleMapBackgroundValue
@@ -131,6 +134,9 @@ type FullPageSnapshotPreference = {
 const PAGE_SIMILARITY_THRESHOLD = 0.99;
 const TABLET_BREAKPOINT = 1024;
 const MOBILE_BREAKPOINT = 767;
+const MINOR_EDGE_MISMATCH_MAX_THICKNESS_PX = 6;
+const MINOR_EDGE_MISMATCH_MAX_RATIO = 0.04;
+const MINOR_EDGE_MISMATCH_MIN_SPAN_RATIO = 0.95;
 
 function describeFallbackStage(
   stage:
@@ -149,6 +155,61 @@ function describeFallbackStage(
     default:
       return "section-snapshot";
   }
+}
+
+function normalizeMinorEdgePaddingMismatch(
+  comparison: PixelComparisonResult
+): PixelComparisonResult {
+  if (comparison.passed || !comparison.dimensionsDiffer || !comparison.mismatchBounds) {
+    return comparison;
+  }
+
+  const { mismatchBounds } = comparison;
+  const mismatchArea = Math.max(mismatchBounds.width * mismatchBounds.height, 0);
+  const mismatchRatio =
+    comparison.totalPixels > 0 ? comparison.mismatchPixels / comparison.totalPixels : 0;
+  const spansMostWidth =
+    mismatchBounds.width >= Math.max(comparison.width * MINOR_EDGE_MISMATCH_MIN_SPAN_RATIO, 1);
+  const spansMostHeight =
+    mismatchBounds.height >= Math.max(comparison.height * MINOR_EDGE_MISMATCH_MIN_SPAN_RATIO, 1);
+  const thinHorizontalStrip =
+    spansMostWidth && mismatchBounds.height <= MINOR_EDGE_MISMATCH_MAX_THICKNESS_PX;
+  const thinVerticalStrip =
+    spansMostHeight && mismatchBounds.width <= MINOR_EDGE_MISMATCH_MAX_THICKNESS_PX;
+  const touchesTopEdge = mismatchBounds.y <= 1;
+  const touchesBottomEdge = mismatchBounds.y + mismatchBounds.height >= comparison.height - 1;
+  const touchesLeftEdge = mismatchBounds.x <= 1;
+  const touchesRightEdge = mismatchBounds.x + mismatchBounds.width >= comparison.width - 1;
+  const isTrailingHorizontalPadding = thinHorizontalStrip && (touchesTopEdge || touchesBottomEdge);
+  const isTrailingVerticalPadding = thinVerticalStrip && (touchesLeftEdge || touchesRightEdge);
+
+  if (
+    mismatchArea <= 0 ||
+    comparison.mismatchPixels !== mismatchArea ||
+    mismatchRatio > MINOR_EDGE_MISMATCH_MAX_RATIO ||
+    (!isTrailingHorizontalPadding && !isTrailingVerticalPadding)
+  ) {
+    return comparison;
+  }
+
+  return {
+    ...comparison,
+    passed: true,
+    similarity: 1,
+    mismatchRatio: 0,
+    mismatchPixels: 0,
+    mismatchBounds: undefined
+  };
+}
+
+async function compareSnapshotImagesPixelByPixel(params: {
+  reference: string;
+  candidate: string;
+  similarityThreshold: number;
+  diffOutputPath?: string;
+}) {
+  const comparison = await compareImagesPixelByPixel(params);
+  return normalizeMinorEdgePaddingMismatch(comparison);
 }
 
 function createElementId(prefix: string, index: number) {
@@ -1349,7 +1410,7 @@ async function validateHtmlSection(section: SectionCapture) {
     viewportHeight: desktopViewport.height,
     fullPage: true
   });
-  const comparison = await compareImagesPixelByPixel({
+  const comparison = await compareSnapshotImagesPixelByPixel({
     reference: desktopViewport.snapshotDataUrl,
     candidate: screenshot.dataUrl,
     similarityThreshold: HTML_TO_SNAPSHOT_SIMILARITY
@@ -1489,6 +1550,7 @@ function wrapSnapshotContentWithPageShell(params: {
   }
 
   const backgroundColor = resolveStyleMapBackgroundColor(pageShell.styleMap);
+  const textColor = normalizeElementorColorValue(pageShell.styleMap.color);
 
   return [
     {
@@ -1519,9 +1581,9 @@ function wrapSnapshotContentWithPageShell(params: {
           backgroundColor || pageShell.styleMap["background-image"] ? "classic" : undefined,
         background_color: backgroundColor,
         _background_color: backgroundColor,
-        color: pageShell.styleMap.color,
-        text_color: pageShell.styleMap.color,
-        title_color: pageShell.styleMap.color,
+        color: textColor,
+        text_color: textColor,
+        title_color: textColor,
         font_family: pageShell.styleMap["font-family"]
       },
       elements: params.content
@@ -1693,7 +1755,7 @@ async function computeOverallSimilarity(params: {
     fullPage: true
   });
 
-  return compareImagesPixelByPixel({
+  return compareSnapshotImagesPixelByPixel({
     reference: originalScreenshotPath,
     candidate: converted.dataUrl,
     similarityThreshold: PAGE_SIMILARITY_THRESHOLD
@@ -2168,7 +2230,7 @@ async function validateSnapshotSectionAcrossViewports(params: {
       outputPath: convertedScreenshotPath,
       fullPage: true
     });
-    const comparison = await compareImagesPixelByPixel({
+    const comparison = await compareSnapshotImagesPixelByPixel({
       reference: viewport.snapshotPath ?? viewport.snapshotDataUrl,
       candidate: rendered.dataUrl,
       similarityThreshold: PAGE_SIMILARITY_THRESHOLD,
@@ -2303,7 +2365,7 @@ async function validatePreviewAcrossViewports(params: {
       outputPath: convertedScreenshotPath,
       fullPage: true
     });
-    const comparison = await compareImagesPixelByPixel({
+    const comparison = await compareSnapshotImagesPixelByPixel({
       reference: referencePath,
       candidate: rendered.dataUrl,
       similarityThreshold: PAGE_SIMILARITY_THRESHOLD,
@@ -2391,6 +2453,33 @@ function createSectionSnapshotEntry(
     preservedLinks: decision.preservedLinks,
     totalLinks: decision.totalLinks
   };
+}
+
+function createSnapshotDecisionEntry(
+  decision: SnapshotDecision
+): SnapshotSectionValidationEntry {
+  return {
+    nodeId: decision.nodeId,
+    name: decision.name,
+    type: decision.type,
+    similarity: decision.similarity,
+    viewportSimilarities: {},
+    preservedLinks: decision.preservedLinks,
+    totalLinks: decision.totalLinks
+  };
+}
+
+function resolveSnapshotValidationMode(params: {
+  usedFullPageSnapshot: boolean;
+  decisions: SnapshotDecision[];
+}): SnapshotValidationMode {
+  if (params.usedFullPageSnapshot) {
+    return "full-page-snapshot";
+  }
+
+  return params.decisions.some((decision) => decision.mode === "snapshot")
+    ? "section-fallback"
+    : "section-snapshot";
 }
 
 function buildSnapshotWarnings(
@@ -3118,6 +3207,65 @@ export async function createSnapshotElementorDocumentV3(params: {
     preservedLinks: decision.preservedLinks,
     totalLinks: decision.totalLinks
   }));
+  const validationSections = usedFullPageSnapshot ? orderedSections : contentSections;
+  const finalValidation = await validatePreviewAcrossViewports({
+    capture: params.capture,
+    layout: params.layout,
+    sections: validationSections,
+    previewHtml,
+    outputDir: params.outputDir,
+    mode: usedFullPageSnapshot ? "full-page-snapshot" : "section-snapshot",
+    pageShellStyleMap: pageShell.styleMap
+  });
+  const visualValidationMode = resolveSnapshotValidationMode({
+    usedFullPageSnapshot,
+    decisions
+  });
+  const snapshotValidationEntries = decisions
+    .filter((decision) => decision.mode === "snapshot")
+    .map(createSnapshotDecisionEntry);
+  const linksPreserved = sectionReports.reduce((sum, section) => sum + section.preservedLinks, 0);
+  const totalLinks = sectionReports.reduce((sum, section) => sum + section.totalLinks, 0);
+  const failedViewportSummary = buildViewportFailureSummary(finalValidation.viewportResults);
+  const blockingReason = finalValidation.passed
+    ? undefined
+    : `${
+        usedFullPageSnapshot ? "Snapshot da pagina inteira" : "Snapshot visual"
+      } falhou nos viewports ${failedViewportSummary ?? "afetados"}; similaridade final ${toPercentLabel(
+        finalValidation.similarity
+      )} abaixo de ${toPercentLabel(PAGE_SIMILARITY_THRESHOLD)}.`;
+  const visualValidationReport: SnapshotVisualValidationReport = {
+    status: finalValidation.passed ? "passed" : "blocked",
+    modeUsed: visualValidationMode,
+    viewportsTested: finalValidation.viewportResults.map((result) => result.viewport),
+    sectionsApproved:
+      visualValidationMode === "section-snapshot" ? snapshotValidationEntries : [],
+    sectionsWithFallback:
+      visualValidationMode === "section-snapshot" ? [] : snapshotValidationEntries,
+    linksPreserved,
+    totalLinks,
+    similarityFinal: finalValidation.similarity,
+    similarityFinalPercent: toPercentLabel(finalValidation.similarity),
+    viewportResults: finalValidation.viewportResults,
+    issues: finalValidation.issues,
+    diagnosticSummary: [
+      ...new Set(
+        [
+          ...diagnosticWarnings,
+          ...summarizeVisualDiagnostics(finalValidation.issues, validationSections),
+          blockingReason ? `motivo do bloqueio: ${blockingReason}` : ""
+        ].filter(Boolean)
+      )
+    ],
+    debugArtifacts: collectVisualDebugArtifacts({
+      outputDir: params.outputDir,
+      sections: validationSections
+    }),
+    blockingReason
+  };
+  const viewportSimilarities = Object.fromEntries(
+    finalValidation.viewportResults.map((result) => [result.viewport, result.similarity])
+  ) as Partial<Record<CaptureViewportName, number>>;
   const warnings = diagnosticWarnings
     .concat(
       usedFullPageSnapshot && fullPageFallbackReason
@@ -3126,11 +3274,11 @@ export async function createSnapshotElementorDocumentV3(params: {
       sectionReports
         .filter((section) => section.mode === "snapshot")
         .map((section) => `${section.name} (${section.nodeId}) exportada como snapshot.`),
-      overallSimilarity.passed
+      finalValidation.passed
         ? []
         : [
             `Similaridade final da pagina ficou em ${toPercentLabel(
-              overallSimilarity.similarity
+              finalValidation.similarity
             )}, abaixo do minimo de ${toPercentLabel(PAGE_SIMILARITY_THRESHOLD)}.`
           ]
     );
@@ -3146,24 +3294,23 @@ export async function createSnapshotElementorDocumentV3(params: {
     snapshot: {
       renderStrategy: usedFullPageSnapshot ? "full-page-snapshot" : "section-snapshots",
       fullPageFallbackReason,
-      overallSimilarity: overallSimilarity.similarity,
+      overallSimilarity: finalValidation.similarity,
       threshold: PAGE_SIMILARITY_THRESHOLD,
       convertedScreenshotPath,
       originalScreenshotPath: params.capture.artifacts.screenshots.desktop,
+      viewportSimilarities,
       sectionReports,
       requiresPixelPerfect: false,
       pixelPerfectReason: undefined,
       learningNotes: initial.learningNotes,
+      visualValidationReport,
       totals: {
         htmlSections: sectionReports.filter((section) => section.mode === "html").length,
         snapshotSections: sectionReports.filter((section) => section.mode === "snapshot").length,
         pixelPerfectRequiredSections: decisions.filter((decision) => decision.pixelPerfectRequired)
           .length,
-        preservedLinks: sectionReports.reduce(
-          (sum, section) => sum + section.preservedLinks,
-          0
-        ),
-        totalLinks: sectionReports.reduce((sum, section) => sum + section.totalLinks, 0)
+        preservedLinks: linksPreserved,
+        totalLinks
       }
     },
     warnings

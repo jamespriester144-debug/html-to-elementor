@@ -293,8 +293,8 @@ function buildNodeInlineStyle(element: ElementorElement, captureNodeById: Map<st
   const settingsStyles =
     (element.settings?.converter_v3_styles as Record<string, string> | undefined) ?? {};
   const sourceStyles = {
-    ...settingsStyles,
-    ...(sourceNode?.computedStyles ?? {})
+    ...(sourceNode?.computedStyles ?? {}),
+    ...settingsStyles
   };
   const rawStyle = buildInlineStyleFromComputedStyleMap(sourceStyles, {
     width:

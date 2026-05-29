@@ -1,4 +1,4 @@
-import * as cheerio from "cheerio";
+﻿import * as cheerio from "cheerio";
 
 import type { PageCapture } from "@/lib/converter-v3/contracts/capture";
 import type { LayoutDocument, LayoutNode, OutputMode } from "@/lib/converter-v3/contracts/layout";
@@ -46,7 +46,6 @@ import {
   buildPreservedComputedStyleMap,
   buildStyledHtmlFragment,
   captureNodeHasVisiblePseudoStyles,
-  normalizeElementorColorValue,
   resolvePageShellVisualContext,
   resolveStyleMapBackgroundColor,
   shouldPreserveNodeAsHtmlWidget
@@ -400,7 +399,11 @@ function applyDerivedChildSettings(
       return child;
     }
 
-    const childSettings = derivedLayout.childSettingsById.get(sourceNodeId) ?? {};
+    const childSettings = derivedLayout.childSettingsById.get(sourceNodeId);
+
+    if (!childSettings) {
+      return child;
+    }
 
     const responsiveChildSettings = createResponsiveChildSettings(
       node,
@@ -470,30 +473,22 @@ function applyDerivedChildSettings(
                   : undefined)
           }
         : {};
-    const mergedSettings: Record<string, unknown> = {
-      ...child.settings,
-      ...childSettings,
-      ...responsiveChildSettings,
-      ...patternContainerDefaults,
-      ...presetContainerDefaults,
-      converter_v3_pattern_role: patternChild?.role,
-      converter_v3_pattern_index: patternChild?.index,
-      converter_v3_pattern: patternChild?.pattern,
-      converter_v3_preset_role: presetChild?.role,
-      converter_v3_preset_index: presetChild?.index,
-      converter_v3_preset: presetChild?.preset
-    };
-    const widgetSemanticHint =
-      typeof mergedSettings.converter_v3_widget_semantic === "string"
-        ? mergedSettings.converter_v3_widget_semantic
-        : undefined;
 
     return {
       ...child,
-      settings:
-        child.elType === "widget" && typeof child.widgetType === "string"
-          ? applyPresetWidgetDefaults(child.widgetType, widgetSemanticHint, mergedSettings)
-          : mergedSettings
+      settings: {
+        ...child.settings,
+        ...childSettings,
+        ...responsiveChildSettings,
+        ...patternContainerDefaults,
+        ...presetContainerDefaults,
+        converter_v3_pattern_role: patternChild?.role,
+        converter_v3_pattern_index: patternChild?.index,
+        converter_v3_pattern: patternChild?.pattern,
+        converter_v3_preset_role: presetChild?.role,
+        converter_v3_preset_index: presetChild?.index,
+        converter_v3_preset: presetChild?.preset
+      }
     };
   });
 }
@@ -534,7 +529,6 @@ function wrapContentWithPageShell(params: {
 
   params.counter.value += 1;
   const backgroundColor = resolveStyleMapBackgroundColor(pageShell.styleMap);
-  const textColor = normalizeElementorColorValue(pageShell.styleMap.color);
 
   return [
     {
@@ -562,9 +556,9 @@ function wrapContentWithPageShell(params: {
           backgroundColor || pageShell.styleMap["background-image"] ? "classic" : undefined,
         background_color: backgroundColor,
         _background_color: backgroundColor,
-        color: textColor,
-        text_color: textColor,
-        title_color: textColor,
+        color: pageShell.styleMap.color,
+        text_color: pageShell.styleMap.color,
+        title_color: pageShell.styleMap.color,
         font_family: pageShell.styleMap["font-family"]
       },
       elements: params.content
@@ -1322,3 +1316,5 @@ export function createEditableElementorDocumentV3(params: {
     warnings
   };
 }
+
+

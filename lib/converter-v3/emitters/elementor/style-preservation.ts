@@ -5,6 +5,12 @@ import type { LayoutDocument, LayoutNode } from "@/lib/converter-v3/contracts/la
 
 type CapturedNode = PageCapture["nodes"][number];
 type CapturedPseudoElement = NonNullable<CapturedNode["pseudoElements"]>[number];
+type RgbaColor = {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+};
 
 const STYLE_PROPERTY_ORDER = [
   "position",
@@ -99,19 +105,309 @@ function trimStyleValue(value?: string) {
   return value?.trim() || undefined;
 }
 
+function hasInlineTextDecorationStyle(value?: string) {
+  return /\btext-decoration(?:-line|-style|-color)?\s*:/i.test(value ?? "");
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function splitColorFunctionArgs(value: string) {
+  const parts = value
+    .trim()
+    .replace(/,/g, " ")
+    .replace(/\s*\/\s*/g, " / ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const slashIndex = parts.indexOf("/");
+
+  if (slashIndex >= 0) {
+    return {
+      channels: parts.slice(0, slashIndex),
+      alpha: parts[slashIndex + 1]
+    };
+  }
+
+  return {
+    channels: parts.slice(0, 3),
+    alpha: parts[3]
+  };
+}
+
+function parseAlphaValue(value?: string) {
+  if (!value) {
+    return 1;
+  }
+
+  return value.endsWith("%")
+    ? clamp(Number.parseFloat(value) / 100, 0, 1)
+    : clamp(Number.parseFloat(value), 0, 1);
+}
+
+function parseRgbChannel(value: string) {
+  return value.endsWith("%")
+    ? clamp((Number.parseFloat(value) / 100) * 255, 0, 255)
+    : clamp(Number.parseFloat(value), 0, 255);
+}
+
+function parseHueValue(value: string) {
+  const normalized = value.trim().toLowerCase();
+  const amount = Number.parseFloat(normalized);
+
+  if (!Number.isFinite(amount)) {
+    return 0;
+  }
+
+  if (normalized.endsWith("turn")) {
+    return amount * 360;
+  }
+
+  if (normalized.endsWith("rad")) {
+    return (amount * 180) / Math.PI;
+  }
+
+  return amount;
+}
+
+function parsePercentValue(value: string) {
+  const amount = Number.parseFloat(value);
+  return value.trim().endsWith("%") ? amount : amount * 100;
+}
+
+function hueToRgb(p: number, q: number, t: number) {
+  let next = t;
+
+  if (next < 0) {
+    next += 1;
+  }
+
+  if (next > 1) {
+    next -= 1;
+  }
+
+  if (next < 1 / 6) {
+    return p + (q - p) * 6 * next;
+  }
+
+  if (next < 1 / 2) {
+    return q;
+  }
+
+  if (next < 2 / 3) {
+    return p + (q - p) * (2 / 3 - next) * 6;
+  }
+
+  return p;
+}
+
+function hslToRgb(hue: number, saturation: number, lightness: number) {
+  const h = (((hue % 360) + 360) % 360) / 360;
+  const s = clamp(saturation / 100, 0, 1);
+  const l = clamp(lightness / 100, 0, 1);
+
+  if (s === 0) {
+    const channel = Math.round(l * 255);
+    return { r: channel, g: channel, b: channel };
+  }
+
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+
+  return {
+    r: Math.round(hueToRgb(p, q, h + 1 / 3) * 255),
+    g: Math.round(hueToRgb(p, q, h) * 255),
+    b: Math.round(hueToRgb(p, q, h - 1 / 3) * 255)
+  };
+}
+
+function parseOklchLightness(value: string) {
+  return value.trim().endsWith("%")
+    ? clamp(Number.parseFloat(value) / 100, 0, 1)
+    : clamp(Number.parseFloat(value), 0, 1);
+}
+
+function parseOklchChroma(value: string) {
+  return value.trim().endsWith("%")
+    ? clamp((Number.parseFloat(value) / 100) * 0.4, 0, 0.4)
+    : Math.max(Number.parseFloat(value), 0);
+}
+
+function linearSrgbToByte(value: number) {
+  const normalized = clamp(value, 0, 1);
+  const srgb =
+    normalized <= 0.0031308
+      ? normalized * 12.92
+      : 1.055 * normalized ** (1 / 2.4) - 0.055;
+
+  return Math.round(clamp(srgb, 0, 1) * 255);
+}
+
+function oklchToRgb(lightness: number, chroma: number, hue: number) {
+  const hueRadians = (hue * Math.PI) / 180;
+  const a = chroma * Math.cos(hueRadians);
+  const b = chroma * Math.sin(hueRadians);
+  const lPrime = lightness + 0.3963377774 * a + 0.2158037573 * b;
+  const mPrime = lightness - 0.1055613458 * a - 0.0638541728 * b;
+  const sPrime = lightness - 0.0894841775 * a - 1.291485548 * b;
+  const l = lPrime ** 3;
+  const m = mPrime ** 3;
+  const s = sPrime ** 3;
+
+  return {
+    r: linearSrgbToByte(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+    g: linearSrgbToByte(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+    b: linearSrgbToByte(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s)
+  };
+}
+
+function parseCssColor(value?: string): RgbaColor | undefined {
+  const normalized = trimStyleValue(value)?.toLowerCase();
+
+  if (!normalized || normalized === "transparent" || normalized === "none") {
+    return undefined;
+  }
+
+  if (normalized === "white") {
+    return { r: 255, g: 255, b: 255, a: 1 };
+  }
+
+  if (normalized === "black") {
+    return { r: 0, g: 0, b: 0, a: 1 };
+  }
+
+  if (normalized.startsWith("#")) {
+    const hex = normalized.slice(1);
+
+    if (hex.length === 3 || hex.length === 4) {
+      const [r, g, b, a = "f"] = hex.split("");
+      return {
+        r: Number.parseInt(`${r}${r}`, 16),
+        g: Number.parseInt(`${g}${g}`, 16),
+        b: Number.parseInt(`${b}${b}`, 16),
+        a: Number.parseInt(`${a}${a}`, 16) / 255
+      };
+    }
+
+    if (hex.length === 6 || hex.length === 8) {
+      return {
+        r: Number.parseInt(hex.slice(0, 2), 16),
+        g: Number.parseInt(hex.slice(2, 4), 16),
+        b: Number.parseInt(hex.slice(4, 6), 16),
+        a: hex.length === 8 ? Number.parseInt(hex.slice(6, 8), 16) / 255 : 1
+      };
+    }
+  }
+
+  const rgbMatch = normalized.match(/^rgba?\((.+)\)$/i);
+
+  if (rgbMatch) {
+    const { channels, alpha } = splitColorFunctionArgs(rgbMatch[1]);
+
+    if (channels.length >= 3) {
+      return {
+        r: Math.round(parseRgbChannel(channels[0])),
+        g: Math.round(parseRgbChannel(channels[1])),
+        b: Math.round(parseRgbChannel(channels[2])),
+        a: parseAlphaValue(alpha)
+      };
+    }
+  }
+
+  const hslMatch = normalized.match(/^hsla?\((.+)\)$/i);
+
+  if (hslMatch) {
+    const { channels, alpha } = splitColorFunctionArgs(hslMatch[1]);
+
+    if (channels.length >= 3) {
+      const rgb = hslToRgb(
+        parseHueValue(channels[0]),
+        parsePercentValue(channels[1]),
+        parsePercentValue(channels[2])
+      );
+
+      return {
+        ...rgb,
+        a: parseAlphaValue(alpha)
+      };
+    }
+  }
+
+  const oklchMatch = normalized.match(/^oklch\((.+)\)$/i);
+
+  if (oklchMatch) {
+    const { channels, alpha } = splitColorFunctionArgs(oklchMatch[1]);
+
+    if (channels.length >= 3) {
+      const rgb = oklchToRgb(
+        parseOklchLightness(channels[0]),
+        parseOklchChroma(channels[1]),
+        parseHueValue(channels[2])
+      );
+
+      return {
+        ...rgb,
+        a: parseAlphaValue(alpha)
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function toCssColor(color: RgbaColor) {
+  return color.a < 1
+    ? `rgba(${color.r}, ${color.g}, ${color.b}, ${Number.parseFloat(color.a.toFixed(3))})`
+    : `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
+export function normalizeElementorColorValue(value?: string) {
+  const normalized = trimStyleValue(value);
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  const colorCandidate = extractVisibleColorFromBackground(normalized) ?? normalized;
+
+  if (
+    /var\(/i.test(colorCandidate) ||
+    /^(?:inherit|current|currentcolor|initial|transparent|unset|revert)$/i.test(colorCandidate)
+  ) {
+    return undefined;
+  }
+
+  const parsed = parseCssColor(colorCandidate);
+
+  if (parsed) {
+    return toCssColor(parsed);
+  }
+
+  if (/^(?:rgba?|hsla?|oklch|oklab|lch|lab|color|(?:repeating-)?(?:linear|radial|conic)-gradient)\(/i.test(colorCandidate)) {
+    return undefined;
+  }
+
+  return colorCandidate;
+}
+
 function isTransparentColor(value?: string) {
   const normalized = (value ?? "").replace(/\s+/g, "").toLowerCase();
-  return (
+  if (
     !normalized ||
     normalized === "transparent" ||
     normalized === "rgba(0,0,0,0)" ||
     normalized === "rgb(0,0,0,0)" ||
     normalized === "hsla(0,0%,0%,0)"
-  );
+  ) {
+    return true;
+  }
+
+  const parsed = parseCssColor(value);
+  return Boolean(parsed && parsed.a <= 0.03);
 }
 
 function resolveBackgroundColorCandidate(styleMap: Record<string, string>) {
-  if (!isTransparentColor(styleMap["background-color"])) {
+  if (hasVisibleBackgroundColorValue(styleMap["background-color"])) {
     return trimStyleValue(styleMap["background-color"]);
   }
 
@@ -125,7 +421,7 @@ function resolveBackgroundColorCandidate(styleMap: Record<string, string>) {
     return undefined;
   }
 
-  return background;
+  return extractVisibleColorFromBackground(background);
 }
 
 function hasVisibleBackgroundColorValue(value?: string) {
@@ -166,7 +462,42 @@ function isZeroLengthValue(value?: string) {
     .every((part) => ["0", "0px", "0%", "0rem"].includes(part));
 }
 
-function shouldKeepStyle(property: string, value?: string) {
+function isInvisibleShadowValue(value?: string) {
+  const normalized = (value ?? "").trim().toLowerCase();
+
+  if (!normalized || normalized === "none" || normalized === "transparent") {
+    return true;
+  }
+
+  const compact = normalized.replace(/\s+/g, "");
+
+  if (
+    compact === "rgba(0,0,0,0)" ||
+    compact === "rgb(0,0,0,0)" ||
+    compact === "hsla(0,0%,0%,0)"
+  ) {
+    return true;
+  }
+
+  const withoutTransparentColors = compact
+    .replace(/rgba\([^)]*,0(?:\.0+)?\)/g, "")
+    .replace(/hsla\([^)]*,0(?:\.0+)?\)/g, "")
+    .replace(/transparent/g, "")
+    .replace(/inset/g, "");
+
+  if (!withoutTransparentColors) {
+    return true;
+  }
+
+  return withoutTransparentColors
+    .split(/[,/]/)
+    .join("")
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((part) => /^-?(?:0|0px|0rem|0em|0%|0vh|0vw)$/.test(part));
+}
+
+function shouldKeepStyle(property: string, value?: string): boolean {
   const normalized = trimStyleValue(value);
 
   if (!normalized) {
@@ -179,18 +510,28 @@ function shouldKeepStyle(property: string, value?: string) {
 
   switch (property) {
     case "background":
-      return !/rgba\(0,\s*0,\s*0,\s*0\)/i.test(normalized) && normalized.toLowerCase() !== "none";
+      return (
+        !/rgba\(0,\s*0,\s*0,\s*0\)/i.test(normalized) &&
+        normalized.toLowerCase() !== "none" &&
+        !(/var\(/i.test(normalized) && !/url\(|gradient\(/i.test(normalized)) &&
+        !(
+          normalized.toLowerCase().includes("transparent") &&
+          !/url\(|gradient\(/i.test(normalized) &&
+          !extractVisibleColorFromBackground(normalized)
+        )
+      );
     case "background-color":
-      return !isTransparentColor(normalized);
+      return !/var\(/i.test(normalized) && !isTransparentColor(normalized);
     case "background-image":
-    case "box-shadow":
-    case "text-shadow":
     case "filter":
     case "backdrop-filter":
     case "mask-image":
     case "-webkit-mask-image":
     case "transform":
       return normalized.toLowerCase() !== "none";
+    case "box-shadow":
+    case "text-shadow":
+      return !isInvisibleShadowValue(normalized);
     case "background-size":
       return normalized.toLowerCase() !== "auto";
     case "background-position":
@@ -231,6 +572,52 @@ function shouldKeepStyle(property: string, value?: string) {
   }
 }
 
+function readFunctionalColorToken(value: string, startIndex: number): string | undefined {
+  let depth = 0;
+
+  for (let index = startIndex; index < value.length; index += 1) {
+    const character = value[index];
+
+    if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+
+      if (depth === 0) {
+        return value.slice(startIndex, index + 1).trim();
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function extractVisibleColorFromBackground(value: string): string | undefined {
+  const normalized = value.trim();
+
+  if (!normalized || normalized.toLowerCase() === "transparent") {
+    return undefined;
+  }
+
+  const functionalColorMatch = normalized.match(
+    /\b(?:rgba?|hsla?|oklch|oklab|lch|lab|color)\(/i
+  );
+
+  if (functionalColorMatch?.index !== undefined) {
+    const token = readFunctionalColorToken(normalized, functionalColorMatch.index);
+
+    return shouldKeepStyle("background-color", token) ? token : undefined;
+  }
+
+  const hexColor = normalized.match(/#[0-9a-f]{3,8}\b/i)?.[0];
+
+  if (hexColor) {
+    return shouldKeepStyle("background-color", hexColor) ? hexColor : undefined;
+  }
+
+  return undefined;
+}
+
 function mergeExistingStyle(existingStyle: string | undefined, nextStyle: string) {
   const existing = (existingStyle ?? "").trim().replace(/;+\s*$/, "");
   const incoming = nextStyle.trim().replace(/;+\s*$/, "");
@@ -258,6 +645,36 @@ function applyIfMissing(
   const normalized = trimStyleValue(value);
 
   if (!normalized || trimStyleValue(target[property])) {
+    return;
+  }
+
+  target[property] = normalized;
+}
+
+function applyVisibleBackgroundIfMissing(
+  target: Record<string, string>,
+  property: "background" | "background-color" | "background-image",
+  value?: string
+) {
+  const normalized = trimStyleValue(value);
+
+  if (!normalized || trimStyleValue(target[property])) {
+    return;
+  }
+
+  if (property === "background-color" && !hasVisibleBackgroundColorValue(normalized)) {
+    return;
+  }
+
+  if (property === "background-image" && !hasVisibleBackgroundImageValue(normalized)) {
+    return;
+  }
+
+  if (
+    property === "background" &&
+    !shouldKeepStyle("background", normalized) &&
+    !extractVisibleColorFromBackground(normalized)
+  ) {
     return;
   }
 
@@ -332,14 +749,16 @@ export function toSpacingObject(value?: string) {
 }
 
 export function resolveStyleMapBackgroundColor(styleMap: Record<string, string>) {
-  return resolveBackgroundColorCandidate(styleMap);
+  return normalizeElementorColorValue(resolveBackgroundColorCandidate(styleMap));
 }
 
 export function resolveStyleMapBackgroundValue(styleMap: Record<string, string>) {
   const background = trimStyleValue(styleMap.background);
 
   if (shouldKeepStyle("background", background)) {
-    return background;
+    return background && /url\(|gradient\(/i.test(background)
+      ? background
+      : normalizeElementorColorValue(background) ?? background;
   }
 
   const backgroundImage = trimStyleValue(styleMap["background-image"]);
@@ -348,7 +767,7 @@ export function resolveStyleMapBackgroundValue(styleMap: Record<string, string>)
     return backgroundImage;
   }
 
-  return resolveBackgroundColorCandidate(styleMap);
+  return resolveStyleMapBackgroundColor(styleMap);
 }
 
 export function buildDetectedPageBackgroundCssVariables(
@@ -356,8 +775,9 @@ export function buildDetectedPageBackgroundCssVariables(
 ) {
   const declarations: string[] = [];
   const background = resolveStyleMapBackgroundValue(styleMap);
-  const backgroundColor =
-    trimStyleValue(styleMap["background-color"]) ?? resolveBackgroundColorCandidate(styleMap);
+  const backgroundColor = normalizeElementorColorValue(
+    trimStyleValue(styleMap["background-color"]) ?? resolveBackgroundColorCandidate(styleMap)
+  );
 
   if (background) {
     declarations.push(`--detected-page-background:${escapeCssValue(background)};`);
@@ -407,10 +827,10 @@ function buildCaptureShellStyleMap(node?: CapturedNode) {
 
   const styleMap: Record<string, string> = {};
 
-  applyIfMissing(styleMap, "background", node.computedStyles.background);
-  applyIfMissing(styleMap, "background-color", node.computedStyles["background-color"]);
-  applyIfMissing(styleMap, "background-image", node.asset.backgroundImage);
-  applyIfMissing(styleMap, "background-image", node.computedStyles["background-image"]);
+  applyVisibleBackgroundIfMissing(styleMap, "background", node.computedStyles.background);
+  applyVisibleBackgroundIfMissing(styleMap, "background-color", node.computedStyles["background-color"]);
+  applyVisibleBackgroundIfMissing(styleMap, "background-image", node.asset.backgroundImage);
+  applyVisibleBackgroundIfMissing(styleMap, "background-image", node.computedStyles["background-image"]);
   applyIfMissing(styleMap, "background-size", node.computedStyles["background-size"]);
   applyIfMissing(styleMap, "background-position", node.computedStyles["background-position"]);
   applyIfMissing(styleMap, "background-repeat", node.computedStyles["background-repeat"]);
@@ -523,7 +943,10 @@ function getPageShellCaptureNode(capture: PageCapture, layout: LayoutDocument) {
         ? Math.min((box.width * box.height) / Math.max(pageWidth * Math.max(pageHeight, 1), 1), 1)
         : fallbackCoverageRatio;
       const backgroundColor =
-        resolveBackgroundColorCandidate(styleMap) ?? trimStyleValue(styleMap["background-color"]);
+        resolveBackgroundColorCandidate(styleMap) ??
+        (hasVisibleBackgroundColorValue(styleMap["background-color"])
+          ? trimStyleValue(styleMap["background-color"])
+          : undefined);
       const roleWeight =
         candidate.role === "body"
           ? 95
@@ -571,10 +994,10 @@ export function resolvePageShellVisualContext(params: {
   const styleMap: Record<string, string> = {};
 
   if (captureNode) {
-    applyIfMissing(styleMap, "background", captureNode.computedStyles.background);
-    applyIfMissing(styleMap, "background-color", captureNode.computedStyles["background-color"]);
-    applyIfMissing(styleMap, "background-image", captureNode.asset.backgroundImage);
-    applyIfMissing(styleMap, "background-image", captureNode.computedStyles["background-image"]);
+    applyVisibleBackgroundIfMissing(styleMap, "background", captureNode.computedStyles.background);
+    applyVisibleBackgroundIfMissing(styleMap, "background-color", captureNode.computedStyles["background-color"]);
+    applyVisibleBackgroundIfMissing(styleMap, "background-image", captureNode.asset.backgroundImage);
+    applyVisibleBackgroundIfMissing(styleMap, "background-image", captureNode.computedStyles["background-image"]);
     applyIfMissing(styleMap, "background-size", captureNode.computedStyles["background-size"]);
     applyIfMissing(styleMap, "background-position", captureNode.computedStyles["background-position"]);
     applyIfMissing(styleMap, "background-repeat", captureNode.computedStyles["background-repeat"]);
@@ -586,9 +1009,9 @@ export function resolvePageShellVisualContext(params: {
     applyIfMissing(styleMap, "font-family", captureNode.computedStyles["font-family"]);
   }
 
-  applyIfMissing(styleMap, "background", rootNode?.style.background);
-  applyIfMissing(styleMap, "background-color", rootNode?.style.backgroundColor);
-  applyIfMissing(styleMap, "background-image", rootNode?.style.backgroundImage);
+  applyVisibleBackgroundIfMissing(styleMap, "background", rootNode?.style.background);
+  applyVisibleBackgroundIfMissing(styleMap, "background-color", rootNode?.style.backgroundColor);
+  applyVisibleBackgroundIfMissing(styleMap, "background-image", rootNode?.style.backgroundImage);
   applyIfMissing(styleMap, "background-size", rootNode?.style.backgroundSize);
   applyIfMissing(styleMap, "background-position", rootNode?.style.backgroundPosition);
   applyIfMissing(styleMap, "background-repeat", rootNode?.style.backgroundRepeat);
@@ -645,6 +1068,7 @@ export function buildPreservedComputedStyleMap(params: {
   });
 
   const node = params.node;
+  const captureNode = params.captureNode;
 
   if (node) {
     applyIfMissing(styleMap, "display", node.layout.display);
@@ -711,6 +1135,20 @@ export function buildPreservedComputedStyleMap(params: {
     applyIfMissing(styleMap, "left", node.style.left);
     applyIfMissing(styleMap, "inset", node.style.inset);
 
+    const isLinkNode =
+      (node.tag ?? captureNode?.tag ?? "").toLowerCase() === "a" &&
+      Boolean(node.content?.href?.trim() || captureNode?.attributes.href?.trim());
+    const textDecoration = trimStyleValue(styleMap["text-decoration"]);
+
+    if (
+      isLinkNode &&
+      !hasInlineTextDecorationStyle(captureNode?.attributes.style) &&
+      textDecoration &&
+      /\bunderline\b/i.test(textDecoration)
+    ) {
+      styleMap["text-decoration"] = "none";
+    }
+
     if (!trimStyleValue(styleMap["min-height"]) && node.kind !== "text" && node.box.height > 32) {
       styleMap["min-height"] = inferBoxLength(node.box.height) ?? "";
     }
@@ -775,10 +1213,15 @@ export function buildElementorStyleBridgeSettings(params: {
   isButton?: boolean;
 }) {
   const styleMap = buildPreservedComputedStyleMap(params);
+
+  if (params.isButton) {
+    styleMap["text-decoration"] = "none";
+  }
+
   const borderRadius = trimStyleValue(styleMap["border-radius"]);
   const boxShadow = trimStyleValue(styleMap["box-shadow"]);
-  const backgroundColor = resolveBackgroundColorCandidate(styleMap);
-  const textColor = trimStyleValue(styleMap.color);
+  const backgroundColor = normalizeElementorColorValue(resolveBackgroundColorCandidate(styleMap));
+  const textColor = normalizeElementorColorValue(styleMap.color);
   const width = trimStyleValue(styleMap.width) ?? inferBoxLength(params.node.box.width);
   const height = trimStyleValue(styleMap.height);
   const minHeight =
@@ -929,6 +1372,69 @@ function buildPseudoCssRule(nodeId: string, pseudo: CapturedPseudoElement) {
   return `[data-capture-id="${escapeCssValue(nodeId)}"]${pseudo.pseudo}{content:${JSON.stringify(content)};${style}}`;
 }
 
+function inlineSvgToDataUrl(svgHtml: string) {
+  return `data:image/svg+xml;base64,${Buffer.from(svgHtml, "utf8").toString("base64")}`;
+}
+
+function convertInlineSvgElementsToImages($: cheerio.CheerioAPI) {
+  $("svg").each((_, element) => {
+    const svg = $(element);
+
+    if (!svg.attr("xmlns")) {
+      svg.attr("xmlns", "http://www.w3.org/2000/svg");
+    }
+
+    const svgHtml = $.html(element);
+
+    if (!svgHtml.trim()) {
+      return;
+    }
+
+    const image = $("<img />");
+    const alt =
+      svg.attr("aria-label")?.trim() ||
+      svg.attr("data-lovable-icon")?.trim() ||
+      svg.find("title").first().text().trim() ||
+      "";
+
+    [
+      "class",
+      "style",
+      "width",
+      "height",
+      "data-capture-id",
+      "data-lovable-icon",
+      "data-converter-v3-node"
+    ].forEach((attribute) => {
+      const value = svg.attr(attribute);
+
+      if (value) {
+        image.attr(attribute, value);
+      }
+    });
+
+    image.attr("src", inlineSvgToDataUrl(svgHtml));
+    image.attr("alt", alt);
+    image.attr("decoding", "async");
+    image.attr("loading", "eager");
+    image.attr("data-converter-v3-inline-svg", "true");
+    svg.replaceWith(image);
+  });
+}
+
+function normalizeAnchorUnderlineStyles($: cheerio.CheerioAPI) {
+  $("a[href]").each((_, element) => {
+    const anchor = $(element);
+    const style = anchor.attr("style");
+
+    if (hasInlineTextDecorationStyle(style)) {
+      return;
+    }
+
+    anchor.attr("style", mergeExistingStyle(style, "text-decoration:none"));
+  });
+}
+
 export function buildStyledHtmlFragment(params: {
   html: string;
   captureById: Map<string, CapturedNode>;
@@ -982,6 +1488,9 @@ export function buildStyledHtmlFragment(params: {
       }
     });
   });
+
+  convertInlineSvgElementsToImages($);
+  normalizeAnchorUnderlineStyles($);
 
   const fragment = $.root()
     .children()

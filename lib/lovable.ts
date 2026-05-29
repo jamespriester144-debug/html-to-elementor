@@ -15,6 +15,7 @@ type ProjectModule = {
   constants: Map<string, unknown>;
   assets: LovableAssetMap;
   localComponentImports: Map<string, LocalComponentImport>;
+  externalComponentImports: Map<string, string>;
 };
 type ProjectRenderContext = {
   entryFile: string;
@@ -81,6 +82,8 @@ const NON_RENDERABLE_COMPONENTS = new Set([
   "Plus",
   "Minus"
 ]);
+const ICON_IMPORT_PATTERN =
+  /^(?:lucide-react(?:\/.*)?|react-icons(?:\/.*)?|@heroicons\/react(?:\/.*)?|phosphor-react|@phosphor-icons\/react(?:\/.*)?|@tabler\/icons-react(?:\/.*)?|tabler-icons-react|iconoir-react|remixicon-react)$/i;
 
 function normalizeProjectPath(value: string): string {
   const normalized = value.replace(/\\/g, "/").replace(/\?.*$/, "").replace(/#.*$/, "");
@@ -195,10 +198,31 @@ function isStylesheetSourceFile(specifier: string) {
   return STYLESHEET_SOURCE_PATTERN.test(specifier.trim());
 }
 
+function isLikelyGlobalStylesheetPath(filePath: string) {
+  const normalizedPath = normalizeProjectPath(filePath).toLowerCase();
+  const fileName = path.posix.basename(normalizedPath).replace(/\.css(?:\?.*)?$/i, "");
+
+  if (
+    /(?:^|\/)(?:node_modules|dist|build|\.next|coverage)\//.test(normalizedPath) ||
+    /\.module\.css(?:\?.*)?$/i.test(normalizedPath)
+  ) {
+    return false;
+  }
+
+  return /^(?:index|main|app|global|globals|style|styles|tailwind)$/.test(fileName);
+}
+
+function materializeTailwindThemeBlocks(source: string) {
+  return source.replace(/@theme(?:\s+[^{]+)?\s*\{([\s\S]*?)\}/gi, (_match, body) => {
+    const declarations = String(body).trim();
+    return declarations ? `:root {\n${declarations}\n}` : "";
+  });
+}
+
 function sanitizeProjectStylesheet(source: string) {
-  return source
+  return materializeTailwindThemeBlocks(source)
     .split(/\r?\n/)
-    .filter((line) => !/^\s*@(?:import|source|custom-variant)\b/i.test(line))
+    .filter((line) => !/^\s*@(?:import|source|custom-variant|plugin)\b/i.test(line))
     .join("\n")
     .trim();
 }
@@ -275,6 +299,14 @@ async function collectProjectStylesheets(
   zip: JSZip
 ) {
   const stylePaths = new Set<string>();
+
+  for (const [zipPath, entry] of Object.entries(zip.files)) {
+    const normalizedPath = normalizeProjectPath(zipPath);
+
+    if (!entry.dir && isStylesheetSourceFile(normalizedPath) && isLikelyGlobalStylesheetPath(normalizedPath)) {
+      stylePaths.add(normalizedPath);
+    }
+  }
 
   for (const module of project.modules.values()) {
     module.sourceFile.forEachChild((node) => {
@@ -571,6 +603,45 @@ function getLocalComponentImports(
   return componentImports;
 }
 
+function getExternalComponentImports(sourceFile: ts.SourceFile): Map<string, string> {
+  const componentImports = new Map<string, string>();
+
+  sourceFile.forEachChild((node) => {
+    if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier)) {
+      return;
+    }
+
+    const specifier = node.moduleSpecifier.text;
+
+    if (resolveProjectSpecifier(sourceFile.fileName, specifier)) {
+      return;
+    }
+
+    if (node.importClause?.name) {
+      componentImports.set(node.importClause.name.text, specifier);
+    }
+
+    const namedBindings = node.importClause?.namedBindings;
+
+    if (!namedBindings) {
+      return;
+    }
+
+    if (ts.isNamedImports(namedBindings)) {
+      namedBindings.elements.forEach((element) => {
+        componentImports.set(element.name.text, specifier);
+      });
+      return;
+    }
+
+    if (ts.isNamespaceImport(namedBindings)) {
+      componentImports.set(namedBindings.name.text, specifier);
+    }
+  });
+
+  return componentImports;
+}
+
 async function loadProjectModule(
   zip: JSZip,
   filePath: string,
@@ -593,12 +664,14 @@ async function loadProjectModule(
   const assets = await getAssets(sourceFile, zip);
   const constants = getConstants(sourceFile, assets);
   const localComponentImports = getLocalComponentImports(sourceFile, zip);
+  const externalComponentImports = getExternalComponentImports(sourceFile);
   const module: ProjectModule = {
     filePath: normalizedPath,
     sourceFile,
     constants,
     assets,
-    localComponentImports
+    localComponentImports,
+    externalComponentImports
   };
 
   modules.set(normalizedPath, module);
@@ -1838,14 +1911,59 @@ function renderJsxChildren(
 }
 
 const ICON_FALLBACK_PATHS: Record<string, string> = {
+  ArrowLeft: '<path d="M19 12H5"></path><path d="M12 19l-7-7 7-7"></path>',
+  ArrowRight: '<path d="M5 12h14"></path><path d="M12 5l7 7-7 7"></path>',
+  ArrowUpRight: '<path d="M7 17L17 7"></path><path d="M7 7h10v10"></path>',
+  Award:
+    '<circle cx="12" cy="8" r="5"></circle><path d="M8.5 12.5L7 21l5-3 5 3-1.5-8.5"></path>',
+  Calendar: '<path d="M8 2v4"></path><path d="M16 2v4"></path><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M3 10h18"></path>',
   Check: '<path d="M5 12.5l4 4L19 6.5"></path>',
+  CheckCircle:
+    '<circle cx="12" cy="12" r="9"></circle><path d="M8 12.5l2.5 2.5L16 9"></path>',
+  ChevronDown: '<path d="M6 9l6 6 6-6"></path>',
+  ChevronLeft: '<path d="M15 18l-6-6 6-6"></path>',
+  ChevronRight: '<path d="M9 18l6-6-6-6"></path>',
+  ChevronUp: '<path d="M18 15l-6-6-6 6"></path>',
+  CircleCheck:
+    '<circle cx="12" cy="12" r="9"></circle><path d="M8 12.5l2.5 2.5L16 9"></path>',
+  Clock: '<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>',
+  CreditCard: '<rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3 10h18"></path>',
+  Download: '<path d="M12 3v12"></path><path d="M7 10l5 5 5-5"></path><path d="M5 21h14"></path>',
+  ExternalLink: '<path d="M14 4h6v6"></path><path d="M10 14L20 4"></path><path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"></path>',
+  Facebook:
+    '<path d="M14 8h3V4h-3c-3 0-5 2-5 5v3H6v4h3v6h4v-6h3l1-4h-4V9c0-.6.4-1 1-1z"></path>',
+  Github:
+    '<path d="M9 19c-5 1.5-5-2.5-7-3"></path><path d="M15 22v-3.9a3.4 3.4 0 0 0-1-2.6c3.3-.4 6.8-1.6 6.8-7.4A5.8 5.8 0 0 0 19.2 4c.2-.5.7-2-.2-4 0 0-1.3-.4-4.2 1.5A14.5 14.5 0 0 0 7.2 1.5C4.3-.4 3 0 3 0c-.9 2-.4 3.5-.2 4A5.8 5.8 0 0 0 1.2 8.1c0 5.8 3.5 7 6.8 7.4a3.4 3.4 0 0 0-1 2.6V22"></path>',
+  Globe: '<circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3a14 14 0 0 1 0 18"></path><path d="M12 3a14 14 0 0 0 0 18"></path>',
   Plus: '<path d="M12 5v14"></path><path d="M5 12h14"></path>',
   Minus: '<path d="M5 12h14"></path>',
   Heart:
     '<path d="M12 20s-6.5-4.2-8.5-8C1.8 8.6 3.9 5 7.8 5c1.8 0 3.2 0.9 4.2 2.2C13 5.9 14.4 5 16.2 5c3.9 0 6 3.6 4.3 7-2 3.8-8.5 8-8.5 8z"></path>',
+  Instagram:
+    '<rect x="3" y="3" width="18" height="18" rx="5"></rect><circle cx="12" cy="12" r="4"></circle><circle cx="17.5" cy="6.5" r="0.8"></circle>',
+  Linkedin:
+    '<path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-4 0v7h-4v-7a6 6 0 0 1 6-6z"></path><rect x="2" y="9" width="4" height="12"></rect><circle cx="4" cy="4" r="2"></circle>',
+  Lock: '<rect x="5" y="10" width="14" height="11" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path>',
+  Mail: '<rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3 7l9 6 9-6"></path>',
+  MapPin: '<path d="M12 22s7-5.3 7-12a7 7 0 0 0-14 0c0 6.7 7 12 7 12z"></path><circle cx="12" cy="10" r="2.5"></circle>',
+  Menu: '<path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path>',
+  Phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.5 2.1L8 9.6a16 16 0 0 0 6.4 6.4l1.2-1.2a2 2 0 0 1 2.1-.5c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2z"></path>',
+  Play: '<path d="M8 5v14l11-7z"></path>',
+  Search: '<circle cx="11" cy="11" r="7"></circle><path d="M20 20l-4-4"></path>',
   Shield: '<path d="M12 3l7 3v5c0 5-3.3 8.1-7 10-3.7-1.9-7-5-7-10V6l7-3z"></path>',
+  ShoppingCart:
+    '<circle cx="9" cy="21" r="1"></circle><circle cx="20" cy="21" r="1"></circle><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h8.8a2 2 0 0 0 2-1.6L22 6H6"></path>',
   Truck:
     '<path d="M3 7h10v8H3z"></path><path d="M13 10h4l3 3v2h-7z"></path><circle cx="7.5" cy="17.5" r="1.5"></circle><circle cx="17.5" cy="17.5" r="1.5"></circle>',
+  Twitter:
+    '<path d="M22 4.5c-.8.4-1.6.6-2.5.7.9-.5 1.5-1.3 1.8-2.3-.8.5-1.8.9-2.8 1.1A4.2 4.2 0 0 0 11.3 7c0 .3 0 .7.1 1A12 12 0 0 1 3 3.7a4.2 4.2 0 0 0 1.3 5.6c-.7 0-1.4-.2-1.9-.5v.1a4.2 4.2 0 0 0 3.4 4.1c-.6.2-1.2.2-1.9.1a4.2 4.2 0 0 0 4 2.9A8.5 8.5 0 0 1 2 17.7 12 12 0 0 0 8.5 20c7.8 0 12.1-6.5 12.1-12.1v-.6c.8-.6 1.5-1.3 2.1-2.1z"></path>',
+  Upload: '<path d="M12 21V9"></path><path d="M7 14l5-5 5 5"></path><path d="M5 3h14"></path>',
+  User: '<path d="M20 21a8 8 0 0 0-16 0"></path><circle cx="12" cy="7" r="4"></circle>',
+  Users: '<path d="M17 21a6 6 0 0 0-10 0"></path><circle cx="12" cy="7" r="4"></circle><path d="M22 21a5 5 0 0 0-4-4.9"></path><path d="M2 21a5 5 0 0 1 4-4.9"></path>',
+  X: '<path d="M18 6L6 18"></path><path d="M6 6l12 12"></path>',
+  Youtube:
+    '<path d="M22 12s0-3.3-.4-4.8a3 3 0 0 0-2.1-2.1C18 4.7 12 4.7 12 4.7s-6 0-7.5.4a3 3 0 0 0-2.1 2.1C2 8.7 2 12 2 12s0 3.3.4 4.8a3 3 0 0 0 2.1 2.1c1.5.4 7.5.4 7.5.4s6 0 7.5-.4a3 3 0 0 0 2.1-2.1c.4-1.5.4-4.8.4-4.8z"></path><path d="M10 9l5 3-5 3z"></path>',
+  Zap: '<path d="M13 2L3 14h8l-1 8 11-14h-8l1-6z"></path>',
   Star:
     '<path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 16.8 6.7 19.6l1-5.8-4.2-4.1 5.9-.9L12 3.5z"></path>',
   Sparkles:
@@ -1890,6 +2008,34 @@ function isLikelyIconComponent(tagName: string, props: Record<string, unknown>) 
     /^[A-Z][A-Za-z0-9]+$/.test(tagName) &&
     propKeys.every((key) => iconLikeProps.has(key))
   );
+}
+
+function splitJsxTagName(tagName: string) {
+  const parts = tagName.split(".");
+
+  return {
+    namespace: parts.length > 1 ? parts[0] : undefined,
+    componentName: parts[parts.length - 1] || tagName
+  };
+}
+
+function resolveExternalIconComponentName(
+  tagName: string,
+  module?: ProjectModule
+) {
+  if (!module) {
+    return null;
+  }
+
+  const { namespace, componentName } = splitJsxTagName(tagName);
+  const directSpecifier = module.externalComponentImports.get(tagName) ??
+    module.externalComponentImports.get(componentName);
+  const namespaceSpecifier = namespace
+    ? module.externalComponentImports.get(namespace)
+    : undefined;
+  const specifier = directSpecifier ?? namespaceSpecifier;
+
+  return specifier && ICON_IMPORT_PATTERN.test(specifier) ? componentName : null;
 }
 
 function renderIconFallback(tagName: string, props: Record<string, unknown>) {
@@ -1979,21 +2125,25 @@ function renderCustomComponent(
     return renderIconFallback(tagName, props);
   }
 
-  if (project) {
-    const currentModule = project.modules.get(normalizeProjectPath(sourceFile.fileName));
+  const currentModule = project?.modules.get(normalizeProjectPath(sourceFile.fileName));
 
-    if (currentModule) {
-      const renderedComponent = renderComponentReference({
-        module: currentModule,
-        componentName: tagName,
-        project,
-        props
-      });
+  if (project && currentModule) {
+    const renderedComponent = renderComponentReference({
+      module: currentModule,
+      componentName: tagName,
+      project,
+      props
+    });
 
-      if (renderedComponent.trim()) {
-        return renderedComponent;
-      }
+    if (renderedComponent.trim()) {
+      return renderedComponent;
     }
+  }
+
+  const externalIconName = resolveExternalIconComponentName(tagName, currentModule);
+
+  if (externalIconName) {
+    return renderIconFallback(externalIconName, props);
   }
 
   if (isLikelyIconComponent(tagName, props)) {

@@ -508,12 +508,25 @@ export function assessVisualCloneRisk(
     layout.detectedSections.length ||
     layout.sectionIds.length ||
     capture.inputAnalysis.sectionCandidates.length;
+  const hasReusableSectionSnapshot = (capture.sections ?? []).some((section) => {
+    const viewports = Object.values(section.viewports ?? {});
+
+    return (
+      typeof section.htmlCandidate === "string" &&
+      section.htmlCandidate.trim().length > 0 &&
+      viewports.some(
+        (viewport) =>
+          (typeof viewport.snapshotDataUrl === "string" && viewport.snapshotDataUrl.trim().length > 0) ||
+          (typeof viewport.snapshotPath === "string" && viewport.snapshotPath.trim().length > 0)
+      )
+    );
+  });
   const preferFullPageSnapshot =
     highRisk &&
     (
       !capture.inputAnalysis.renderStrategy.safeSectionExtraction ||
       capture.inputAnalysis.renderStrategy.preferFullPageSnapshot ||
-      sectionCount <= 1 ||
+      (sectionCount <= 1 && !hasReusableSectionSnapshot) ||
       overlayNodes >= 4 ||
       absoluteFixedStickyNodes >= 5 ||
       highZIndexNodes >= 4 ||

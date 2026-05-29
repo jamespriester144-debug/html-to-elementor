@@ -1195,6 +1195,7 @@ function describeSectionChild(
   const semantics = collectWidgetSemantics(element);
   const widgetTypes = collectWidgetTypes(element);
   const buttonCount = widgetTypes.filter((widgetType) => widgetType === "button").length;
+  const headingCount = widgetTypes.filter((widgetType) => widgetType === "heading").length;
   const textWidgetCount = widgetTypes.filter((widgetType) =>
     widgetType === "text-editor" || widgetType === "heading" || widgetType === "blockquote"
   ).length;
@@ -1260,7 +1261,10 @@ function describeSectionChild(
 
     if (
       isNarrativeSectionComposition(composition) &&
-      !looksInline &&
+      (
+        !looksInline ||
+        (buttonCount > 0 && headingCount > 0 && textWidgetCount >= 2)
+      ) &&
       textWidgetCount >= 1 &&
       supportBlock !== "guarantee-strip"
     ) {

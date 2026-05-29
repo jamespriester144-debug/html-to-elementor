@@ -29,7 +29,11 @@ import {
   getOrderedChildIdsForPattern
 } from "../lib/converter-v3/emitters/elementor/responsive-layout";
 import { createEditableElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/editable";
-import { resolvePageShellVisualContext } from "../lib/converter-v3/emitters/elementor/style-preservation";
+import {
+  resolvePageShellVisualContext,
+  resolveStyleMapBackgroundColor,
+  buildStyledHtmlFragment
+} from "../lib/converter-v3/emitters/elementor/style-preservation";
 import {
   runExportPipelineV3,
   runExportPipelineV3FromHtml
@@ -1194,6 +1198,82 @@ async function testV3HtmlCaptureTracksPictureSourcesAndLazyImages() {
   assert.deepEqual(lazyNode?.asset.lazySources, [lazyImage]);
   assert.equal(lazyNode?.asset.currentSrc, lazyImage);
   assert.equal(lazyNode?.asset.src, lazyImage);
+}
+
+async function testV3HtmlCaptureWaitsForDelayedFooterContent() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Delayed Footer Capture</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+
+      main {
+        width: min(1120px, calc(100% - 48px));
+        margin: 0 auto;
+      }
+
+      .spacer {
+        height: 2200px;
+        padding: 56px 0;
+        background: linear-gradient(#ffffff, #e2e8f0);
+      }
+
+      footer {
+        padding: 32px 24px;
+        background: #111827;
+        color: #ffffff;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="spacer">
+        <h1>Scroll to reveal delayed content</h1>
+        <p>The footer appears only after the sentinel is brought into view.</p>
+      </section>
+      <div id="footer-sentinel" style="height:1px"></div>
+    </main>
+    <script>
+      const sentinel = document.getElementById("footer-sentinel");
+      const appendFooter = () => {
+        if (document.querySelector("footer")) {
+          return;
+        }
+
+        const footer = document.createElement("footer");
+        footer.textContent = "FOOTER LOADED";
+        document.body.appendChild(footer);
+      };
+
+      const observer = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setTimeout(appendFooter, 1000);
+          observer.disconnect();
+        }
+      });
+
+      observer.observe(sentinel);
+    </script>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: true,
+    outputRoot
+  });
+  const footerNode = result.capture.nodes.find(
+    (node) => node.tag === "footer" && (node.text || "").includes("FOOTER LOADED")
+  );
+
+  assert.ok(footerNode);
+  assert.equal(footerNode?.isVisible, true);
+  assert.equal(result.capture.inputAnalysis.diagnostics.htmlRendered, true);
 }
 
 async function testV3HtmlCaptureDetectsVisualPseudoElements() {
@@ -3216,7 +3296,7 @@ async function testV3ServerFallbackResolvesStylesheetDrivenDarkShell() {
   assert.equal(result.emittedMode, "pixel-perfect");
   assert.equal(
     result.elementorDocument.content[0]?.settings?.background_color,
-    "hsl(222.2 47.4% 11.2%)"
+    "rgb(15, 23, 42)"
   );
 }
 
@@ -7589,6 +7669,178 @@ async function testV3EditablePreservesStyledButtonVisuals() {
   assert.equal(previewHtml.includes("background:#111"), false);
 }
 
+async function testV3EditableNormalizesButtonUnderline() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Underline Button Normalization</title>
+  </head>
+  <body>
+    <section style="padding:32px;background:#fff7ed;">
+      <a
+        href="#cta"
+        style="display:inline-flex;align-items:center;justify-content:center;padding:16px 28px;border-radius:999px;background:#e11d48;color:#f8fafc;border:1px solid rgba(255,255,255,.22);box-shadow:0 18px 40px rgba(225,29,72,.35);text-decoration:underline;"
+      >
+        Comecar agora
+      </a>
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const editableResult = createEditableElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "editable"
+  });
+  const button = findFirstWidget(editableResult.document, "button");
+  const previewHtml = buildConvertedPreviewHtml({
+    capture: captureResult.capture,
+    document: editableResult.document
+  });
+
+  assert.ok(button);
+  assert.equal(
+    String(
+      (button?.settings?.converter_v3_styles as Record<string, string> | undefined)?.[
+        "text-decoration"
+      ] ?? ""
+    ),
+    "none"
+  );
+  assert.match(
+    String(button?.settings?.converter_v3_inline_style ?? ""),
+    /text-decoration:\s*none/i
+  );
+  assert.equal(/text-decoration:\s*underline/i.test(previewHtml), false);
+}
+
+async function testV3StyledHtmlFragmentNormalizesDefaultLinkUnderline() {
+  const captureNode: PageCapture["nodes"][number] = {
+    id: "link-1",
+    tag: "a",
+    text: "Learn more",
+    attributes: {
+      href: "#learn"
+    },
+    parentId: null,
+    childIds: [],
+    computedStyles: {
+      color: "rgb(0, 0, 238)",
+      "text-decoration": "underline"
+    },
+    box: null,
+    viewportStates: {},
+    visualOrder: 1,
+    isVisible: true,
+    asset: {
+      href: "#learn"
+    }
+  };
+
+  const layoutNode: LayoutNode = {
+    id: "link-1",
+    tag: "a",
+    kind: "text",
+    parentId: null,
+    children: [],
+    box: {
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0
+    },
+    visualOrder: 1,
+    layout: {},
+    spacing: {},
+    style: {},
+    content: {
+      text: "Learn more",
+      href: "#learn"
+    },
+    flags: {},
+    responsive: {}
+  };
+
+  const strippedFragment = buildStyledHtmlFragment({
+    html: '<a data-capture-id="link-1" href="#learn">Learn more</a>',
+    captureById: new Map([[captureNode.id, captureNode]]),
+    layoutById: new Map([[layoutNode.id, layoutNode]])
+  });
+
+  const explicitUnderlineFragment = buildStyledHtmlFragment({
+    html: '<a data-capture-id="link-1" href="#learn">Learn more</a>',
+    captureById: new Map([
+      [
+        captureNode.id,
+        {
+          ...captureNode,
+          attributes: {
+            ...captureNode.attributes,
+            style: "text-decoration: underline;"
+          }
+        }
+      ]
+    ]),
+    layoutById: new Map([[layoutNode.id, layoutNode]])
+  });
+
+  assert.match(strippedFragment, /text-decoration:\s*none/i);
+  assert.equal(/text-decoration:\s*underline/i.test(strippedFragment), false);
+  assert.match(explicitUnderlineFragment, /text-decoration:\s*underline/i);
+}
+
+async function testV3StyledHtmlFragmentNormalizesNestedLinkUnderline() {
+  const captureNode: PageCapture["nodes"][number] = {
+    id: "block-1",
+    tag: "div",
+    text: "Read more",
+    attributes: {},
+    parentId: null,
+    childIds: [],
+    computedStyles: {},
+    box: null,
+    viewportStates: {},
+    visualOrder: 1,
+    isVisible: true,
+    asset: {}
+  };
+
+  const layoutNode: LayoutNode = {
+    id: "block-1",
+    tag: "div",
+    kind: "container",
+    parentId: null,
+    children: [],
+    box: {
+      x: 0,
+      y: 0,
+      width: 100,
+      height: 20
+    },
+    visualOrder: 1,
+    layout: {},
+    spacing: {},
+    style: {},
+    content: {},
+    flags: {},
+    responsive: {}
+  };
+
+  const fragment = buildStyledHtmlFragment({
+    html:
+      '<div data-capture-id="block-1"><p>Read <a href="/more">more</a> or <a href="/learn" style="text-decoration: underline;">learn</a></p></div>',
+    captureById: new Map([[captureNode.id, captureNode]]),
+    layoutById: new Map([[layoutNode.id, layoutNode]])
+  });
+
+  assert.match(fragment, /<a href="\/more" style="text-decoration:none">more<\/a>/i);
+  assert.match(fragment, /<a href="\/learn" style="text-decoration:\s*underline;/i);
+}
+
 async function testV3EditablePreservesStyledInputAsHtml() {
   const html = `<!doctype html>
 <html>
@@ -8025,6 +8277,140 @@ function testV3EditableWrapsGlobalPageShellWhenOnlyBodyCarriesDarkTheme() {
   assert.equal(pageShell?.settings?.converter_v3_page_shell_capture_node_id, "body-node");
   assert.match(previewHtml, /background:rgb\(2, 6, 23\)/i);
   assert.match(previewHtml, /color:rgb\(248, 250, 252\)/i);
+}
+
+function testV3PageShellIgnoresTransparentBodyBackgroundShorthand() {
+  const darkShell = "rgb(2, 6, 23)";
+  const capture = createMockCapture({
+    themeAnalysis: {
+      detectedTheme: "dark",
+      dominantBackgroundLuminance: 0.018,
+      dominantContrast: 15.2,
+      colorSamples: [],
+      designTokens: {
+        globalBackground: darkShell,
+        foreground: "rgb(248, 250, 252)"
+      },
+      styleSignals: {
+        hasStrongDarkTheme: true,
+        hasStyledButtons: false,
+        hasStyledInputs: false,
+        hasElevatedCards: false
+      },
+      roleCounts: {
+        cards: 0,
+        buttons: 0,
+        inputs: 0,
+        headers: 0,
+        footers: 0,
+        sections: 1
+      },
+      messages: ["dark theme detected"]
+    },
+    nodes: [
+      {
+        id: "body-node",
+        tag: "body",
+        text: "",
+        attributes: {},
+        parentId: null,
+        childIds: ["page"],
+        computedStyles: {
+          background: "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+          "background-color": "rgba(0, 0, 0, 0)",
+          color: "rgb(248, 250, 252)"
+        },
+        box: {
+          x: 0,
+          y: 0,
+          top: 0,
+          right: 1440,
+          bottom: 900,
+          left: 0,
+          width: 1440,
+          height: 900,
+          centerX: 720,
+          centerY: 450
+        },
+        viewportStates: {},
+        visualOrder: 0,
+        isVisible: true,
+        asset: {}
+      }
+    ]
+  });
+  const layout: LayoutDocument = {
+    id: "transparent-body-page-shell-layout",
+    title: "Transparent Body Page Shell Layout",
+    sourceKind: "raw-html",
+    rootNodeId: "page",
+    nodeCount: 1,
+    sectionIds: [],
+    semanticIndex: {},
+    detectedSections: [],
+    nodes: [
+      {
+        id: "page",
+        tag: "main",
+        kind: "page",
+        parentId: null,
+        children: [],
+        box: {
+          x: 0,
+          y: 0,
+          width: 1440,
+          height: 900
+        },
+        visualOrder: 0,
+        layout: {},
+        spacing: {},
+        style: {},
+        content: {},
+        flags: {},
+        responsive: {}
+      }
+    ]
+  };
+  const pageShell = resolvePageShellVisualContext({
+    capture,
+    layout
+  });
+
+  assert.equal(pageShell.shouldWrap, true);
+  assert.equal(pageShell.styleMap["background-color"], darkShell);
+  assert.equal(pageShell.detectedPageBackground, darkShell);
+  assert.doesNotMatch(
+    pageShell.styleMap.background ?? "",
+    /rgba\(0,\s*0,\s*0,\s*0\)\s+none/i
+  );
+}
+
+function testV3ElementorBackgroundColorNormalizesModernCssColors() {
+  assert.equal(
+    resolveStyleMapBackgroundColor({
+      "background-color": "oklch(0 0 0)"
+    }),
+    "rgb(0, 0, 0)"
+  );
+  assert.equal(
+    resolveStyleMapBackgroundColor({
+      background: "oklch(0 0 0) none repeat scroll 0% 0% / auto padding-box border-box",
+      "background-color": "rgba(0, 0, 0, 0)"
+    }),
+    "rgb(0, 0, 0)"
+  );
+  assert.equal(
+    resolveStyleMapBackgroundColor({
+      "background-color": "hsl(0 0% 0%)"
+    }),
+    "rgb(0, 0, 0)"
+  );
+  assert.equal(
+    resolveStyleMapBackgroundColor({
+      "background-color": "hsl(var(--background))"
+    }),
+    undefined
+  );
 }
 
 async function testV3NativeExportKeepsDetectedPageShellWhenLayoutRootIsWhite() {
@@ -13345,6 +13731,7 @@ async function main() {
   await testV3HtmlCaptureCollectsExpandedComputedStyles();
   await testV3HtmlCapturePreservesMultiLayerBackgroundImages();
   await testV3HtmlCaptureTracksPictureSourcesAndLazyImages();
+  await testV3HtmlCaptureWaitsForDelayedFooterContent();
   await testV3HtmlCaptureDetectsVisualPseudoElements();
   await testV3SectionCaptureTracksHeroOverlayCardImagesAndPseudoBackgrounds();
   await testV3BrowserDiagnosticsResolveRelativeHeroCardAndPseudoAssets();
@@ -13393,11 +13780,16 @@ async function main() {
   await testV3HybridComposesTestimonialSectionOutroBlock();
   await testV3EditableFallsBackToHybridOnUnsupportedBlock();
   await testV3EditablePreservesStyledButtonVisuals();
+  await testV3EditableNormalizesButtonUnderline();
+  await testV3StyledHtmlFragmentNormalizesDefaultLinkUnderline();
+  await testV3StyledHtmlFragmentNormalizesNestedLinkUnderline();
   await testV3EditablePreservesStyledInputAsHtml();
   await testV3EditablePreservesDarkCardShell();
   await testV3EditablePreservesHeroBackgroundAndOverlay();
   await testV3EditablePreservesDarkFooterShell();
   testV3EditableWrapsGlobalPageShellWhenOnlyBodyCarriesDarkTheme();
+  testV3PageShellIgnoresTransparentBodyBackgroundShorthand();
+  testV3ElementorBackgroundColorNormalizesModernCssColors();
   await testV3NativeExportKeepsDetectedPageShellWhenLayoutRootIsWhite();
   await testV3SnapshotEmitterPropagatesDetectedPageBackgroundOnlyToPageShell();
   await testV3PixelPerfectEmitterInjectsDetectedPageBackgroundVariableWithoutGlobalOverride();

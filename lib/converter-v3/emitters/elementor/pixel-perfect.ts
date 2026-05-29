@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import type { OutputMode } from "@/lib/converter-v3/contracts/layout";
 import {
   buildDetectedPageBackgroundCssVariables,
+  normalizeElementorColorValue,
   resolveStyleMapBackgroundValue
 } from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import type { ElementorDocument } from "@/types/conversion";
@@ -435,18 +436,18 @@ export function createPixelPerfectElementorDocumentV3(
           html_to_elementor_strategy: "pixel-perfect-iframe-v3",
           converter_v3_selected_mode: options.selectedMode,
           converter_v3_fallback_reason: options.fallbackReason,
-          ...(options.shellStyleMap?.["background-color"]
+          ...(normalizeElementorColorValue(options.shellStyleMap?.["background-color"])
             ? {
                 background_background: "classic",
-                background_color: options.shellStyleMap["background-color"],
-                _background_color: options.shellStyleMap["background-color"]
+                background_color: normalizeElementorColorValue(options.shellStyleMap?.["background-color"]),
+                _background_color: normalizeElementorColorValue(options.shellStyleMap?.["background-color"])
               }
             : {}),
-          ...(options.shellStyleMap?.color
+          ...(normalizeElementorColorValue(options.shellStyleMap?.color)
             ? {
-                color: options.shellStyleMap.color,
-                text_color: options.shellStyleMap.color,
-                title_color: options.shellStyleMap.color
+                color: normalizeElementorColorValue(options.shellStyleMap?.color),
+                text_color: normalizeElementorColorValue(options.shellStyleMap?.color),
+                title_color: normalizeElementorColorValue(options.shellStyleMap?.color)
               }
             : {})
         },

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 
 import JSZip from "jszip";
 
+import { buildStyledHtmlFragment } from "../lib/converter-v3/emitters/elementor/style-preservation";
 import { resolveSourceFromUpload } from "../lib/converter-v3/resolve/source-resolver";
+import { extractLovableProjectHtml } from "../lib/lovable";
 import { getLovableBaseCss, inlineLovableStyles } from "../lib/tailwind";
 
 async function testLovableResolverEmbedsProjectStylesAndFonts() {
@@ -125,6 +127,47 @@ export default function App() {
   assert.match(resolved.html, /background-image:\s*url\("data:image\/png;base64,/);
 }
 
+async function testLovableRouteEntryEmbedsGlobalTailwindThemeCss() {
+  const zip = new JSZip();
+
+  zip.file(
+    "route/src/main.tsx",
+    `import "./index.css";
+import Index from "./routes/index";
+
+export default Index;`
+  );
+  zip.file(
+    "route/src/routes/index.tsx",
+    `export default function Index() {
+  return (
+    <main className="min-h-screen bg-background text-foreground">
+      <h1>Neon route</h1>
+    </main>
+  );
+}`
+  );
+  zip.file(
+    "route/src/index.css",
+    `@import "tailwindcss";
+
+@theme {
+  --color-background: #020617;
+  --color-foreground: #f8fafc;
+}`
+  );
+
+  const html = await extractLovableProjectHtml(zip, {
+    entryFile: "route/src/routes/index.tsx"
+  });
+
+  assert.ok(html);
+  assert.match(html, /data-converter-v3-project-css/);
+  assert.match(html, /:root\s*\{[\s\S]*--color-background:\s*#020617;/);
+  assert.match(html, /--color-foreground:\s*#f8fafc;/);
+  assert.doesNotMatch(html, /@theme/);
+}
+
 function testInlineLovableStylesHandlesResponsiveAndArbitraryUtilities() {
   const html = `<!doctype html>
 <html>
@@ -151,8 +194,8 @@ function testInlineLovableStylesHandlesResponsiveAndArbitraryUtilities() {
   assert.match(output, /right:0/);
   assert.match(output, /letter-spacing:0\.25em/);
   assert.match(output, /line-height:1\.05/);
-  assert.match(output, /color:hsl\(var\(--foreground\)\)/);
-  assert.match(output, /background:hsl\(var\(--background\) \/ 0\.8\)/);
+  assert.match(output, /color:var\(--color-foreground, hsl\(var\(--foreground\)\)\)/);
+  assert.match(output, /background:color-mix\(in srgb, var\(--color-background, hsl\(var\(--background\)\)\) 80%, transparent\)/);
   assert.match(output, /font-family:var\(--font-sans/);
   assert.match(output, /background:radial-gradient\(circle,#111,#fff\)/);
   assert.match(output, /data-converter-v3-generated-responsive/);
@@ -160,6 +203,7 @@ function testInlineLovableStylesHandlesResponsiveAndArbitraryUtilities() {
   assert.match(output, /display:flex !important/);
   assert.match(output, /grid-template-columns:repeat\(2, minmax\(0, 1fr\)\) !important/);
   assert.match(baseCss, /html, body \{/);
+  assert.match(baseCss, /background-color: var\(--color-background, hsl\(var\(--background\)\)\)/);
   assert.match(baseCss, /\.container \{/);
 }
 
@@ -185,11 +229,15 @@ createRoot(document.getElementById("root")!).render(<App />);`
   );
   zip.file(
     "icons/src/App.tsx",
-    `import { Sparkles } from "lucide-react";
+    `import { ArrowUpRight, ChevronRight, Menu, Sparkles, X } from "lucide-react";
 
 export default function App() {
   return (
     <main className="container mx-auto">
+      <ChevronRight />
+      <Menu />
+      <X />
+      <ArrowUpRight className="size-4 text-primary" />
       <Sparkles className="size-5 text-primary" strokeWidth={2} />
       <h1 className="text-[42px] text-foreground">Icon clone</h1>
     </main>
@@ -203,9 +251,39 @@ export default function App() {
   const resolved = await resolveSourceFromUpload(file);
 
   assert.equal(resolved.sourceKind, "lovable-react-source");
+  assert.match(resolved.html, /data-lovable-icon="ChevronRight"/);
+  assert.match(resolved.html, /data-lovable-icon="Menu"/);
+  assert.match(resolved.html, /data-lovable-icon="X"/);
+  assert.match(resolved.html, /data-lovable-icon="ArrowUpRight"/);
   assert.match(resolved.html, /data-lovable-icon="Sparkles"/);
   assert.match(resolved.html, /class="size-5 text-primary"/);
   assert.match(resolved.html, /Icon clone/);
+}
+
+function testElementorHtmlFallbackConvertsInlineSvgToImage() {
+  const fragment = buildStyledHtmlFragment({
+    html: `<svg data-capture-id="icon-1" data-lovable-icon="ChevronRight" class="size-5 text-primary" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"></path></svg>`,
+    captureById: new Map([
+      [
+        "icon-1",
+        {
+          id: "icon-1",
+          computedStyles: {
+            color: "rgb(56, 189, 248)",
+            display: "block",
+            width: "20px",
+            height: "20px"
+          },
+          pseudoElements: []
+        } as never
+      ]
+    ])
+  });
+
+  assert.match(fragment, /<img[^>]+data-converter-v3-inline-svg="true"/);
+  assert.match(fragment, /src="data:image\/svg\+xml;base64,/);
+  assert.match(fragment, /alt="ChevronRight"/);
+  assert.doesNotMatch(fragment, /<svg/i);
 }
 
 async function testLovableResolverKeepsChildrenHtmlOutOfVisibleCodeFallbacks() {
@@ -275,8 +353,10 @@ export default function App() {
 async function main() {
   await testLovableResolverEmbedsProjectStylesAndFonts();
   await testLovableResolverInlinesStylesheetAssetUrls();
+  await testLovableRouteEntryEmbedsGlobalTailwindThemeCss();
   testInlineLovableStylesHandlesResponsiveAndArbitraryUtilities();
   await testLovableResolverRendersExternalIconFallbacks();
+  testElementorHtmlFallbackConvertsInlineSvgToImage();
   await testLovableResolverKeepsChildrenHtmlOutOfVisibleCodeFallbacks();
   console.log("lovable rendering tests passed");
 }

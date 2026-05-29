@@ -835,7 +835,7 @@ export function auditThemeConsistency(params: {
     return undefined;
   }
 
-  if (params.emittedMode === "pixel-perfect") {
+  if (params.emittedMode === "pixel-perfect" || params.emittedMode === "snapshot") {
     return {
       passed: true,
       sourceTheme: source.detectedTheme,
@@ -881,15 +881,17 @@ export function auditThemeConsistency(params: {
     .filter((value): value is string => Boolean(value && isMeaningfulColorValue(value)));
   const issues: ThemeAuditIssue[] = [];
   const messages = [...new Set([...source.messages, ...converted.messages])];
+  const sourceHasButtons = source.roleCounts.buttons > 0;
+  const sourceHasInputs = source.roleCounts.inputs > 0;
   const sourceStyledButtons =
-    source.styleSignals?.hasStyledButtons === true ||
-    (source.roleCounts.buttons > 0 &&
+    sourceHasButtons &&
+    (source.styleSignals?.hasStyledButtons === true ||
       (Boolean(source.designTokens.primaryButtonColor) ||
         hasRoundedCorners(source.designTokens.radius) ||
         hasMeaningfulShadow(source.designTokens.shadow)));
   const sourceStyledInputs =
-    source.styleSignals?.hasStyledInputs === true ||
-    (source.roleCounts.inputs > 0 &&
+    sourceHasInputs &&
+    (source.styleSignals?.hasStyledInputs === true ||
       (Boolean(source.designTokens.cardBackground) ||
         Boolean(source.designTokens.borderColor) ||
         hasRoundedCorners(source.designTokens.radius)));

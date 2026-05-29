@@ -8,6 +8,7 @@ import { createPixelPerfectElementorDocumentV3 } from "@/lib/converter-v3/emitte
 import { createSnapshotElementorDocumentV3 } from "@/lib/converter-v3/emitters/elementor/snapshot";
 import {
   buildElementorStyleBridgeSettings,
+  normalizeElementorColorValue,
   resolvePageShellVisualContext
 } from "@/lib/converter-v3/emitters/elementor/style-preservation";
 import type { PageCapture } from "@/lib/converter-v3/contracts/capture";
@@ -300,8 +301,8 @@ function parseCssGradient(value: string): ParsedGradient | undefined {
 
   return {
     type,
-    colorA: firstStop.color,
-    colorB: lastStop.color,
+    colorA: normalizeElementorColorValue(firstStop.color) ?? firstStop.color,
+    colorB: normalizeElementorColorValue(lastStop.color) ?? lastStop.color,
     colorStopA: firstStop.stop ?? 0,
     colorStopB: lastStop.stop ?? 100,
     angle,
@@ -522,9 +523,10 @@ function applySourceNodeMetadata(
     (hasMeaningfulBackgroundColor(styleBridge["background-color"])
       ? styleBridge["background-color"]
       : undefined);
-  const resolvedBackgroundColor = isPageShell
+  const resolvedBackgroundColorRaw = isPageShell
     ? existingBackgroundColor ?? shellBackgroundColor ?? sourceBackgroundColor
     : sourceBackgroundColor ?? shellBackgroundColor ?? existingBackgroundColor;
+  const resolvedBackgroundColor = normalizeElementorColorValue(resolvedBackgroundColorRaw);
   const existingTextColor =
     typeof nextElement.settings.color === "string" && nextElement.settings.color.trim()
       ? nextElement.settings.color.trim()
@@ -536,9 +538,10 @@ function applySourceNodeMetadata(
           : undefined;
   const sourceTextColor = node.style.color || captureNode?.computedStyles.color;
   const shellTextColor = pageShellCaptureNode?.computedStyles.color || styleBridge.color;
-  const resolvedTextColor = isPageShell
+  const resolvedTextColorRaw = isPageShell
     ? existingTextColor ?? shellTextColor ?? sourceTextColor
     : sourceTextColor ?? shellTextColor ?? existingTextColor;
+  const resolvedTextColor = normalizeElementorColorValue(resolvedTextColorRaw);
 
   if (typeof node.visual?.effectiveZIndex === "number" && node.visual.effectiveZIndex > 0) {
     nextElement.settings.z_index = node.visual.effectiveZIndex;
@@ -916,6 +919,22 @@ function readSourceNodeId(element: ElementorElement) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function readMappedSourceNodeIds(element: ElementorElement) {
+  const ids = new Set<string>();
+  const sourceNodeId = readSourceNodeId(element);
+  const pageShellCaptureNodeId = element.settings?.converter_v3_page_shell_capture_node_id;
+
+  if (sourceNodeId) {
+    ids.add(sourceNodeId);
+  }
+
+  if (typeof pageShellCaptureNodeId === "string" && pageShellCaptureNodeId.trim().length > 0) {
+    ids.add(pageShellCaptureNodeId.trim());
+  }
+
+  return [...ids];
+}
+
 function collectDocumentSourceIndex(document: ElementorDocument) {
   const elementsBySourceNodeId = new Map<string, ElementorElement[]>();
   const htmlPreservedNodeIds = new Set<string>();
@@ -928,13 +947,11 @@ function collectDocumentSourceIndex(document: ElementorDocument) {
       continue;
     }
 
-    const sourceNodeId = readSourceNodeId(element);
-
-    if (sourceNodeId) {
+    readMappedSourceNodeIds(element).forEach((sourceNodeId) => {
       const elements = elementsBySourceNodeId.get(sourceNodeId) ?? [];
       elements.push(element);
       elementsBySourceNodeId.set(sourceNodeId, elements);
-    }
+    });
 
     if (element.widgetType === "html") {
       const html = String(element.settings?.html ?? "");

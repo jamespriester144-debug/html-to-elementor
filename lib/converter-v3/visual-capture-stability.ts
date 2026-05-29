@@ -212,6 +212,13 @@ export async function preparePageForVisualCapture(
           );
         };
 
+        const measureDocumentHeight = () =>
+          Math.max(
+            document.documentElement?.scrollHeight ?? 0,
+            document.body?.scrollHeight ?? 0,
+            window.innerHeight
+          );
+
         const inlineLocalAssetsAsDataUrls = async () => {
           const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0"]);
 
@@ -387,22 +394,59 @@ export async function preparePageForVisualCapture(
           }
         };
 
-        const scrollThroughPage = async () => {
-          const root = document.documentElement;
-          const totalHeight = Math.max(
-            root?.scrollHeight ?? 0,
-            document.body?.scrollHeight ?? 0,
-            window.innerHeight
-          );
-          const step = Math.max(Math.floor(window.innerHeight * 0.75), 200);
+        const waitForPageHeightToSettle = async () => {
+          const stableWindowMs = Math.min(1500, Math.max(deadline - now(), 0));
+          const sampleIntervalMs = 150;
+          let lastHeight = measureDocumentHeight();
+          let lastChangeAt = now();
 
-          for (let y = 0; y < totalHeight; y += step) {
-            window.scrollTo(0, y);
-            await wait(60);
+          while (now() < deadline) {
+            const currentHeight = measureDocumentHeight();
+
+            if (Math.abs(currentHeight - lastHeight) > 8) {
+              lastHeight = currentHeight;
+              lastChangeAt = now();
+            }
+
+            if (now() - lastChangeAt >= stableWindowMs) {
+              return;
+            }
+
+            await wait(sampleIntervalMs);
+            boostLazyAssets();
+            freezeInteractiveMedia();
+          }
+        };
+
+        const scrollThroughPage = async () => {
+          const step = Math.max(Math.floor(window.innerHeight * 0.75), 200);
+          const maxPasses = 3;
+          let previousHeight = 0;
+
+          for (let pass = 0; pass < maxPasses && now() < deadline; pass += 1) {
+            const totalHeight = measureDocumentHeight();
+
+            for (let y = 0; y < totalHeight && now() < deadline; y += step) {
+              window.scrollTo(0, y);
+              await wait(60);
+              boostLazyAssets();
+              freezeInteractiveMedia();
+            }
+
+            window.scrollTo(0, totalHeight);
+            await waitForPageHeightToSettle();
+
+            const settledHeight = measureDocumentHeight();
+
+            if (settledHeight <= Math.max(previousHeight, totalHeight) + 8) {
+              break;
+            }
+
+            previousHeight = settledHeight;
+            window.scrollTo(0, 0);
+            await wait(120);
           }
 
-          window.scrollTo(0, totalHeight);
-          await wait(120);
           window.scrollTo(0, 0);
           await wait(120);
         };

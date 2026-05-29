@@ -45,6 +45,7 @@ import {
   buildPreservedComputedStyleMap,
   buildStyledHtmlFragment,
   captureNodeHasVisiblePseudoStyles,
+  normalizeElementorColorValue,
   resolvePageShellVisualContext,
   resolveStyleMapBackgroundColor,
   shouldPreserveNodeAsHtmlWidget
@@ -685,6 +686,7 @@ function wrapContentWithPageShell(params: {
 
   params.counter.value += 1;
   const backgroundColor = resolveStyleMapBackgroundColor(pageShell.styleMap);
+  const textColor = normalizeElementorColorValue(pageShell.styleMap.color);
 
   return [
     {
@@ -712,9 +714,9 @@ function wrapContentWithPageShell(params: {
           backgroundColor || pageShell.styleMap["background-image"] ? "classic" : undefined,
         background_color: backgroundColor,
         _background_color: backgroundColor,
-        color: pageShell.styleMap.color,
-        text_color: pageShell.styleMap.color,
-        title_color: pageShell.styleMap.color,
+        color: textColor,
+        text_color: textColor,
+        title_color: textColor,
         font_family: pageShell.styleMap["font-family"]
       },
       elements: params.content
