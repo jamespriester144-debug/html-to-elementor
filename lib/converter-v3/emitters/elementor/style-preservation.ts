@@ -105,21 +105,15 @@ export const CLICKABLE_TEXT_DECORATION_RESET_STYLE =
   "text-decoration:none !important;text-decoration-line:none !important";
 
 export const CLICKABLE_TEXT_DECORATION_RESET_SELECTORS = [
-  "a[href]",
-  "a[href] *",
+  'a[href]',
   "button",
-  "button *",
-  "[role=\"button\"]",
-  "[role=\"button\"] *",
-  "[role=\"link\"]",
-  "[role=\"link\"] *",
-  "input[type=\"button\"]",
-  "input[type=\"submit\"]",
-  "input[type=\"reset\"]",
+  '[role="button"]',
+  '[role="link"]',
+  'input[type="button"]',
+  'input[type="submit"]',
+  'input[type="reset"]',
   ".elementor-button",
-  ".elementor-button *",
-  ".elementor-widget-button a",
-  ".elementor-widget-button a *"
+  ".elementor-widget-button a"
 ] as const;
 
 export const CLICKABLE_TEXT_DECORATION_RESET_CSS = CLICKABLE_TEXT_DECORATION_RESET_SELECTORS
@@ -129,12 +123,42 @@ export const CLICKABLE_TEXT_DECORATION_RESET_CSS = CLICKABLE_TEXT_DECORATION_RES
   )
   .join("");
 
+export function buildButtonTextDecorationCustomCss() {
+  return [
+    "selector .elementor-button",
+    "selector .elementor-button:hover",
+    "selector .elementor-button:focus",
+    "selector .elementor-button:active",
+    "selector .elementor-button:visited",
+    "selector .elementor-button-content-wrapper",
+    "selector .elementor-button-text"
+  ]
+    .join(",")
+    .concat("{" + CLICKABLE_TEXT_DECORATION_RESET_STYLE + ";}");
+}
+
 function trimStyleValue(value?: string) {
   return value?.trim() || undefined;
 }
 
 function hasInlineTextDecorationStyle(value?: string) {
   return /\btext-decoration(?:-line|-style|-color)?\s*:/i.test(value ?? "");
+}
+
+function hasExplicitClickableTextDecorationSignal(captureNode?: CapturedNode) {
+  const inlineStyle = captureNode?.attributes.style;
+
+  if (hasInlineTextDecorationStyle(inlineStyle)) {
+    return true;
+  }
+
+  const className = captureNode?.attributes.class ?? "";
+
+  return /\b(?:underline|decoration-[\w-]+)\b/i.test(className);
+}
+
+function isClickableTextElement(tag?: string) {
+  return ["a", "button"].includes((tag ?? "").toLowerCase());
 }
 
 function removeInlineTextDecorationStyles(value?: string) {
@@ -1172,20 +1196,6 @@ export function buildPreservedComputedStyleMap(params: {
     applyIfMissing(styleMap, "left", node.style.left);
     applyIfMissing(styleMap, "inset", node.style.inset);
 
-    const isLinkNode =
-      (node.tag ?? captureNode?.tag ?? "").toLowerCase() === "a" &&
-      Boolean(node.content?.href?.trim() || captureNode?.attributes.href?.trim());
-    const textDecoration = trimStyleValue(styleMap["text-decoration"]);
-
-    if (
-      isLinkNode &&
-      !hasInlineTextDecorationStyle(captureNode?.attributes.style) &&
-      textDecoration &&
-      /\bunderline\b/i.test(textDecoration)
-    ) {
-      styleMap["text-decoration"] = "none";
-    }
-
     if (!trimStyleValue(styleMap["min-height"]) && node.kind !== "text" && node.box.height > 32) {
       styleMap["min-height"] = inferBoxLength(node.box.height) ?? "";
     }
@@ -1193,6 +1203,19 @@ export function buildPreservedComputedStyleMap(params: {
     if (!trimStyleValue(styleMap.height) && node.kind === "image") {
       applyIfMissing(styleMap, "height", inferBoxLength(node.box.height));
     }
+  }
+
+  const captureTag = (captureNode?.tag ?? node?.tag ?? "").toLowerCase();
+  const hasExplicitClickableTextDecoration =
+    hasExplicitClickableTextDecorationSignal(captureNode);
+
+  if (
+    captureNode &&
+    isClickableTextElement(captureTag) &&
+    !hasExplicitClickableTextDecoration &&
+    /underline/i.test(trimStyleValue(styleMap["text-decoration"]) ?? "")
+  ) {
+    styleMap["text-decoration"] = "none";
   }
 
   return Object.fromEntries(
@@ -1251,14 +1274,15 @@ export function buildElementorStyleBridgeSettings(params: {
 }) {
   const styleMap = buildPreservedComputedStyleMap(params);
 
-  if (params.isButton) {
-    styleMap["text-decoration"] = "none";
-  }
-
   const borderRadius = trimStyleValue(styleMap["border-radius"]);
   const boxShadow = trimStyleValue(styleMap["box-shadow"]);
   const backgroundColor = normalizeElementorColorValue(resolveBackgroundColorCandidate(styleMap));
   const textColor = normalizeElementorColorValue(styleMap.color);
+  const rawTextDecoration = trimStyleValue(styleMap["text-decoration"]);
+  const textDecoration =
+    rawTextDecoration && /underline/i.test(rawTextDecoration)
+      ? "underline"
+      : "none";
   const width = trimStyleValue(styleMap.width) ?? inferBoxLength(params.node.box.width);
   const height = trimStyleValue(styleMap.height);
   const minHeight =
@@ -1301,14 +1325,18 @@ export function buildElementorStyleBridgeSettings(params: {
     overflow_x: trimStyleValue(styleMap["overflow-x"]),
     overflow_y: trimStyleValue(styleMap["overflow-y"]),
     display: trimStyleValue(styleMap.display),
-    text_decoration: params.isButton ? "none" : undefined,
+    text_decoration: params.isButton ? textDecoration : undefined,
     typography_typography: params.isButton ? "custom" : undefined,
-    typography_text_decoration: params.isButton ? "none" : undefined,
-    _typography_text_decoration: params.isButton ? "none" : undefined,
-    button_text_decoration: params.isButton ? "none" : undefined,
+    typography_text_decoration: params.isButton ? textDecoration : undefined,
+    _typography_text_decoration: params.isButton ? textDecoration : undefined,
+    button_text_decoration: params.isButton ? textDecoration : undefined,
     button_typography_typography: params.isButton ? "custom" : undefined,
-    button_typography_text_decoration: params.isButton ? "none" : undefined,
-    button_hover_text_decoration: params.isButton ? "none" : undefined,
+    button_typography_text_decoration: params.isButton ? textDecoration : undefined,
+    button_hover_text_decoration: params.isButton ? textDecoration : undefined,
+    custom_css:
+      params.isButton && textDecoration !== "underline"
+        ? buildButtonTextDecorationCustomCss()
+        : undefined,
     converter_v3_styles: styleMap,
     converter_v3_inline_style: buildInlineStyleFromComputedStyleMap(styleMap, {
       width,
@@ -1470,12 +1498,23 @@ function convertInlineSvgElementsToImages($: cheerio.CheerioAPI) {
 export function normalizeClickableTextDecorationStyles($: cheerio.CheerioAPI) {
   $(CLICKABLE_TEXT_DECORATION_RESET_SELECTORS.join(",")).each((_, element) => {
     const clickable = $(element);
-    const cleanedStyle = removeInlineTextDecorationStyles(clickable.attr("style"));
+    const currentStyle = clickable.attr("style") ?? "";
+    const hasUnderline = /text-decoration(?:-[a-z-]+)?\s*:[^;]*underline/i.test(currentStyle);
+    const isCapturedNode = clickable.is("[data-capture-id]");
+    const hasExplicitInlineDecoration =
+      clickable.attr("data-converter-v3-inline-text-decoration") === "true";
+    const cleanedStyle = removeInlineTextDecorationStyles(currentStyle);
+
+    const decorationStyle =
+      hasUnderline && (!isCapturedNode || hasExplicitInlineDecoration)
+        ? "text-decoration:underline !important;text-decoration-line:underline !important"
+        : CLICKABLE_TEXT_DECORATION_RESET_STYLE;
 
     clickable.attr(
       "style",
-      mergeExistingStyle(cleanedStyle, CLICKABLE_TEXT_DECORATION_RESET_STYLE)
+      mergeExistingStyle(cleanedStyle, decorationStyle)
     );
+    clickable.removeAttr("data-converter-v3-inline-text-decoration");
   });
 }
 
@@ -1487,12 +1526,24 @@ export function buildStyledHtmlFragment(params: {
   const $ = cheerio.load(params.html);
   const pseudoRules: string[] = [];
   const pseudoSeen = new Set<string>();
+  const clickableSelector = CLICKABLE_TEXT_DECORATION_RESET_SELECTORS.join(",");
 
   $("[data-capture-id]").each((_, element) => {
     const nodeId = $(element).attr("data-capture-id")?.trim();
 
     if (!nodeId) {
       return;
+    }
+
+    const originalStyle = $(element).attr("style") ?? "";
+    const className = $(element).attr("class") ?? "";
+
+    if (
+      $(element).is(clickableSelector) &&
+      (hasInlineTextDecorationStyle(originalStyle) ||
+        /\b(?:underline|decoration-[\w-]+)\b/i.test(className))
+    ) {
+      $(element).attr("data-converter-v3-inline-text-decoration", "true");
     }
 
     const captureNode = params.captureById.get(nodeId);

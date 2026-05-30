@@ -402,7 +402,6 @@ function renderWidgetMarkup(
         ["align-items", "center"],
         ["justify-content", "center"],
         ["padding", "12px 20px"],
-        ["text-decoration", "none"],
         ["border-radius", "12px"],
         ["background", "#111"],
         ["color", "#fff"]

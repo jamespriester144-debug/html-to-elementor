@@ -76,14 +76,28 @@ export async function preparePageForVisualCapture(
         }
 
         const clickableSelector = clickableSelectors.join(",");
+        const hasInlineTextDecorationStyle = (styleText: string) =>
+          /text-decoration(?:-[a-z-]+)?\s*:/i.test(styleText);
         const normalizeClickableTextDecorations = () => {
           Array.from(document.querySelectorAll(clickableSelector)).forEach((element) => {
             if (!(element instanceof HTMLElement)) {
               return;
             }
 
-            element.style.setProperty("text-decoration", "none", "important");
-            element.style.setProperty("text-decoration-line", "none", "important");
+            const originalStyle = element.getAttribute("style") || "";
+            const hasExplicitTextDecoration = hasInlineTextDecorationStyle(originalStyle);
+            const hasUnderline = /text-decoration(?:-[a-z-]+)?\s*:[^;]*underline/i.test(
+              originalStyle
+            );
+
+            if (hasExplicitTextDecoration && hasUnderline) {
+              element.style.setProperty("text-decoration", "underline", "important");
+              element.style.setProperty("text-decoration-line", "underline", "important");
+            } else {
+              element.style.setProperty("text-decoration", "none", "important");
+              element.style.setProperty("text-decoration-line", "none", "important");
+            }
+
             element.style.removeProperty("text-decoration-style");
             element.style.removeProperty("text-decoration-color");
           });

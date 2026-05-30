@@ -386,6 +386,9 @@ export function createPixelPerfectElementorDocumentV3(
       return null;
     }
   }
+  function hasInlineTextDecorationStyle(styleText) {
+    return /text-decoration(?:-[a-z-]+)?\s*:/i.test(styleText || '');
+  }
   function normalizeClickableTextDecorations() {
     var doc = getFrameDocument();
 
@@ -398,8 +401,18 @@ export function createPixelPerfectElementorDocumentV3(
         return;
       }
 
-      element.style.setProperty("text-decoration", "none", "important");
-      element.style.setProperty("text-decoration-line", "none", "important");
+      var originalStyle = element.getAttribute("style") || "";
+      var hasExplicitTextDecoration = hasInlineTextDecorationStyle(originalStyle);
+      var hasUnderline = /text-decoration(?:-[a-z-]+)?\s*:[^;]*underline/i.test(originalStyle);
+
+      if (hasExplicitTextDecoration && hasUnderline) {
+        element.style.setProperty("text-decoration", "underline", "important");
+        element.style.setProperty("text-decoration-line", "underline", "important");
+      } else {
+        element.style.setProperty("text-decoration", "none", "important");
+        element.style.setProperty("text-decoration-line", "none", "important");
+      }
+
       element.style.removeProperty("text-decoration-style");
       element.style.removeProperty("text-decoration-color");
     });

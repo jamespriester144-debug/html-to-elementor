@@ -29,6 +29,7 @@ import {
   getOrderedChildIdsForPattern
 } from "../lib/converter-v3/emitters/elementor/responsive-layout";
 import { createEditableElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/editable";
+import { createHybridElementorDocumentV3 } from "../lib/converter-v3/emitters/elementor/hybrid";
 import {
   resolvePageShellVisualContext,
   resolveStyleMapBackgroundColor,
@@ -7670,9 +7671,106 @@ async function testV3EditablePreservesStyledButtonVisuals() {
   assert.equal(previewHtml.includes("background:#ffffff"), false);
   assert.equal(previewHtml.includes("background: #ffffff"), false);
   assert.equal(previewHtml.includes("background:#111"), false);
+  assert.match(
+    String(button?.settings?.custom_css ?? ""),
+    /selector\s+\.elementor-button/i
+  );
+  assert.match(
+    String(button?.settings?.custom_css ?? ""),
+    /text-decoration:none !important/i
+  );
 }
 
-async function testV3EditableNormalizesButtonUnderline() {
+async function testV3HybridSetsButtonUnderlineCustomCss() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Hybrid Button Reset</title>
+  </head>
+  <body>
+    <section style="padding:32px;">
+      <a
+        href="#cta"
+        style="display:inline-flex;align-items:center;justify-content:center;padding:16px 28px;border-radius:999px;background:#e11d48;color:#f8fafc;border:1px solid rgba(255,255,255,.22);box-shadow:0 18px 40px rgba(225,29,72,.35);text-decoration:none;"
+      >
+        Comecar agora
+      </a>
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const hybridResult = createHybridElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "hybrid"
+  });
+  const button = findFirstWidget(hybridResult.document, "button");
+  const previewHtml = buildConvertedPreviewHtml({
+    capture: captureResult.capture,
+    document: hybridResult.document
+  });
+
+  assert.ok(button);
+  assert.match(
+    String(button?.settings?.custom_css ?? ""),
+    /selector\s+\.elementor-button/i
+  );
+  assert.match(
+    String(button?.settings?.custom_css ?? ""),
+    /text-decoration:none !important/i
+  );
+  assert.match(previewHtml, /text-decoration:\s*none/i);
+}
+
+async function testV3EditableRemovesDefaultNavUnderline() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Default Nav Underline</title>
+    <style>
+      body { margin: 0; background: #000; }
+      nav {
+        display: flex;
+        gap: 24px;
+        padding: 16px 24px;
+        background: #111;
+      }
+      nav a { color: #06f; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="#feed">FEED</a>
+      <a href="#torneios">TORNEIOS</a>
+      <a href="#ranking">RANKING</a>
+    </nav>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const captureResult = await runCapturePipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const editableResult = createEditableElementorDocumentV3({
+    capture: captureResult.capture,
+    layout: captureResult.layout,
+    selectedMode: "editable"
+  });
+  const previewHtml = buildConvertedPreviewHtml({
+    capture: captureResult.capture,
+    document: editableResult.document
+  });
+
+  assert.match(previewHtml, /<a href="#feed" style="[^"]*text-decoration:\s*none/i);
+  assert.match(previewHtml, /<a href="#feed" style="[^"]*background:#111/i);
+  assert.equal(/<a href="#feed" style="[^"]*text-decoration:\s*underline/i.test(previewHtml), false);
+}
+
+async function testV3EditablePreservesButtonUnderline() {
   const html = `<!doctype html>
 <html>
   <head>
@@ -7712,19 +7810,53 @@ async function testV3EditableNormalizesButtonUnderline() {
         "text-decoration"
       ] ?? ""
     ),
-    "none"
+    "underline"
   );
   assert.match(
     String(button?.settings?.converter_v3_inline_style ?? ""),
-    /text-decoration:\s*none/i
+    /text-decoration:\s*underline/i
   );
   assert.equal(button?.settings?.typography_typography, "custom");
-  assert.equal(button?.settings?.typography_text_decoration, "none");
-  assert.equal(button?.settings?.button_typography_text_decoration, "none");
-  assert.equal(/text-decoration:\s*underline/i.test(previewHtml), false);
+  assert.equal(button?.settings?.typography_text_decoration, "underline");
+  assert.equal(button?.settings?.button_typography_text_decoration, "underline");
+  assert.equal(button?.settings?.custom_css, undefined);
+  assert.match(previewHtml, /text-decoration:\s*underline/i);
 }
 
-async function testV3StyledHtmlFragmentNormalizesDefaultLinkUnderline() {
+async function testV3ExportPipelinePreservesImageAndContent() {
+  const html = `<!doctype html>
+<html>
+  <head>
+    <title>Export Pipeline Content Preservation</title>
+  </head>
+  <body>
+    <section style="display:grid;grid-template-columns:1fr 1fr;gap:24px;padding:32px;background:#fff">
+      <div>
+        <h1>Title</h1>
+        <p>Copy</p>
+        <a href="#cta" style="display:inline-flex;padding:12px 20px;border-radius:999px;background:#111;color:#fff;text-decoration:none;">CTA</a>
+      </div>
+      <img
+        src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPSc0MDAnIGhlaWdodD0nMjQwJz48cmVjdCB3aWR0aD0nMTAwJScgaGVpZ2h0PScxMDAlJyBmaWxsPScjZGVkZWZlJy8+PHRleHQgeD0nNTAnIHk9JzEyMCcgZm9udC1zaXplPSc0OCc+SU1HPC90ZXh0Pjwvc3ZnPg=="
+        alt="Hero"
+      >
+    </section>
+  </body>
+</html>`;
+  const outputRoot = path.join(os.tmpdir(), "html-to-elementor-v3-tests");
+  const result = await runExportPipelineV3FromHtml(html, {
+    preferBrowser: false,
+    outputRoot
+  });
+  const previewHtml = result.previewHtml ?? "";
+
+  assert.equal(result.contentIntegrity.status, "passed");
+  assert.match(previewHtml, /<img/i);
+  assert.match(previewHtml, /CTA/i);
+  assert.match(previewHtml, /text-decoration:\s*none/i);
+}
+
+async function testV3StyledHtmlFragmentRemovesDefaultLinkUnderline() {
   const captureNode: PageCapture["nodes"][number] = {
     id: "link-1",
     tag: "a",
@@ -7778,29 +7910,18 @@ async function testV3StyledHtmlFragmentNormalizesDefaultLinkUnderline() {
   });
 
   const explicitUnderlineFragment = buildStyledHtmlFragment({
-    html: '<a data-capture-id="link-1" href="#learn">Learn more</a>',
-    captureById: new Map([
-      [
-        captureNode.id,
-        {
-          ...captureNode,
-          attributes: {
-            ...captureNode.attributes,
-            style: "text-decoration: underline;"
-          }
-        }
-      ]
-    ]),
+    html:
+      '<a data-capture-id="link-1" href="#learn" style="text-decoration: underline;">Learn more</a>',
+    captureById: new Map([[captureNode.id, captureNode]]),
     layoutById: new Map([[layoutNode.id, layoutNode]])
   });
 
   assert.match(strippedFragment, /text-decoration:\s*none/i);
+  assert.match(explicitUnderlineFragment, /text-decoration:\s*underline/i);
   assert.equal(/text-decoration:\s*underline/i.test(strippedFragment), false);
-  assert.match(explicitUnderlineFragment, /text-decoration:\s*none/i);
-  assert.equal(/text-decoration:\s*underline/i.test(explicitUnderlineFragment), false);
 }
 
-async function testV3StyledHtmlFragmentNormalizesClickableUnderlineStyles() {
+async function testV3StyledHtmlFragmentPreservesClickableUnderlineStyles() {
   const captureNode: PageCapture["nodes"][number] = {
     id: "block-1",
     tag: "div",
@@ -7844,16 +7965,16 @@ async function testV3StyledHtmlFragmentNormalizesClickableUnderlineStyles() {
     layoutById: new Map([[layoutNode.id, layoutNode]])
   });
 
-  assert.match(fragment, /<a href="\/more" style="[^"]*text-decoration:none/i);
-  assert.match(fragment, /<a href="\/learn" style="[^"]*text-decoration:none/i);
-  assert.match(fragment, /<button style="[^"]*text-decoration:none/i);
-  assert.match(fragment, /role="button" style="[^"]*text-decoration:none/i);
-  assert.equal(/text-decoration:\s*underline/i.test(fragment), false);
+  assert.match(fragment, /<a href="\/more" style="[^"]*text-decoration:\s*none/i);
+  assert.match(fragment, /<a href="\/learn" style="[^"]*text-decoration:\s*underline/i);
+  assert.match(fragment, /<button style="[^"]*text-decoration:\s*underline/i);
+  assert.match(fragment, /role="button" style="[^"]*text-decoration:\s*underline/i);
+  assert.equal(/<a href="\/more" style="[^"]*text-decoration:\s*underline/i.test(fragment), false);
 }
 
-function testV3PixelPerfectInjectsClickableUnderlineReset() {
+function testV3PixelPerfectPreservesClickableUnderlineStyles() {
   const document = createPixelPerfectElementorDocumentV3(
-    '<!doctype html><html><head><style>a{ text-decoration: underline !important; }</style></head><body><a href="#buy">Buy</a></body></html>',
+    '<!doctype html><html><head></head><body><a href="#buy" style="text-decoration: underline;">Buy</a></body></html>',
     {
       title: "Pixel Perfect Underline Reset",
       selectedMode: "pixel-perfect"
@@ -7863,8 +7984,8 @@ function testV3PixelPerfectInjectsClickableUnderlineReset() {
   const html = String(htmlWidget?.settings?.html ?? "");
 
   assert.ok(htmlWidget);
-  assert.match(html, /a\[href\]\{text-decoration:none !important/i);
-  assert.match(html, /\.elementor-button\{text-decoration:none !important/i);
+  assert.match(html, /text-decoration:\s*underline/i);
+  assert.match(html, /text-decoration:none !important;text-decoration-line:none !important/i);
   assert.match(html, /background:transparent/i);
   assert.equal(html.includes("var(--detected-page-background, #ffffff)"), false);
   assert.equal(/#ffffff/i.test(html), false);
@@ -13810,10 +13931,13 @@ async function main() {
   await testV3HybridComposesTestimonialSectionOutroBlock();
   await testV3EditableFallsBackToHybridOnUnsupportedBlock();
   await testV3EditablePreservesStyledButtonVisuals();
-  await testV3EditableNormalizesButtonUnderline();
-  await testV3StyledHtmlFragmentNormalizesDefaultLinkUnderline();
-  await testV3StyledHtmlFragmentNormalizesClickableUnderlineStyles();
-  testV3PixelPerfectInjectsClickableUnderlineReset();
+  await testV3HybridSetsButtonUnderlineCustomCss();
+  await testV3EditableRemovesDefaultNavUnderline();
+  await testV3EditablePreservesButtonUnderline();
+  await testV3ExportPipelinePreservesImageAndContent();
+  await testV3StyledHtmlFragmentRemovesDefaultLinkUnderline();
+  await testV3StyledHtmlFragmentPreservesClickableUnderlineStyles();
+  testV3PixelPerfectPreservesClickableUnderlineStyles();
   await testV3EditablePreservesStyledInputAsHtml();
   await testV3EditablePreservesDarkCardShell();
   await testV3EditablePreservesHeroBackgroundAndOverlay();

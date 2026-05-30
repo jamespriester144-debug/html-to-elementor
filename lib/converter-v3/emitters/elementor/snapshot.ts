@@ -718,7 +718,6 @@ function buildResponsiveSnapshotMarkup(snapshotSource: SnapshotMarkupSource) {
       color:transparent !important;
       font-size:0 !important;
       line-height:0 !important;
-      text-decoration:none !important;
       padding:0 !important;
       margin:0 !important;
       opacity:0 !important;
